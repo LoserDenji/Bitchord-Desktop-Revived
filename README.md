@@ -17,11 +17,10 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 [![Downloads](https://img.shields.io/github/downloads/LoserDenji/Bitchord-Desktop-Revived/total?style=for-the-badge&labelColor=0d1117&color=a855f7)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases)
 [![License](https://img.shields.io/github/license/LoserDenji/Bitchord-Desktop-Revived?style=for-the-badge&labelColor=0d1117&color=a855f7)](LICENSE)
 |[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)
-|[![Linux](https://img.shields.io/badge/platform-Linux-x86_64-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)
-|[![macOS](https://img.shields.io/badge/platform-macos-14%2F15-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)|
+|[![Linux](https://img.shields.io/badge/platform-Linux%20x86__64-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)
+|[![macOS](https://img.shields.io/badge/platform-macOS%2014%2F15-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)|
 
 <br/>
-
 <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/badge/Download_for_Windows-8b5cf6?style=for-the-badge&logo=windows&logoColor=white&labelColor=0d1117" alt="Download for Windows" height="46" /></a>
 <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/badge/Download_for_Linux-34d393?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d1117" alt="Download for Linux" height="46" /></a>
 <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/badge/Download_for_macOS-34d393?style=for-the-badge&logo=apple&logoColor=white&labelColor=0d1117" alt="Download for macOS" height="46" /></a>
