@@ -16,11 +16,15 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 [![Latest release](https://img.shields.io/github/v/release/jackychan4891/BitChord-PC-Continued?style=for-the-badge&labelColor=0d1117&color=a855f7)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/jackychan4891/BitChord-PC-Continued/total?style=for-the-badge&labelColor=0d1117&color=a855f7)](https://github.com/jackychan4891/BitChord-PC-Continued/releases)
 [![License](https://img.shields.io/github/license/jackychan4891/BitChord-PC-Continued?style=for-the-badge&labelColor=0d1117&color=a855f7)](LICENSE)
-[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=for-the-badge&labelColor=0d1117)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)
+|[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=for-the-badge&labelColor=0d1117)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)
+|[![Linux](https://img.shields.io/badge/platform-Linux-x86_64-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)
+|[![macOS](https://img.shields.io/badge/platform-macos-14%2F15-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)|
 
 <br/>
 
-<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_for_Windows-Installer-8b5cf6?style=for-the-badge&logo=windows&logoColor=white&labelColor=0d1117" alt="Download for Windows" height="46" /></a>
+<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_for_Windows-8b5cf6?style=for-the-badge&logo=windows&logoColor=white&labelColor=0d1117" alt="Download for Windows" height="46" /></a>
+<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_for_Linux-34d393?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d1117" alt="Download for Linux" height="46" /></a>
+<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_for_macOS-34d393?style=for-the-badge&logo=apple&logoColor=white&labelColor=0d1117" alt="Download for macOS" height="46" /></a>
 <a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases"><img src="https://img.shields.io/badge/All_Releases-Archive-0d1117?style=for-the-badge&logo=github&logoColor=white" alt="All releases" height="46" /></a>
 <a href="https://github.com/jackychan4891/BitChord-PC-Continued/issues"><img src="https://img.shields.io/badge/Report_an_Issue-Bug_Reports-0d1117?style=for-the-badge&logo=githubissues&logoColor=white" alt="Report an issue" height="46" /></a>
 <a href="https://discord.gg/cWQSGjpXM"><img src="https://img.shields.io/badge/Join_the_Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Join the Discord" height="46" /></a>
@@ -111,7 +115,7 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 - **Discord Rich Presence** — live track, artist, album and progress.
 - **Last.fm scrobbling** — enter your own API key and secret in Settings.
 - **ListenBrainz** scrobbling.
-- **System media controls** via Windows SMTC, with seek and artwork.
+- **System media controls** — Windows SMTC and Linux MPRIS, with seek and artwork.
 - **Pluggable module sources** — add, edit, test and health-check them.
 
 #### Radio & polish
@@ -136,14 +140,27 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 </div>
 
 1. Open the [latest release](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest).
-2. Download **`BitChord-<version>-windows-x64-setup.exe`** (installer) or
-   **`BitChord-<version>-windows-x64.msi`** (Windows Installer package).
-3. Run it. The app installs per user and adds a Start-menu entry.
+2. Download the file for your platform:
+   - **Windows:** `BitChord-<version>-windows-x64-setup.exe` (installer) or
+     `BitChord-<version>-windows-x64.msi` (Windows Installer package).
+   - **Linux:** `BitChord-<version>-linux-x86_64.AppImage` (preferred), or
+     `BitChord-<version>-linux-amd64.deb` / `BitChord-<version>-linux-x86_64.rpm`.
+   - **macOS:** `BitChord-<version>-macos-arm64.dmg` (Apple Silicon) or
+        `BitChord-<version>-macos-x64.dmg` (Intel), or
+        `BitChord-<version>-macos-<arch>.pkg` (standard installer package).
+3. Run it. Windows installs per user and adds a Start-menu entry; macOS mounts a DMG; Linux
+   AppImages run from anywhere after `chmod +x`, and deb/rpm install through your package
+   manager.
 
-**Requirements:** Windows 10 or 11, 64-bit. About 320 MB installed.
+**Requirements:** 64-bit. Windows 10 or 11; macOS 14 or newer; Linux with glibc 2.33+ (Ubuntu
+22.04, Fedora 36, or newer). About 320 MB installed.
 
-The builds are **not code-signed**, so Windows SmartScreen may show
+The Windows builds are **not code-signed**, so Windows SmartScreen may show
 "Windows protected your PC" — choose **More info → Run anyway**.
+
+The macOS builds are **not notarized**, so Gatekeeper may show
+"BitChord is damaged and can't be opened" or "unidentified developer" —
+run `xattr -cr /Applications/BitChord.app` to clear the quarantine flag.
 
 The app checks this repository for a newer release on launch and offers a download link
 when one exists. Nothing is installed automatically.
@@ -168,6 +185,9 @@ All Gradle work is done from the repository root:
 
 # Windows installer (.exe) and MSI
 ./gradlew :desktopApp:packageExe :desktopApp:packageMsi
+
+# macOS DMG and PKG
+./gradlew :desktopApp:packageDmg :desktopApp:packagePkg
 ```
 
 Stamp a version with `-Pbitchord.version=1.8.30`. Platform notes for Linux and macOS,

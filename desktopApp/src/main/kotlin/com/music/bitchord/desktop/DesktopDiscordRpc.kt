@@ -160,7 +160,11 @@ internal object DesktopDiscordRpc {
             runCatching {
                 val client = rpc ?: KizzyRPC(
                     token = _token.value,
-                    os = if (DesktopPlatform.isWindows) "Windows" else "Linux",
+                    os = when {
+                        DesktopPlatform.isWindows -> "Windows"
+                        DesktopPlatform.isMac -> "macOS"
+                        else -> "Linux"
+                    },
                     browser = "Discord Client",
                     device = "desktop",
                     userAgent = USER_AGENT,
@@ -274,7 +278,11 @@ internal object DesktopDiscordRpc {
      */
     private val superProperties: String by lazy {
         val fields = mapOf(
-            "os" to if (DesktopPlatform.isWindows) "Windows" else "Linux",
+            "os" to when {
+                    DesktopPlatform.isWindows -> "Windows"
+                    DesktopPlatform.isMac -> "macOS"
+                    else -> "Linux"
+                },
             "browser" to "Discord Client",
             "device" to "",
             "system_locale" to Locale.getDefault().toString(),
