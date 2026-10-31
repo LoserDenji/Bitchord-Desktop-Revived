@@ -13,20 +13,20 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 
 <br/>
 
-[![Latest release](https://img.shields.io/github/v/release/jackychan4891/BitChord-PC-Continued?style=for-the-badge&labelColor=0d1117&color=a855f7)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/jackychan4891/BitChord-PC-Continued/total?style=for-the-badge&labelColor=0d1117&color=a855f7)](https://github.com/jackychan4891/BitChord-PC-Continued/releases)
-[![License](https://img.shields.io/github/license/jackychan4891/BitChord-PC-Continued?style=for-the-badge&labelColor=0d1117&color=a855f7)](LICENSE)
-|[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=for-the-badge&labelColor=0d1117)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)
-|[![Linux](https://img.shields.io/badge/platform-Linux-x86_64-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)
-|[![macOS](https://img.shields.io/badge/platform-macos-14%2F15-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest)|
+[![Latest release](https://img.shields.io/github/v/release/LoserDenji/Bitchord-Desktop-Revived?style=for-the-badge&labelColor=0d1117&color=a855f7)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/LoserDenji/Bitchord-Desktop-Revived/total?style=for-the-badge&labelColor=0d1117&color=a855f7)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases)
+[![License](https://img.shields.io/github/license/LoserDenji/Bitchord-Desktop-Revived?style=for-the-badge&labelColor=0d1117&color=a855f7)](LICENSE)
+|[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)
+|[![Linux](https://img.shields.io/badge/platform-Linux-x86_64-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)
+|[![macOS](https://img.shields.io/badge/platform-macos-14%2F15-34d393?style=for-the-badge&labelColor=0d1117)](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest)|
 
 <br/>
 
-<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_for_Windows-8b5cf6?style=for-the-badge&logo=windows&logoColor=white&labelColor=0d1117" alt="Download for Windows" height="46" /></a>
-<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_for_Linux-34d393?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d1117" alt="Download for Linux" height="46" /></a>
-<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_for_macOS-34d393?style=for-the-badge&logo=apple&logoColor=white&labelColor=0d1117" alt="Download for macOS" height="46" /></a>
-<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases"><img src="https://img.shields.io/badge/All_Releases-Archive-0d1117?style=for-the-badge&logo=github&logoColor=white" alt="All releases" height="46" /></a>
-<a href="https://github.com/jackychan4891/BitChord-PC-Continued/issues"><img src="https://img.shields.io/badge/Report_an_Issue-Bug_Reports-0d1117?style=for-the-badge&logo=githubissues&logoColor=white" alt="Report an issue" height="46" /></a>
+<a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/badge/Download_for_Windows-8b5cf6?style=for-the-badge&logo=windows&logoColor=white&labelColor=0d1117" alt="Download for Windows" height="46" /></a>
+<a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/badge/Download_for_Linux-34d393?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d1117" alt="Download for Linux" height="46" /></a>
+<a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/badge/Download_for_macOS-34d393?style=for-the-badge&logo=apple&logoColor=white&labelColor=0d1117" alt="Download for macOS" height="46" /></a>
+<a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases"><img src="https://img.shields.io/badge/All_Releases-Archive-0d1117?style=for-the-badge&logo=github&logoColor=white" alt="All releases" height="46" /></a>
+<a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/issues"><img src="https://img.shields.io/badge/Report_an_Issue-Bug_Reports-0d1117?style=for-the-badge&logo=githubissues&logoColor=white" alt="Report an issue" height="46" /></a>
 <a href="https://discord.gg/cWQSGjpXM"><img src="https://img.shields.io/badge/Join_the_Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Join the Discord" height="46" /></a>
 
 <br/>
@@ -135,11 +135,11 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 
 <h2><a id="install"></a>Install</h2>
 
-<a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/badge/Download_BitChord_for_Windows-8b5cf6?style=for-the-badge&logo=windows&logoColor=white&labelColor=0d1117" alt="Download for Windows" height="46" /></a>
+<a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/badge/Download_BitChord_for_Windows-8b5cf6?style=for-the-badge&logo=windows&logoColor=white&labelColor=0d1117" alt="Download for Windows" height="46" /></a>
 
 </div>
 
-1. Open the [latest release](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest).
+1. Open the [latest release](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest).
 2. Download the file for your platform:
    - **Windows:** `BitChord-<version>-windows-x64-setup.exe` (installer) or
      `BitChord-<version>-windows-x64.msi` (Windows Installer package).
