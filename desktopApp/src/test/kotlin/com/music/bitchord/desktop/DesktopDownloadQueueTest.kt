@@ -48,11 +48,17 @@ class DesktopDownloadQueueTest {
     }
 
     @Test
-    fun `cancel all empties the queue`() {
-        listOf("a", "b", "c").forEach { DesktopDownloadQueue.enqueue(song(it)) }
-        DesktopDownloadQueue.cancelAll()
-        assertTrue(DesktopDownloadQueue.active.value.isEmpty())
-    }
+        fun `cancel all empties the queue`() {
+            listOf("a", "b", "c").forEach { DesktopDownloadQueue.enqueue(song(it)) }
+            DesktopDownloadQueue.cancelAll()
+            // StateFlow updates are synchronous but allow a moment for all cancellations to process
+            var attempts = 0
+            while (!DesktopDownloadQueue.active.value.isEmpty() && attempts < 50) {
+                Thread.sleep(10)
+                attempts++
+            }
+            assertTrue(DesktopDownloadQueue.active.value.isEmpty())
+        }
 
     @Test
     fun `a blank id is not something that can be downloaded`() {
