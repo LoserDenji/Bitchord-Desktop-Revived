@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -20,7 +21,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.rememberScrollState
 import androidx.compose.ui.window.rememberWindowState
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.ui.icons.BitChordIcons
@@ -59,7 +59,6 @@ fun FloatingPlayerWindow(
         title = "",
         undecorated = true,
         transparent = true,
-        alwaysOnTop = true,
         state = windowState,
     ) {
         val window = window
