@@ -6492,7 +6492,7 @@ private fun DesktopSettingsScreen(
                         )
                     }
                     SettingsToggle(
-                        BitChordIcons.Music,
+                        BitChordIcons.MusicNote,
                         DesktopStrings["d_floating_player", "Floating player"],
                         DesktopStrings["d_floating_player_subtitle", "A small always-on-top player over your desktop"],
                         DesktopFloatingPlayerSettings.enabled.collectAsState().value,

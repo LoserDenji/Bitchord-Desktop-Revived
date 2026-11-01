@@ -66,8 +66,6 @@ fun FloatingPlayerWindow(
         LaunchedEffect(window) {
             if (DesktopPlatform.isMac) {
                 window.type = java.awt.Window.Type.UTILITY
-            } else {
-                window.type = java.awt.Window.Type.TRANSPARENT
             }
             window.setBackground(java.awt.Color(0, 0, 0, 0))
             window.isAlwaysOnTop = true
@@ -160,7 +158,7 @@ private fun FloatingPlayerPill(
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    modifier = Modifier
+                    onClick = {},
                 )
         )
 
