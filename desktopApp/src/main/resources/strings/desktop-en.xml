@@ -79,6 +79,8 @@
     <string name="d_found_on_your_listenbrainz_profile_under_settings">Found on your ListenBrainz profile, under Settings.</string>
     <string name="d_frees_album_artwork">Frees the space album artwork takes</string>
     <string name="d_frees_downloaded_audio">Frees the space downloaded audio takes</string>
+    <string name="d_floating_player">Floating player</string>
+    <string name="d_floating_player_subtitle">A small always-on-top player over your desktop</string>
     <string name="d_general">General</string>
     <string name="d_get_an_api_key">Get an API key</string>
     <string name="d_google_signs_in_inside_a_browser">Google signs in inside a browser and hands back a session. Pick a browser here that is already signed in and BitChord will use its session.</string>
