@@ -76,6 +76,10 @@ internal object DesktopWindowVisibility {
                 DesktopMacFrame.activateApp()
             }
         }
+        // Hide floating player when main window is restored
+        if (DesktopFloatingPlayerSettings.enabled.value) {
+            DesktopTrackLog.log("hiding floating player due to main window restore")
+        }
     }
 
     /**
@@ -89,6 +93,10 @@ internal object DesktopWindowVisibility {
         DesktopWindowMode.exit()
         _visible.value = false
         DesktopTrackLog.log("window closed to the tray; playback continues")
+        // If auto-show is enabled and floating player is enabled, show the floating player
+        if (DesktopFloatingPlayerSettings.autoShow.value && DesktopFloatingPlayerSettings.enabled.value) {
+            DesktopTrackLog.log("showing floating player due to tray hide")
+        }
         return false
     }
 }

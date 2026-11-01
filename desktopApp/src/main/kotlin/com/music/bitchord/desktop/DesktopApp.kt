@@ -4859,6 +4859,18 @@ fun BitChordDesktopApp() {
         }
     }
 
+    // Floating overlay player - a small always-on-top window with transport controls
+    FloatingPlayerWindow(
+        currentSong = transportPlayback.song,
+        isPlaying = transportPlayback.isPlaying,
+        positionMs = playback.positionMs,
+        durationMs = playback.durationMs,
+        onPrevious = ::playPrevious,
+        onPlayPause = ::togglePlayPauseFromUser,
+        onNext = ::playNext,
+        onToggleLike = { song -> toggleLike(song) },
+    )
+
 }
 
 /**
