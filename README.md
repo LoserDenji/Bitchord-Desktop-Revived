@@ -6,10 +6,10 @@
 
 # BitChord for PC
 
-### The YouTube Music desktop client, dressed by Apple Music
+### A YouTube Music desktop client, dressed by Apple Music
 
-A Kotlin Multiplatform / Compose Desktop player for Windows, macOS and Linux —
-with Apple Music's layout, lossless sources, beat-matched Automix and word-synced lyrics.
+A desktop player for Windows, macOS and Linux —
+inspired by Apple Music's design, with support for lossless sources, and local library's, beat-matched Automix and word-synced lyrics.
 
 <br/>
 
@@ -79,10 +79,11 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 
 #### Playback
 - **Anything on YouTube Music** — search, browse, albums, playlists, artist pages.
-- **Lossless & Hi-Res audio** — FLAC/ALAC from a configured module source, with YouTube
+- **Apple music playlists** - sourced from Apple, played by youtube music.
+- **Lossless, Hi-Res audio & Dolby Atmos** — FLAC/ALAC and Dolby Atmos from a configured module source, with YouTube
   Music as the fallback; switch output from the lossless badge.
 - **Gapless playback with true crossfade** — 0–12 s, adjustable.
-- **Automix** — beat-matched, phrase-aligned (8/16-bar) DJ transitions with a set of
+- **Automix** — beat-matched, phrase-aligned DJ transitions with a set of
   transition effects; it mixes on the stream already playing, so skipping never stalls
   waiting for a lossless download.
 - **Downloads** — save tracks with embedded metadata, or a whole release at once.
@@ -90,9 +91,9 @@ with Apple Music's layout, lossless sources, beat-matched Automix and word-synce
 - **SponsorBlock** — skips non-music segments.
 
 #### Apple Music-style interface
-- **Listen Now, New, Radio, Charts, Library, Search** — the web player's layout, shelves,
+- **Listen Now, New, Moods, Radio, Charts, Library, Search** — the web player's layout, shelves,
   tile shapes and typography, rebuilt in Compose.
-- **Animated release artwork** — motion covers on artist pages and the player.
+- **Animated release artwork** — Apple Music's own motion covers on artist pages and the player.
 - **Full-screen player** — artwork left, transport centred, live lyrics right.
 - **Mini player** — frosted, artwork-driven, with progress and quick controls.
 - **Artist pages** — Apple's discography shelves, tour dates, and the artist's own
@@ -215,7 +216,6 @@ interface.
   [Musixmatch](https://www.musixmatch.com), [Genius](https://genius.com) and
   [lrc.red](https://lrc.red).
 - Lyrics animation inspired by [binimum/am-lyrics](https://github.com/binimum/am-lyrics).
-- Radio data from the BBC's public schedule API.
 - Design studied from the Apple Music web player. Apple Music is a trademark of Apple Inc.;
   this project is not affiliated with Apple.
 
