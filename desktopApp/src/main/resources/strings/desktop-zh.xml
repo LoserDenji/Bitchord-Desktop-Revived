@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">将你的偏好写入“下载”中的 JSON 文件</string>
     <string name="d_your_year_in_music">你的年度音乐</string>
     <string name="sources_order_short">来源</string>
+    <string name="d_floating_player">悬浮播放器</string>
+    <string name="d_floating_player_subtitle">桌面上的小型总在最前播放器</string>
 </resources>

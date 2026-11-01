@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">आपकी प्राथमिकें Downloads में JSON फ़ाइल में लिखता है</string>
     <string name="d_your_year_in_music">संगीत में आपका वर्ष</string>
     <string name="sources_order_short">स्रोत</string>
+    <string name="d_floating_player">फ्लोटिंग प्लेयर</string>
+    <string name="d_floating_player_subtitle">आपके डेस्कटॉप पर हमेशा ऊपर रहने वाला छोटा प्लेयर</string>
 </resources>

@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Schreibt deine Einstellungen als JSON in den Downloads-Ordner</string>
     <string name="d_your_year_in_music">Dein Musikjahr</string>
     <string name="sources_order_short">Quellen</string>
+    <string name="d_floating_player">Schwebender Player</string>
+    <string name="d_floating_player_subtitle">Ein kleiner, immer im Vordergrund schwebender Player</string>
 </resources>

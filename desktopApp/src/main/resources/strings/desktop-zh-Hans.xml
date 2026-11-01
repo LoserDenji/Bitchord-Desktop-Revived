@@ -89,4 +89,6 @@
     <string name="d_translation_unavailable">无法翻译</string>
     <string name="d_what_the_translate_button_translates_into">歌词翻译按钮翻译成的语言</string>
     <string name="d_off">关闭</string>
+    <string name="d_floating_player">悬浮播放器</string>
+    <string name="d_floating_player_subtitle">桌面上的小型总在最前播放器</string>
 </resources>

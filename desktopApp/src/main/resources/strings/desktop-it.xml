@@ -294,4 +294,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Scrive le preferenze in un file JSON in Download</string>
     <string name="d_your_year_in_music">Il tuo anno musicale</string>
     <string name="sources_order_short">Sorgenti</string>
+    <string name="d_floating_player">Lettore flottante</string>
+    <string name="d_floating_player_subtitle">Un piccolo lettore sempre in primo piano sul desktop</string>
 </resources>

@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">כותב את ההעדפות לקובץ JSON בתיקיית ההורדות</string>
     <string name="d_your_year_in_music">השנה שלך במוזיקה</string>
     <string name="sources_order_short">מקורות</string>
+    <string name="d_floating_player">נגן צף</string>
+    <string name="d_floating_player_subtitle">נגן קטן שתמיד נמצא בחלק העליון מעל שולחן העבודה</string>
 </resources>

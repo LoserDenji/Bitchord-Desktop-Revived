@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">設定をDownloads内のJSONファイルに書き出す</string>
     <string name="d_your_year_in_music">あなたの音楽の1年</string>
     <string name="sources_order_short">ソース</string>
+    <string name="d_floating_player">フローティングプレーヤー</string>
+    <string name="d_floating_player_subtitle">デスクトップの上に常に最前面に表示される小さなプレーヤー</string>
 </resources>

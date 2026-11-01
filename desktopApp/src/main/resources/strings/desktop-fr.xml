@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Enregistre vos préférences dans un fichier JSON dans Téléchargements</string>
     <string name="d_your_year_in_music">Votre année musicale</string>
     <string name="sources_order_short">Sources</string>
+    <string name="d_floating_player">Lecteur flottant</string>
+    <string name="d_floating_player_subtitle">Un petit lecteur toujours au-dessus sur votre bureau</string>
 </resources>

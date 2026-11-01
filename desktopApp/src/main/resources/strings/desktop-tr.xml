@@ -294,4 +294,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Tercihlerinizi İndirilenler\'de bir JSON dosyasına yazar</string>
     <string name="d_your_year_in_music">Müzikte yılınız</string>
     <string name="sources_order_short">Kaynaklar</string>
+    <string name="d_floating_player">Yüzen oynatıcı</string>
+    <string name="d_floating_player_subtitle">Masaüstünüzün üzerinde her zaman en üstte duran küçük bir oynatıcı</string>
 </resources>

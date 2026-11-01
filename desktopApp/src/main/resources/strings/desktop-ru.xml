@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Записывает настройки в JSON-файл в папке «Загрузки»</string>
     <string name="d_your_year_in_music">Ваш год в музыке</string>
     <string name="sources_order_short">Источники</string>
+    <string name="d_floating_player">Плавающий плеер</string>
+    <string name="d_floating_player_subtitle">Небольшой плеер поверх всех окон на вашем рабочем столе</string>
 </resources>

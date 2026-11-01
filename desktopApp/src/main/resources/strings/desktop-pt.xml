@@ -303,4 +303,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Grava suas preferências em um arquivo JSON em Downloads</string>
     <string name="d_your_year_in_music">Seu ano em música</string>
     <string name="sources_order_short">Fontes</string>
+    <string name="d_floating_player">Reprodutor flutuante</string>
+    <string name="d_floating_player_subtitle">Um pequeno reprodutor sempre no topo da sua área de trabalho</string>
 </resources>

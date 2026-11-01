@@ -300,4 +300,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Menulis preferensi Anda ke file JSON di Unduhan</string>
     <string name="d_your_year_in_music">Tahun musik Anda</string>
     <string name="sources_order_short">Sumber</string>
+    <string name="d_floating_player">Pemutar melayang</string>
+    <string name="d_floating_player_subtitle">Pemutar kecil yang selalu di atas desktop Anda</string>
 </resources>

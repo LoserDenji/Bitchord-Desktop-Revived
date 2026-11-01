@@ -301,4 +301,6 @@
     <string name="d_writes_your_preferences_to_a_json_file">Zapisze ustawienia w pliku JSON w folderze Pobrane</string>
     <string name="d_your_year_in_music">Twój rok w muzyce</string>
     <string name="sources_order_short">Źródła</string>
+    <string name="d_floating_player">Odtwarzacz pływający</string>
+    <string name="d_floating_player_subtitle">Mały odtwarzacz zawsze na wierzchu na pulpicie</string>
 </resources>
