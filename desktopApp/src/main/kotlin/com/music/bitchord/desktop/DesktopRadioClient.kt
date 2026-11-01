@@ -58,6 +58,9 @@ internal object DesktopRadioClient {
         .copy(items = shelf.items.filter { item -> station(item) != null && !DesktopRadioVisibility.isHidden(keyOf(item)) })
         .takeIf { it.items.isNotEmpty() }
 
+    /** Filters a list of shelves, keeping only those with playable stations. */
+    fun freeShelves(shelves: List<HomeShelf>): List<HomeShelf> = shelves.mapNotNull { playableStations(it) }
+
     fun resolveStream(station: DesktopRadioStation): Result<DesktopStream> = runCatching {
         val tuneId = appleStations[station.id] ?: error("This station needs the Apple Music player")
         val body = canvasGet("https://opml.radiotime.com/tune.ashx?id=$tuneId&formats=hls")
