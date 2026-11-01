@@ -1,7 +1,5 @@
 package com.music.bitchord.desktop
 
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -22,51 +20,48 @@ class DesktopFloatingPlayerSettingsTest {
     }
 
     @Test
-    fun `default enabled is false`() = runTest {
-        val enabled = DesktopFloatingPlayerSettings.enabled.first()
-        assertFalse(enabled, "enabled should default to false")
+    fun `default enabled is false`() {
+        assertFalse(DesktopFloatingPlayerSettings.enabled.value, "enabled should default to false")
     }
 
     @Test
-    fun `default autoShow is true`() = runTest {
-        val autoShow = DesktopFloatingPlayerSettings.autoShow.first()
-        assertTrue(autoShow, "autoShow should default to true")
+    fun `default autoShow is true`() {
+        assertTrue(DesktopFloatingPlayerSettings.autoShow.value, "autoShow should default to true")
     }
 
     @Test
-    fun `default position is top right`() = runTest {
-        val position = DesktopFloatingPlayerSettings.position.first()
-        assertEquals(FloatingPlayerPosition.TOP_RIGHT, position)
+    fun `default position is top right`() {
+        assertEquals(FloatingPlayerPosition.TOP_RIGHT, DesktopFloatingPlayerSettings.position.value)
     }
 
     @Test
-    fun `setEnabled persists and updates StateFlow`() = runTest {
+    fun `setEnabled persists and updates StateFlow`() {
         // Set to true
         DesktopFloatingPlayerSettings.setEnabled(true)
-        assertTrue(DesktopFloatingPlayerSettings.enabled.first(), "enabled should be true after setting")
+        assertTrue(DesktopFloatingPlayerSettings.enabled.value, "enabled should be true after setting")
 
         // Set to false
         DesktopFloatingPlayerSettings.setEnabled(false)
-        assertFalse(DesktopFloatingPlayerSettings.enabled.first(), "enabled should be false after setting")
+        assertFalse(DesktopFloatingPlayerSettings.enabled.value, "enabled should be false after setting")
     }
 
     @Test
-    fun `setAutoShow persists and updates StateFlow`() = runTest {
+    fun `setAutoShow persists and updates StateFlow`() {
         // Set to false
         DesktopFloatingPlayerSettings.setAutoShow(false)
-        assertFalse(DesktopFloatingPlayerSettings.autoShow.first(), "autoShow should be false after setting")
+        assertFalse(DesktopFloatingPlayerSettings.autoShow.value, "autoShow should be false after setting")
 
         // Set to true
         DesktopFloatingPlayerSettings.setAutoShow(true)
-        assertTrue(DesktopFloatingPlayerSettings.autoShow.first(), "autoShow should be true after setting")
+        assertTrue(DesktopFloatingPlayerSettings.autoShow.value, "autoShow should be true after setting")
     }
 
     @Test
-    fun `setPosition persists and round-trips through enum`() = runTest {
+    fun `setPosition persists and round-trips through enum`() {
         // Test each position
         FloatingPlayerPosition.values().forEach { position ->
             DesktopFloatingPlayerSettings.setPosition(position)
-            assertEquals(position, DesktopFloatingPlayerSettings.position.first())
+            assertEquals(position, DesktopFloatingPlayerSettings.position.value)
         }
     }
 }

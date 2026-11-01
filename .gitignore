@@ -45,3 +45,4 @@ keystore.properties
 AGENTS.md
 /output/
 .superpowers/
+.hermes/
