@@ -2844,7 +2844,6 @@ fun BitChordDesktopApp() {
         tray.update(title = title, isPlaying = transportPlayback.isPlaying)
         DesktopTrayMenu.publish(title = title, playing = transportPlayback.isPlaying)
     }
-
     LaunchedEffect(Unit) {
         // Unpacks the analyser and its models on first run.
         DesktopAnalysisRuntime.ensureStarted()
@@ -6492,6 +6491,13 @@ private fun DesktopSettingsScreen(
                             onCloseToTrayChange,
                         )
                     }
+                    SettingsToggle(
+                        BitChordIcons.Music,
+                        DesktopStrings["d_floating_player", "Floating player"],
+                        DesktopStrings["d_floating_player_subtitle", "A small always-on-top player over your desktop"],
+                        DesktopFloatingPlayerSettings.enabled.collectAsState().value,
+                        { DesktopFloatingPlayerSettings.setEnabled(it) },
+                    )
                     SettingsToggle(
                         BitChordIcons.BarChart,
                         DesktopStrings["show_nerd_stats", "Show stats for nerds"],

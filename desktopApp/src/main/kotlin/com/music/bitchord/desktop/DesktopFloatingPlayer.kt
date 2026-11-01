@@ -15,7 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,8 +45,6 @@ fun FloatingPlayerWindow(
     onToggleLike: (Song) -> Unit,
 ) {
     val enabled = DesktopFloatingPlayerSettings.enabled.collectAsState().value
-    if (!enabled) return
-
     val position = DesktopFloatingPlayerSettings.position.collectAsState().value
     val windowState = rememberWindowState(
         width = 320.dp,
