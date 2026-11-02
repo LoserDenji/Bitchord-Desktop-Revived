@@ -502,7 +502,7 @@ impl LibraryRepository {
                     file_size_bytes: row.get("file_size_bytes")?,
                     bitrate: row.get("bitrate")?,
                     sample_rate: row.get("sample_rate")?,
-                    channels: row.get::<Option<i64>, i16>("channels")?,
+                    channels: row.get::<_, Option<i16>>("channels")?,
                     genres: row.get("genres")?,
                     composers: row.get("composers")?,
                     copyright: row.get("copyright")?,
@@ -659,7 +659,11 @@ impl LibraryRepository {
             .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position")?
             .query_map(params![playlist_id.to_string()], |row| {
                 let s: String = row.get(0)?;
-                Uuid::parse_str(&s).map_err(rusqlite::Error::from)
+                Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionError {
+                    type_name: "Uuid",
+                    sql_type: rusqlite::types::Type::Text,
+                    source: Box::new(e),
+                })
             })?
             .filter_map(Result::ok)
             .collect()
