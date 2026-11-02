@@ -53,7 +53,7 @@ impl FileEvent {
     }
 
     /// Check if the path is an audio file
-    fn _is_audio_path(path: &PathBuf) -> bool {
+    fn is_audio_path(path: &PathBuf) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
             .map(|e| AUDIO_EXTENSIONS.contains(&e))
@@ -180,15 +180,14 @@ pub fn is_audio_path(path: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
 
     #[test]
     fn test_is_audio_path() {
-        assert!(_is_audio_path(Path::new("song.mp3")));
-        assert!(_is_audio_path(Path::new("track.flac")));
-        assert!(_is_audio_path(Path::new("music.ogg")));
-        assert!(!_is_audio_path(Path::new("image.png")));
-        assert!(!_is_audio_path(Path::new("document.pdf")));
+        assert!(is_audio_path(Path::new("song.mp3")));
+        assert!(is_audio_path(Path::new("track.flac")));
+        assert!(is_audio_path(Path::new("music.ogg")));
+        assert!(!is_audio_path(Path::new("image.png")));
+        assert!(!is_audio_path(Path::new("document.pdf")));
     }
 }
