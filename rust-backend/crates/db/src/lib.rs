@@ -1,5 +1,5 @@
 //! Database layer
-use crate::bitchord_core::{Track, Album, Artist, Playlist};
+use bitchord_core::{Track, Album, Artist, Playlist};
 use sqlx::SqlitePool;
 use anyhow::Result;
 

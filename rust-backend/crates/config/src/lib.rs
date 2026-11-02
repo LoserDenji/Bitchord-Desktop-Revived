@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::bitchord_core::UserSettings;
+use bitchord_core::UserSettings;
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

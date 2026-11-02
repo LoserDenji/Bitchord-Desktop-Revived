@@ -5,7 +5,7 @@
 
 pub mod sqlite;
 
-use crate::bitchord_core::{Library, Track, LibraryStats, ScanConfig, TrackMetadata};
+use bitchord_core::{Library, Track, LibraryStats, ScanConfig, TrackMetadata};
 use anyhow::Result;
 use std::path::PathBuf;
 

@@ -2,7 +2,7 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-use crate::bitchord_core::{Library, UserSettings};
+use bitchord_core::{Library, UserSettings};
 
 /// Global application state
 #[derive(Debug)]
