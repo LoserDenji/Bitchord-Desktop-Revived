@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::error::{NetworkError, Result};
 
@@ -52,13 +52,7 @@ impl HttpClient {
     pub fn with_proxy(proxy_url: &str) -> Result<Self> {
         let url: reqwest::Url = proxy_url
             .parse()
-            .map_err(|e| NetworkError::Transport(reqwest::Error::builder().build()))
-            .ok()
-            .or_else(|| {
-                proxy_url
-                    .parse()
-                    .map_err(|_| NetworkError::Transport(reqwest::Error::builder().build()))
-            })?;
+            .map_err(|e| NetworkError::Transport(reqwest::Error::new(reqwest::StatusCode::BAD_REQUEST, e)))?;
         let client = Self::builder(Some(url)).build()?;
         Ok(Self {
             client,
@@ -144,7 +138,7 @@ impl Default for HttpClient {
 
 /// Adapter that lets [`with_retry`](HttpClient::with_retry) use `try_await`
 /// on plain `Future` values without pulling in `futures::TryFuture`.
-trait TryFuture: std::future::Future<Output = Result<T>> + Sized
+trait TryFuture<T>: std::future::Future<Output = Result<T>> + Sized
 where
     T: Sized,
 {
@@ -153,7 +147,7 @@ where
     }
 }
 
-impl<F, T> TryFuture for F
+impl<F, T> TryFuture<T> for F
 where
     F: std::future::Future<Output = Result<T>>,
 {

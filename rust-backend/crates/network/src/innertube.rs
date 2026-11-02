@@ -6,7 +6,6 @@
 //! This module provides a minimal async client that wraps the raw HTTP calls.
 //! Full response parsing and domain model mapping is in [`crate::innertube::models`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -212,6 +211,12 @@ impl InnerTubeClient {
 
     /// Get the player response for a video/track.
     pub async fn player(&self, video_id: &str, signature_timestamp: Option<i64>) -> Result<Value> {
+        let session = self.session.read().await;
+        let client_version = session
+            .scope
+            .client_version
+            .clone()
+            .unwrap_or_else(|| "1.20250101.01.00".to_string());
         self.post_music("player", |body| {
             body.insert("videoId".to_string(), serde_json::Value::String(video_id.to_string()));
             body.insert("contentCheckOk".to_string(), serde_json::Value::Bool(true));
@@ -220,7 +225,7 @@ impl InnerTubeClient {
             let mut ctx = serde_json::json!({
                 "client": {
                     "clientName": "WEB_REMIX",
-                    "clientVersion": self.session_read().await.scope.client_version.clone().unwrap_or_else(|| "1.20250101.01.00".to_string()),
+                    "clientVersion": client_version,
                     "hl": "en",
                     "gl": "US"
                 },
@@ -257,7 +262,7 @@ impl InnerTubeClient {
         .await
     }
 
-    async fn post_music<F>(&self, endpoint: &str, mut body_builder: F) -> Result<Value>
+    async fn post_music<F>(&self, endpoint: &str, body_builder: F) -> Result<Value>
     where
         F: FnOnce(&mut serde_json::Map<String, Value>),
     {
@@ -288,7 +293,7 @@ impl InnerTubeClient {
                 .map(|c| c.insert("visitorData".to_string(), serde_json::Value::String(visitor.clone())));
         }
 
-        if let Some(cookie) = &session.cookie {
+        if let Some(_cookie) = &session.cookie {
             if let Some(data_sync_id) = &session.scope.data_sync_id {
                 context
                     .get_mut("user")
@@ -394,7 +399,9 @@ impl InnerTubeClient {
             });
         }
 
-        response.json::<Value>().await.map_err(NetworkError::Parse)
+        response.json::<Value>()
+            .await
+            .map_err(|e| NetworkError::Parse(serde_json::Error::custom(e.to_string())))
     }
 
     async fn session_read(&self) -> InnerTubeSession {
@@ -408,7 +415,7 @@ fn find_visitor_data(element: &Value) -> Option<String> {
         Value::String(s) => {
             // Visitor data matches the pattern: Cg[A-Za-z0-9_%-]{40,}
             let re = regex::Regex::new(r"^Cg[A-Za-z0-9_%-]{40,}$").ok()?;
-            if re.matches(s).next().is_some() {
+            if re.is_match(s) {
                 Some(s.clone())
             } else {
                 None
