@@ -71,98 +71,98 @@ fn greet(name: &str) -> String {
 
 // Library commands
 #[tauri::command]
-async fn scan_library(state: tauri::State<'_,_ bitchord_state::AppState>, path: String) -> Result<bitchord_commands::LibraryScanResult, String> {
+async fn scan_library(state: tauri::State<'_ bitchord_state::AppState>, path: String) -> Result<bitchord_commands::LibraryScanResult, String> {
     bitchord_commands::library::scan_library(&state, path).await
 }
 
 #[tauri::command]
-fn get_library_stats(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<bitchord_core::LibraryStats, String> {
+fn get_library_stats(state: tauri::State<'_ bitchord_state::AppState>) -> Result<bitchord_core::LibraryStats, String> {
     bitchord_commands::library::get_library_stats(&state)
 }
 
 #[tauri::command]
-fn list_tracks(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<Vec<bitchord_core::Track>, String> {
+fn list_tracks(state: tauri::State<'_ bitchord_state::AppState>) -> Result<Vec<bitchord_core::Track>, String> {
     bitchord_commands::library::list_tracks(&state)
 }
 
 #[tauri::command]
-fn list_albums(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<Vec<bitchord_core::Album>, String> {
+fn list_albums(state: tauri::State<'_ bitchord_state::AppState>) -> Result<Vec<bitchord_core::Album>, String> {
     bitchord_commands::library::list_albums(&state)
 }
 
 #[tauri::command]
-fn list_artists(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<Vec<bitchord_core::Artist>, String> {
+fn list_artists(state: tauri::State<'_ bitchord_state::AppState>) -> Result<Vec<bitchord_core::Artist>, String> {
     bitchord_commands::library::list_artists(&state)
 }
 
 // Sync commands
 #[tauri::command]
-fn create_sync_session(state: tauri::State<'_,_ bitchord_state::AppState>, session_name: String, participant_name: String) -> Result<String, String> {
+fn create_sync_session(state: tauri::State<'_ bitchord_state::AppState>, session_name: String, participant_name: String) -> Result<String, String> {
     bitchord_commands::sync::create_sync_session(&state, session_name, participant_name)
 }
 
 #[tauri::command]
-fn join_sync_session(state: tauri::State<'_,_ bitchord_state::AppState>, session_id: String, participant_name: String) -> Result<(), String> {
+fn join_sync_session(state: tauri::State<'_ bitchord_state::AppState>, session_id: String, participant_name: String) -> Result<(), String> {
     bitchord_commands::sync::join_sync_session(&state, session_id, participant_name)
 }
 
 #[tauri::command]
-fn leave_sync_session(state: tauri::State<'_,_ bitchord_state::AppState>, session_id: String) -> Result<(), String> {
+fn leave_sync_session(state: tauri::State<'_ bitchord_state::AppState>, session_id: String) -> Result<(), String> {
     bitchord_commands::sync::leave_sync_session(&state, session_id)
 }
 
 #[tauri::command]
-fn broadcast_playback_state(state: tauri::State<'_,_ bitchord_state::AppState>, session_id: String, message: bitchord_sync::SyncMessage) -> Result<(), String> {
+fn broadcast_playback_state(state: tauri::State<'_ bitchord_state::AppState>, session_id: String, message: bitchord_sync::SyncMessage) -> Result<(), String> {
     bitchord_commands::sync::broadcast_playback_state(&state, session_id, message)
 }
 
 // Playback commands
 #[tauri::command]
-fn play_track(state: tauri::State<'_,_ bitchord_state::AppState>, track_id: uuid::Uuid) -> Result<(), String> {
+fn play_track(state: tauri::State<'_ bitchord_state::AppState>, track_id: uuid::Uuid) -> Result<(), String> {
     bitchord_commands::playback::play_track(&state, track_id)
 }
 
 #[tauri::command]
-fn pause_playback(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<(), String> {
+fn pause_playback(state: tauri::State<'_ bitchord_state::AppState>) -> Result<(), String> {
     bitchord_commands::playback::pause_playback(&state)
 }
 
 #[tauri::command]
-fn stop_playback(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<(), String> {
+fn stop_playback(state: tauri::State<'_ bitchord_state::AppState>) -> Result<(), String> {
     bitchord_commands::playback::stop_playback(&state)
 }
 
 #[tauri::command]
-fn next_track(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<(), String> {
+fn next_track(state: tauri::State<'_ bitchord_state::AppState>) -> Result<(), String> {
     bitchord_commands::playback::next_track(&state)
 }
 
 #[tauri::command]
-fn previous_track(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<(), String> {
+fn previous_track(state: tauri::State<'_ bitchord_state::AppState>) -> Result<(), String> {
     bitchord_commands::playback::previous_track(&state)
 }
 
 #[tauri::command]
-fn seek_to(state: tauri::State<'_,_ bitchord_state::AppState>, position_ms: u64) -> Result<(), String> {
+fn seek_to(state: tauri::State<'_ bitchord_state::AppState>, position_ms: u64) -> Result<(), String> {
     bitchord_commands::playback::seek_to(&state, position_ms)
 }
 
 #[tauri::command]
-fn set_volume(state: tauri::State<'_,_ bitchord_state::AppState>, volume: f32) -> Result<(), String> {
+fn set_volume(state: tauri::State<'_ bitchord_state::AppState>, volume: f32) -> Result<(), String> {
     bitchord_commands::playback::set_volume(&state, volume)
 }
 
 #[tauri::command]
-fn get_playback_state(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<bitchord_state::PlaybackStateResponse, String> {
+fn get_playback_state(state: tauri::State<'_ bitchord_state::AppState>) -> Result<bitchord_state::PlaybackStateResponse, String> {
     bitchord_commands::playback::get_playback_state(&state)
 }
 
 #[tauri::command]
-fn toggle_shuffle(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<(), String> {
+fn toggle_shuffle(state: tauri::State<'_ bitchord_state::AppState>) -> Result<(), String> {
     bitchord_commands::playback::toggle_shuffle(&state)
 }
 
 #[tauri::command]
-fn toggle_repeat(state: tauri::State<'_,_ bitchord_state::AppState>) -> Result<(), String> {
+fn toggle_repeat(state: tauri::State<'_ bitchord_state::AppState>) -> Result<(), String> {
     bitchord_commands::playback::toggle_repeat(&state)
 }
