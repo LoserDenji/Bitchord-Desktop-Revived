@@ -91,7 +91,7 @@ impl MprisManager {
             .at("/org/mpris/MediaPlayer2", root)
             .await?;
         object_server
-            .at("/org/mpris/MediaPlayer2", player)
+            .at("/org/mpris/MediaPlayer2/Player", player)
             .await?;
 
         Ok(())
