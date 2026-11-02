@@ -9,7 +9,7 @@ pub mod jam_invite {
     /// Parse and normalize a party code from an invite URL.
     pub fn parse(value: Option<&str>) -> Option<String> {
         let text = value?.trim();
-        let prefix = format!("{}/invite/", jam_invite::ORIGIN);
+        let prefix = format!("{}/invite/", ORIGIN);
         if !text.to_lowercase().starts_with(&prefix.to_lowercase()) {
             return None;
         }
@@ -71,7 +71,7 @@ pub struct PartyMember {
 }
 
 /// Where the party is, as of a server timestamp.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PartyPlayback {
     #[serde(default)]
@@ -105,7 +105,7 @@ pub struct PartyPlayback {
 }
 
 /// The party's running order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PartyQueue {
     #[serde(default)]
@@ -230,7 +230,7 @@ impl JamInvite {
     pub fn new(code: impl Into<String>) -> Self {
         let code = code.into().to_uppercase();
         Self {
-            code,
+            code: code.clone(),
             url: Some(jam_invite::url(&code)),
         }
     }

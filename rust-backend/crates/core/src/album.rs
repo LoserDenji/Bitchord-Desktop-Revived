@@ -48,6 +48,7 @@ pub struct SubscriptionState {
 /// The type of album release
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Default)]
 pub enum AlbumReleaseType {
     Album,
     Single,

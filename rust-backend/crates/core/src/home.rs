@@ -1,7 +1,6 @@
 //! Home feed and shelf models — ported from Kotlin `HomeShelf`, `MoodGenre`, `HomePage`, `LibraryPage`.
 use serde::{Deserialize, Serialize};
 
-use crate::album::BrowseItem;
 use crate::song::Song;
 
 /// A card in a home-feed carousel: either a track (videoId) or an album/playlist (browseId).
@@ -42,7 +41,7 @@ pub struct MoodGenre {
 }
 
 /// A home feed page, plus the token for the next one — null once exhausted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeFeed {
     pub shelves: Vec<HomeShelf>,
@@ -86,7 +85,7 @@ impl HomeShelf {
                     shared > 0 && shared >= (REPEAT_SHELF_SHARE * (shelf.items.len().min(other.items.len())) as f64) as usize
                 });
                 if !repeat {
-                    shown.push(shelf);
+                    shown.push(shelf.clone());
                 }
                 !repeat
             })

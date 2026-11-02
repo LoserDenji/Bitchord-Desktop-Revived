@@ -147,7 +147,7 @@ pub fn artwork_at(url: Option<&str>, px: u32) -> Option<String> {
     let u = url?;
     // Simple replacement: find w{digits}-h{digits} and replace with w{px}-h{px}
     let mut result = u.to_string();
-    let chars: Vec<char> = result.chars().collect();
+    let mut chars: Vec<char> = result.chars().collect();
     let mut i = 0;
     
     while i < chars.len() {
