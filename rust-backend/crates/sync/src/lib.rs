@@ -11,10 +11,10 @@ pub struct PartySync {
 
 #[derive(Debug, Clone)]
 pub struct PartySession {
-    session_id: String,
+    _session_id: String,
     participants: Vec<Participant>,
-    current_track: Option<TrackId>,
-    playback_state: PlaybackState,
+    _current_track: Option<TrackId>,
+    _playback_state: PlaybackState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,10 +60,10 @@ impl PartySync {
     pub async fn join_session(&mut self, session_id: &str, participant: Participant) -> Result<()> {
         self.sessions.entry(session_id.to_string()).or_insert_with(|| {
             PartySession {
-                session_id: session_id.to_string(),
+                _session_id: session_id.to_string(),
                 participants: Vec::new(),
-                current_track: None,
-                playback_state: PlaybackState {
+                _current_track: None,
+                _playback_state: PlaybackState {
                     position_ms: 0,
                     is_playing: false,
                     speed: 1.0,

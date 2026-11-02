@@ -11,8 +11,8 @@ use bitchord_core::{ScanConfig, TrackMetadata};
 
 /// Library scanner
 pub struct LibraryScanner {
-    config: ScanConfig,
-    results: Vec<LibraryScanResult>,
+    _config: ScanConfig,
+    _results: Vec<LibraryScanResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -24,8 +24,8 @@ pub struct LibraryScanResult {
 impl LibraryScanner {
     pub fn new(config: ScanConfig) -> Self {
         Self {
-            config,
-            results: Vec::new(),
+            _config: config,
+            _results: Vec::new(),
         }
     }
     

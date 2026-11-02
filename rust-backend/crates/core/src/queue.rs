@@ -99,14 +99,14 @@ impl PlaybackQueue {
         }
     }
 
-    fn advance_position(&mut self) {
+    fn _advance_position(&mut self) {
         self.current_position = match self.current_position {
             Some(pos) if pos + 1 < self.tracks.len() => Some(pos + 1),
             _ => None,
         };
     }
 
-    fn record_history(&mut self, video_id: String) {
+    fn _record_history(&mut self, video_id: String) {
         self.prev_history.push_back(video_id);
         if self.prev_history.len() > self.max_history {
             self.prev_history.pop_front();
