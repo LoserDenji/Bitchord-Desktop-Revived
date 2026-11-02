@@ -1,25 +1,33 @@
 [package]
-name = "app"
+name = "bitchord-tauri"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
-edition = "2024"
-rust-version = "1.90"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+edition = "2021"
+license = "MIT"
+description = "Main BitChord Tauri application"
+authors = ["BitChord Team"]
 
 [lib]
-name = "app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+name = "bitchord_tauri"
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.4" }
 
 [dependencies]
-serde_json = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-log = "0.4"
-tauri = { version = "2.12.5" }
+tauri = { version = "2.12", features = ["custom-protocol", "tray-icon"] }
 tauri-plugin-log = "2"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Workspace dependencies (relative to rust-backend)
+bitchord-core = { path = "../rust-backend/crates/core" }
+bitchord-state = { path = "../rust-backend/crates/state" }
+bitchord-config = { path = "../rust-backend/crates/config" }
+bitchord-audio = { path = "../rust-backend/crates/audio" }
+bitchord-db = { path = "../rust-backend/crates/db" }
+bitchord-library = { path = "../rust-backend/crates/library" }
+bitchord-commands = { path = "../rust-backend/crates/commands" }
+bitchord-network = { path = "../rust-backend/crates/network" }
+bitchord-sync = { path = "../rust-backend/crates/sync" }
+bitchord-platform = { path = "../rust-backend/crates/platform" }
