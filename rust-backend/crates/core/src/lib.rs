@@ -51,3 +51,4 @@ pub use party::jam_invite;
 pub type VideoId = String;
 pub type QueuePosition = usize;
 pub type Seconds = u64;
+pub type TrackId = uuid::Uuid;
