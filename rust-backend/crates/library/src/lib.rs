@@ -33,7 +33,7 @@ impl LibraryScanner {
         Self::new(ScanConfig::default())
     }
     
-    pub async fn scan(&mut self, path: &PathBuf) -> Result<LibraryScanStats> {
+    pub async fn scan(&mut self, _path: &PathBuf) -> Result<LibraryScanStats> {
         // Placeholder: actual implementation would walk directories and read metadata
         Ok(LibraryScanStats {
             tracks_found: 0,
