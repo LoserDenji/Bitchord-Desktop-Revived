@@ -180,6 +180,7 @@ pub fn is_audio_path(path: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::is_audio_path;
     use std::path::Path;
 
     #[test]
