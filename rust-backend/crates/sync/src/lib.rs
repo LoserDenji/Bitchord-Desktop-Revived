@@ -1,10 +1,8 @@
 //! Party synchronization protocol
-use crate::bitchord_core::{TrackId, PlaybackSource};
+use bitchord_core::TrackId;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 
 /// WebSocket-based party sync protocol
 pub struct PartySync {

@@ -18,6 +18,6 @@ uuid.workspace = true
 walkdir.workspace = true
 lofty.workspace = true
 regex.workspace = true
-rusqlite.workspace = true
+sqlx.workspace = true
 bitchord-core = { path = "../core" }
 bitchord-db = { path = "../db" }
