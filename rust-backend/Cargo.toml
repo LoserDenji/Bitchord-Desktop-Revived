@@ -56,7 +56,7 @@ infer = "0.16"
 notify = "6.1"
 
 # Platform
-zbus = { version = "3.7", features = ["tokio", "async-io", "macros"] }
+zbus = { version = "3.7", features = ["tokio", "async-io"] }
 regex = "1.10"
 
 # Directory utilities
