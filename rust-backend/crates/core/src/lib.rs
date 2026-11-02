@@ -33,7 +33,7 @@ pub use formats::{ContainerFormat, AudioFormat};
 pub use home::{HomeFeed, HomeShelf, MoodGenre, MoodGenreSection, ShelfItem, Account, AccountChannel, LibraryPage};
 pub use library::{Library, LibraryStats};
 pub use library_ext::TrackMetadata;
-pub use party::{ApiError, JamInvite, PartyActivity, PartyMember, PartyMembership, PartyPlayback, PartyPreview, PartyPreviewMember, PartyQueue, PartySnapshot, PartyTrack, ListenTogetherQueue};
+pub use party::{ApiError, JamInvite, PartyActivity, PartyMember, PartyMembership, PartyPlayback, PartyPreview, PartyPreviewMember, PartyQueue, PartySnapshot, PartyTrack};
 pub use player::{PlaybackSpeed, RepeatMode, ShuffleMode};
 pub use playback_source::{PlaybackSource, SeekableRange};
 pub use queue::PlaybackQueue;
