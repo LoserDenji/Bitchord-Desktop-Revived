@@ -1,4 +1,5 @@
 name: Release
+
 on:
   push:
     tags: ["v*.*.*"]
@@ -22,231 +23,186 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - uses: gradle/actions/setup-gradle@v4
-
-      - name: Work out the version
-        id: version
-        run: |
-          version="${{ inputs.version }}"
-          [ -n "$version" ] || version="${GITHUB_REF_NAME#v}"
-          echo "value=$version" >> "$GITHUB_OUTPUT"
-          echo "Building $version"
-
-      - name: Write local.properties
-        run: |
-          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
-          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
-
-      - name: Packaging tools
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm fakeroot binutils file
-          curl -sSL -o appimagetool.AppImage \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool.AppImage
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-randr0-dev \
+            libxcb-cursor-dev \
+            libxcb-icccm4-dev \
+            libxcb-ewmh-dev \
+            libxcb-keysyms1-dev \
+            libxcb-image0-dev \
+            libxcb-present-dev \
+            libxcb-sync-dev \
+            libxcb-render-util0-dev \
+            libxcb-xinerama0-dev \
+            libxcb-xrm-dev \
+            libxkbcommon-x11-0 \
+            libxkbcommon0 \
+            libdbus-1-3 \
+            pkg-config \
+            libsoup-3.0-dev
 
-      - run: chmod +x gradlew
-
-      - name: Tests
-        run: ./gradlew :shared:jvmTest :desktopApp:test -Pbitchord.version=${{ steps.version.outputs.value }}
-
-      - name: Build deb, rpm and the app image
-        run: |
-          ./gradlew :desktopApp:packageDeb :desktopApp:packageRpm :desktopApp:createDistributable \
-            -Pbitchord.version=${{ steps.version.outputs.value }}
-
-      - name: The analyser and models are in the jar
-        run: |
-          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/lib/app/desktopApp*.jar)
-          jar tf "$jar" | grep -q 'native/libbitchord_analysis.so'
-          jar tf "$jar" | grep -q 'models/.*\.onnx'
-
-      - name: Build the AppImage
-        run: |
-          desktopApp/packaging/appimage.sh \
-            desktopApp/build/compose/binaries/main/app/BitChord \
-            dist/BitChord-${{ steps.version.outputs.value }}-linux-x86_64.AppImage \
-            "$PWD/appimagetool.AppImage"
-
-      - name: Collect
-        run: |
-          v=${{ steps.version.outputs.value }}
-          mkdir -p dist
-          cp desktopApp/build/compose/binaries/main/deb/*.deb "dist/BitChord-$v-linux-amd64.deb"
-          cp desktopApp/build/compose/binaries/main/rpm/*.rpm "dist/BitChord-$v-linux-x86_64.rpm"
-          ls -lh dist
-
-      - uses: actions/upload-artifact@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          name: linux-artifacts
-          path: dist/*
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust-backend/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: 'v__VERSION__'
+          releaseName: 'BitChord v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-unknown-linux-gnu
 
   windows:
-    name: Windows · installer, msi, portable
+    name: Windows · MSI, NSIS, portable
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
 
-      - uses: gradle/actions/setup-gradle@v4
-
-      - name: WiX Toolset 3
-        shell: pwsh
-        run: |
-          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
-          Invoke-WebRequest -Uri $url -OutFile wix.zip
-          Expand-Archive wix.zip -DestinationPath "$env:RUNNER_TEMP\wix"
-          "$env:RUNNER_TEMP\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: CMake version
-        run: cmake --version
-
-      - name: Work out the version
-        id: version
-        shell: bash
-        run: |
-          version="${{ inputs.version }}"
-          [ -n "$version" ] || version="${GITHUB_REF_NAME#v}"
-          echo "value=$version" >> "$GITHUB_OUTPUT"
-          echo "Building $version"
-
-      - name: Write local.properties
-        shell: bash
-        run: |
-          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
-          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
-
-      - name: Tests
-        run: .\gradlew.bat :shared:jvmTest :desktopApp:test "-Pbitchord.version=${{ steps.version.outputs.value }}"
-
-      - name: Build msi, exe and the app image
-        run: |
-          .\gradlew.bat :desktopApp:packageMsi :desktopApp:packageExe :desktopApp:createDistributable "-Pbitchord.version=${{ steps.version.outputs.value }}"
-
-      - name: The analyser and models are in the jar
-        shell: bash
-        run: |
-          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/app/desktopApp*.jar)
-          jar tf "$jar" | grep -q 'native/bitchord_analysis.dll'
-          jar tf "$jar" | grep -q 'models/.*\.onnx'
-          # WinRT, so only MSVC can build it and only this job ever does.
-          jar tf "$jar" | grep -q 'native/bitchord_smtc.dll'
-
-      - name: Collect
-        shell: pwsh
-        run: |
-          $v = "${{ steps.version.outputs.value }}"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item desktopApp/build/compose/binaries/main/msi/*.msi "dist/BitChord-$v-windows-x64.msi"
-          Copy-Item desktopApp/build/compose/binaries/main/exe/*.exe "dist/BitChord-$v-windows-x64-setup.exe"
-          7z a -tzip -mx=5 "dist/BitChord-$v-windows-x64-portable.zip" `
-            "desktopApp/build/compose/binaries/main/app/BitChord/*" | Out-Null
-          Get-ChildItem dist | Format-Table Name, Length
-
-      - uses: actions/upload-artifact@v4
+      - name: Install Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
         with:
-          name: windows-artifacts
-          path: dist/*
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust-backend/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: 'v__VERSION__'
+          releaseName: 'BitChord v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: false
+          prerelease: false
 
   macos:
-    name: macOS · dmg, pkg, zip (${{ matrix.arch }})
+    name: macOS · DMG, App Bundle
     strategy:
       matrix:
         include:
           - os: macos-15
             arch: arm64
+            target: aarch64-apple-darwin
           - os: macos-15-intel
             arch: x64
+            target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
 
-      - uses: gradle/actions/setup-gradle@v4
-
-      - name: Work out the version
-        id: version
-        run: |
-          version="${{ inputs.version }}"
-          [ -n "$version" ] || version="${GITHUB_REF_NAME#v}"
-          echo "value=$version" >> "$GITHUB_OUTPUT"
-          echo "Building $version"
-
-      - name: Write local.properties
-        run: |
-          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
-          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
-
-      - run: chmod +x gradlew
-
-      - name: Tests
-        run: ./gradlew :shared:jvmTest :desktopApp:test -Pbitchord.version=${{ steps.version.outputs.value }}
-
-      - name: Build DMG, PKG and the app bundle
-        run: |
-          ./gradlew :desktopApp:packageDmg :desktopApp:packagePkg :desktopApp:createDistributable \
-            -Pbitchord.version=${{ steps.version.outputs.value }}
-
-      - name: The analyser and models are in the jar
-        run: |
-          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord.app/Contents/app/desktopApp*.jar)
-          jar tf "$jar" | grep -q 'models/.*\.onnx'
-
-      - name: Collect
-        run: |
-          v="${{ steps.version.outputs.value }}"
-          arch="${{ matrix.arch }}"
-          mkdir -p dist
-          for f in desktopApp/build/compose/binaries/main/dmg/*.dmg; do
-            [ -f "$f" ] && cp "$f" "dist/BitChord-$v-macos-$arch.dmg"
-          done
-          for f in desktopApp/build/compose/binaries/main/pkg/*.pkg; do
-            [ -f "$f" ] && cp "$f" "dist/BitChord-$v-macos-$arch.pkg"
-          done
-          ditto -c -k --keepParent desktopApp/build/compose/binaries/main/app/BitChord.app "dist/BitChord-$v-macos-$arch.zip"
-          ls -lh dist
-
-      - uses: actions/upload-artifact@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          name: macos-${{ matrix.arch }}-artifacts
-          path: dist/*
+          toolchain: stable
+          target: ${{ matrix.target }}
 
-  release:
-    name: Publish
-    needs: [linux, windows, macos]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          pattern: "*-artifacts"
-          merge-multiple: true
-          path: dist
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust-backend/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-      - run: ls -lh dist
+      - name: Install npm dependencies
+        run: npm ci
 
-      - name: Draft the release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: BitChord ${{ github.ref_name }}
-          draft: true
-          files: dist/*
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: 'v__VERSION__'
+          releaseName: 'BitChord v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
