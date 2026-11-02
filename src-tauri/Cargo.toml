@@ -31,3 +31,6 @@ bitchord-commands = { path = "../rust-backend/crates/commands" }
 bitchord-network = { path = "../rust-backend/crates/network" }
 bitchord-sync = { path = "../rust-backend/crates/sync" }
 bitchord-platform = { path = "../rust-backend/crates/platform" }
+
+# Standalone dependencies
+uuid = { version = "1.10", features = ["v4", "serde"] }
