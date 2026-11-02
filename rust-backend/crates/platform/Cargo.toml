@@ -8,7 +8,7 @@ keywords = ["platform", "linux", "mpris", "dbus"]
 
 [dependencies]
 serde.workspace = true
-tracing.workspace = true
+zbus.workspace = true
 anyhow.workspace = true
-zbus = { workspace = true, features = ["serde"] }
+tracing.workspace = true
 bitchord-core = { path = "../core" }

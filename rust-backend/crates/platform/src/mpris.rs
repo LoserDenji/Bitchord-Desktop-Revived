@@ -1,6 +1,4 @@
 //! Linux MPRIS 2.0 D-Bus implementation
-#[cfg(target_os = "linux")]
-use std::sync::Arc;
 
 pub struct MprisManager {
     // We'll add state handling here
@@ -19,7 +17,7 @@ struct MprisPlayer {
 }
 
 #[cfg(target_os = "linux")]
-#[zbus::interface(name = "org.mpris.MediaPlayer2")]
+#[zbus::dbus_interface(name = "org.mpris.MediaPlayer2")]
 impl MprisPlayer {
     #[zbus::property]
     fn identity(&self) -> &str { "BitChord" }
@@ -32,7 +30,7 @@ impl MprisPlayer {
 }
 
 #[cfg(target_os = "linux")]
-#[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+#[zbus::dbus_interface(name = "org.mpris.MediaPlayer2.Player")]
 impl MprisPlayer {
     #[zbus::property]
     fn playback_status(&self) -> &str { "Stopped" }
