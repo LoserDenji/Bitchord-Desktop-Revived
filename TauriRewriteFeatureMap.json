@@ -1,0 +1,598 @@
+{
+  "project": "BitChord Desktop",
+  "target": "Tauri (Rust + Web Technologies)",
+  "analysis_date": "2026-11-02",
+  "kotlin_codebase": {
+    "modules": [
+      {
+        "name": "desktopApp",
+        "path": "desktopApp/src/main/kotlin/com/music/bitchord/desktop",
+        "language": "Kotlin",
+        "framework": "Compose Desktop",
+        "description": "Desktop shell application with platform-specific code"
+      },
+      {
+        "name": "shared",
+        "path": "shared/src",
+        "language": "Kotlin Multiplatform",
+        "framework": "Kotlin Stdlib + Ktor",
+        "description": "Common data models, playback logic, and platform-agnostic services"
+      },
+      {
+        "name": "sharedUi",
+        "path": "sharedUi/src",
+        "language": "Kotlin Multiplatform",
+        "framework": "Compose Multiplatform",
+        "description": "Shared UI components, player screens, theming"
+      }
+    ],
+    "total_kotlin_files": 206
+  },
+  "features": [
+    {
+      "id": "audio-playback",
+      "name": "Audio Playback Engine",
+      "kotlin_files": [
+        "DesktopAudioEngine.kt",
+        "DesktopAudioPipeline.kt",
+        "DesktopAudioSink.kt",
+        "DesktopAudioDecoder.kt",
+        "DesktopAudioDevices.kt",
+        "DesktopMusicSources.kt"
+      ],
+      "technologies_in_kotlin": {
+        "audio_backend": "FFmpeg via JavaCPP",
+        "stream_resolution": "InnerTube XResolver with adaptive streaming",
+        "audio_device": "System audio device enumeration",
+        "decoder": "FFmpeg-native decoder with hardware acceleration support"
+      },
+      "tauri_equivalent": {
+        "audio_backend": "WebAudio API + Rust FFmpeg bindings",
+        "stream_resolution": "Rust YouTube streaming library or direct URL resolution",
+        "audio_device": "Rust rodio or CPAL for device enumeration",
+        "decoder": "FFmpeg via ffmpeg-next or gstreamer-rs"
+      },
+      "complexity": "high",
+      "notes": [
+        "Supports multiple audio formats (MP3, AAC, Opus, FLAC, M4A)",
+        "Adaptive bitrate streaming",
+        "Seek and scrub functionality with tolerance handling",
+        "Volume tweening for hardware key changes"
+      ]
+    },
+    {
+      "id": "player-ui",
+      "name": "Music Player UI",
+      "kotlin_files": [
+        "NowPlayingScreen.kt",
+        "PlayerControls.kt",
+        "PlayerHost.kt",
+        "PlayerState.kt",
+        "PlayerQueue.kt",
+        "PlayerDock.kt",
+        "PlayerDrawer.kt",
+        "PlayerSidePanels.kt",
+        "LandscapePlayer.kt",
+        "PlayerTurntable.kt",
+        "PlayerLyrics.kt",
+        "LyricFocus.kt",
+        "MeshGradient.kt",
+        "ArtworkMeshBackdrop.kt"
+      ],
+      "technologies_in_kotlin": {
+        "ui_framework": "Jetpack Compose Multiplatform",
+        "animations": "Compose Animation API + custom tweening",
+        "canvas": "Skia via Skiko for animated canvases",
+        "artwork_caching": "Coil3 for image loading",
+        "palette_extraction": "Custom palette quantizer",
+        "haptics": "Platform-specific haptics"
+      },
+      "tauri_equivalent": {
+        "ui_framework": "React/Vue/Svelte with TailwindCSS",
+        "animations": "Framer Motion / GSAP / Svelte transitions",
+        "canvas": "HTML5 Canvas + WebGL for animated backgrounds",
+        "artwork_caching": "Browser cache + service workers",
+        "palette_extraction": "Rust image processing (image crate)",
+        "haptics": "Tauri API for haptic feedback (limited)"
+      },
+      "complexity": "high",
+      "notes": [
+        "Apple Music-inspired design with dynamic gradients",
+        "Animated canvas clips support",
+        "Lyrics display with real-time highlighting",
+        "Draggable seek bar with position scrubbing"
+      ]
+    },
+    {
+      "id": "main-navigation",
+      "name": "Main Navigation & Layout",
+      "kotlin_files": [
+        "AppUi.kt",
+        "PlayerPlatformUi.kt"
+      ],
+      "technologies_in_kotlin": {
+        "navigation": "Compose Navigation (Android-style)",
+        "layout": "Box, Column, Row with Modifier chains",
+        "window_management": "Compose Window API"
+      },
+      "tauri_equivalent": {
+        "navigation": "React Router / Vue Router / Svelte routing",
+        "layout": "CSS Grid/Flexbox",
+        "window_management": "Tauri Window API"
+      },
+      "complexity": "medium",
+      "notes": [
+        "Screens: Home, Explore, Library, Search, Recently Played",
+        "Swipe-to-play-next gesture",
+        "Library view types: list/grid",
+        "Pinned playlists in Library"
+      ]
+    },
+    {
+      "id": "media-library",
+      "name": "Media Library Management",
+      "kotlin_files": [
+        "LibraryPage.kt",
+        "PlaylistOrder.kt",
+        "LibrarySort.kt",
+        "SongMenu.kt",
+        "UserPlaylist.kt"
+      ],
+      "technologies_in_kotlin": {
+        "data_storage": "Room/SQLite via SQLDelight",
+        "playlist_management": "In-memory + file-based persistence",
+        "search": "InnerTube API search"
+      },
+      "tauri_equivalent": {
+        "data_storage": "SQLite via Diesel/sea-orm",
+        "playlist_management": "IndexedDB / Local storage",
+        "search": "InnerTube API search via Rust backend"
+      },
+      "complexity": "high",
+      "notes": [
+        "Full-library browsing with albums, artists, playlists",
+        "Offline downloads support",
+        "Playlist ordering and reordering",
+        "Library sorting options"
+      ]
+    },
+    {
+      "id": "search",
+      "name": "Search Functionality",
+      "kotlin_files": [
+        "SongText.kt",
+        "SearchField.kt",
+        "Songs.kt"
+      ],
+      "technologies_in_kotlin": {
+        "search_backend": "YouTube Music InnerTube API",
+        "debounce": "Coroutines with delay",
+        "filters": "SearchFilter model"
+      },
+      "tauri_equivalent": {
+        "search_backend": "YouTube Music InnerTube API via Ktor (Rust backend proxy)",
+        "debounce": "Lodash.debounce / custom React hook",
+        "filters": "Search filters UI with API params"
+      },
+      "complexity": "medium",
+      "notes": [
+        "Debounced search input",
+        "Search filters (songs, albums, artists)",
+        "Recent search history"
+      ]
+    },
+    {
+      "id": "downloads",
+      "name": "Download Manager",
+      "kotlin_files": [
+        "DesktopDownloadManager.kt",
+        "DesktopManifestDownload.kt",
+        "StreamFormat.kt"
+      ],
+      "technologies_in_kotlin": {
+        "download_manager": "Kotlin coroutines with progress tracking",
+        "storage": "User's Music/BitChord directory",
+        "formats": "MP3, M4A, FLAC (manifest-based)",
+        "resume_support": "HTTP Range requests",
+        "checksum": "File integrity verification"
+      },
+      "tauri_equivalent": {
+        "download_manager": "Tokio async with progress channels",
+        "storage": "OS-specific music directories via dirs crate",
+        "formats": "FFmpeg via Rust bindings",
+        "resume_support": "reqwest with Range headers",
+        "checksum": "SHA256 verification"
+      },
+      "complexity": "high",
+      "notes": [
+        "Resume interrupted downloads",
+        "Progress tracking with callbacks",
+        "Manifest-based FLAC/M4A conversion",
+        "User-configurable quality (LOSSLESS default)"
+      ]
+    },
+    {
+      "id": "lyrics",
+      "name": "Lyrics System",
+      "kotlin_files": [
+        "LyricsProviderState.kt",
+        "LyricsRepository.kt",
+        "LyricsSource.kt",
+        "LrcWriter.kt",
+        "TtmlLyrics.kt",
+        "LyricSections.kt",
+        "LyricAlignments.kt"
+      ],
+      "technologies_in_kotlin": {
+        "providers": "Multiple: Genius, Musixmatch, KuGou, BiniLyrics, LrcLib, PaxSenix",
+        "formats": "LRC, TTML, Enhanced LRC",
+        "alignment": "Character-by-character timing",
+        "translation": "Multi-language support"
+      },
+      "tauri_equivalent": {
+        "providers": "Same providers via Rust HTTP clients",
+        "formats": "LRC parser in Rust",
+        "alignment": "Timing calculation in Rust",
+        "translation": "Multi-language via i18n"
+      },
+      "complexity": "high",
+      "notes": [
+        "8+ lyrics providers",
+        "Automatic provider fallback",
+        "Character-level synchronization",
+        "Translation support",
+        "Editable lyrics"
+      ]
+    },
+    {
+      "id": "discord-rpc",
+      "name": "Discord Rich Presence",
+      "kotlin_files": [
+        "DesktopDiscordIpc.kt",
+        "Presence.kt"
+      ],
+      "technologies_in_kotlin": {
+        "ipc": "Discord IPC socket (Windows: named pipe, Unix: Unix domain socket)",
+        "presence_data": "Song metadata, playback status, album art",
+        "activity_update": "Custom activity with timestamps"
+      },
+      "tauri_equivalent": {
+        "ipc": "Rust discord-rpc crate or tauri-plugin-discord-rpc",
+        "presence_data": "Same structure via IPC",
+        "activity_update": "tRPC or custom plugin"
+      },
+      "complexity": "medium",
+      "notes": [
+        "Cross-platform Discord IPC handling",
+        "Song title, artist, album, album art",
+        "Play/pause timestamp tracking",
+        "Listen Together party presence"
+      ]
+    },
+    {
+      "id": "tray-integration",
+      "name": "System Tray & Notifications",
+      "kotlin_files": [
+        "DesktopTrayMenu.kt",
+        "DesktopStatusNotifier.kt",
+        "DBusMenu.kt",
+        "DBusMenu*.kt"
+      ],
+      "technologies_in_kotlin": {
+        "tray": "Linux MPRIS/D-Bus menu, Windows/AWT tray, macOS dock",
+        "notifications": "System notification API",
+        "menu_protocol": "D-Bus Menu (StatusNotifierItem)"
+      },
+      "tauri_equivalent": {
+        "tray": "Tauri Tray API (cross-platform)",
+        "notifications": "Tauri Notification API",
+        "menu_protocol": "Tauri plugin or manual implementation"
+      },
+      "complexity": "high",
+      "notes": [
+        "Linux: Full D-Bus MPRIS 2.0 implementation",
+        "Windows: System tray with context menu",
+        "macOS: Dock icon with dock menu",
+        "MPRIS: Play, Pause, Next, Previous, Show Next Prev, etc."
+      ]
+    },
+    {
+      "id": "system-integrations",
+      "name": "Platform-Specific Integrations",
+      "kotlin_files": [
+        "DesktopMacFrame.kt",
+        "DesktopWindowsFrame.kt",
+        "DesktopWindowsSmtc.kt",
+        "DesktopMpris.kt"
+      ],
+      "technologies_in_kotlin": {
+        "macos": "JNA for NSVisualEffectView, vibrancy, Mica window frame, Dock activation",
+        "windows": "WinRT for system media transport controls, DWM Mica/Acrylic",
+        "linux": "MPRIS via D-Bus, no native window frame"
+      },
+      "tauri_equivalent": {
+        "macos": "Tauri macOS-specific APIs or custom Rust with AppKit bindings",
+        "windows": "Win32/Tauri window decorations",
+        "linux": "MPRIS via dbus-rs or tauri-plugin"
+      },
+      "complexity": "high",
+      "notes": [
+        "macOS: Native window chrome with ProMotion support",
+        "Windows: Mica/Acrylic window materials",
+        "Linux: MPRIS 1.0-2.0 support, system menu integration"
+      ]
+    },
+    {
+      "id": "background-tasks",
+      "name": "Background Processing",
+      "kotlin_files": [
+        "DesktopBeatModelTest.kt",
+        "TrackAnalysis.kt",
+        "BeatTracker.kt",
+        "AnalysisStore.kt"
+      ],
+      "technologies_in_kotlin": {
+        "audio_analysis": "Native library for beat tracking",
+        "background_jobs": "Kotlin coroutines with dispatchers",
+        "caching": "Analysis store with monotonic clock"
+      },
+      "tauri_equivalent": {
+        "audio_analysis": "Rust audio analysis crate (e.g., rubato, hound)",
+        "background_jobs": "Tokio async tasks",
+        "caching": "Sled or RocksDB with TTL"
+      },
+      "complexity": "high",
+      "notes": [
+        "Real-time beat detection for visualizers",
+        "Background track analysis",
+        "Analysis caching across sessions"
+      ]
+    },
+    {
+      "id": "networking",
+      "name": "Networking Layer",
+      "kotlin_files": [
+        "Http.kt",
+        "Innertube.kt",
+        "InnertubeParser.kt",
+        "StreamResolver.kt",
+        "PlayerClient.kt",
+        "PoTokenGenerator.kt"
+      ],
+      "technologies_in_kotlin": {
+        "http_client": "Ktor with OkHttp engine",
+        "auth": "YouTube Music authentication via cookies/SAPISID",
+        "streaming": "Adaptive streaming with format selection",
+        "po_token": "Browser bot detection token generation"
+      },
+      "tauri_equivalent": {
+        "http_client": "Reqwest (sync) or Surf (async)",
+        "auth": "Cookie-based authentication",
+        "streaming": "Tokio streaming with format selection",
+        "po_token": "Puppeteer/playwright for token generation (or headless chrome)"
+      },
+      "complexity": "very-high",
+      "notes": [
+        "Headless browser automation for PoToken",
+        "Adaptive streaming (DASH)",
+        "Multi-format support detection",
+        "Retry logic with backoff"
+      ]
+    },
+    {
+      "id": "settings",
+      "name": "User Settings",
+      "kotlin_files": [
+        "PlayerEnums.kt",
+        "LibraryEnums.kt",
+        "AutomixPerformanceMode.kt",
+        "TrackAnalysisState.kt"
+      ],
+      "technologies_in_kotlin": {
+        "storage": "Properties file via DesktopPersistence",
+        "settings_ui": "Settings screen with toggles",
+        "categories": "Appearance, Playback, Library, Accessibility"
+      },
+      "tauri_equivalent": {
+        "storage": "Tauri Store or local JSON files",
+        "settings_ui": "Settings modal with controlled components",
+        "categories": "Same categories via Tauri config"
+      },
+      "complexity": "medium",
+      "notes": [
+        "Persistent settings across sessions",
+        "Reduce animation toggle",
+        "Canvas over cellular data option",
+        "Home recents view type preference"
+      ]
+    },
+    {
+      "id": "playback-position",
+      "name": "Playback Position Tracking",
+      "kotlin_files": [
+        "PlaybackPosition.kt"
+      ],
+      "technologies_in_kotlin": {
+        "position_tracking": "Audio pipeline position with tolerance",
+        "seek_position": "Scrub-based position override",
+        "sync": "Position synchronization with system player"
+      },
+      "tauri_equivalent": {
+        "position_tracking": "WebAudio currentTime",
+        "seek_position": "Seekable buffer position",
+        "sync": "MediaElement timeupdate events"
+      },
+      "complexity": "low",
+      "notes": [
+        "Seek tolerance handling",
+        "Position settling timeout",
+        "Scrub release handling"
+      ]
+    },
+    {
+      "id": "queue",
+      "name": "Playback Queue",
+      "kotlin_files": [
+        "QueueBuilder.kt",
+        "QueueSections.kt",
+        "QueueTimeline.kt"
+      ],
+      "technologies_in_kotlin": {
+        "queue_model": "Linked list of songs",
+        "sections": "Home, Up Next, History",
+        "building": "Smart queue building with automix"
+      },
+      "tauri_equivalent": {
+        "queue_model": "Redux/Vuex store or Jotai",
+        "sections": "Same logical sections",
+        "building": "Same smart building algorithm in Rust"
+      },
+      "complexity": "medium",
+      "notes": [
+        "Up Next queue with drag-and-drop",
+        "Recently played history",
+        "Smart automix queue building",
+        "Queue saving/loading"
+      ]
+    },
+    {
+      "id": "spotify-import",
+      "name": "Spotify Library Import",
+      "kotlin_files": [
+        "SpotifyImporter.kt",
+        "SpotifyLibrary.kt"
+      ],
+      "technologies_in_kotlin": {
+        "import_source": "Spotify Web API",
+        "data_mapping": "Video ID matching",
+        "batch_processing": "Paginated playlist imports"
+      },
+      "tauri_equivalent": {
+        "import_source": "Spotify Web API via custom app",
+        "data_mapping": "Same video ID matching",
+        "batch_processing": "Rust async with rate limiting"
+      },
+      "complexity": "medium",
+      "notes": [
+        "Full library import (playlists, liked songs)",
+        "Video ID to Spotify track mapping",
+        "Batch import with progress tracking"
+      ]
+    },
+    {
+      "id": "listen-together",
+      "name": "Listen Together (Party Mode)",
+      "kotlin_files": [
+        "JamInvite.kt",
+        "PartyModels.kt",
+        "PartyQueueReading.kt",
+        "ServerClock.kt"
+      ],
+      "technologies_in_kotlin": {
+        "server_type": "WebSocket server",
+        "sync": "Server-issued timestamps",
+        "invites": "JWT token-based invitations",
+        "queue_sharing": "Shared queue with sync"
+      },
+      "tauri_equivalent": {
+        "server_type": "Tokio WebSocket server",
+        "sync": "Server timestamps via D-Bus/WebSocket",
+        "invites": "JWT tokens signed by server",
+        "queue_sharing": "Same sync model"
+      },
+      "complexity": "high",
+      "notes": [
+        "Synchronized playback across users",
+        "Invite links with expiration",
+        "Server clock synchronization",
+        "Party queue management"
+      ]
+    }
+  ],
+  "platform_specific": [
+    {
+      "platform": "macOS",
+      "files": [
+        "DesktopMacFrame.kt",
+        "DesktopMpris.kt (optional)",
+        "TrayIcon.jvm.kt"
+      ],
+      "unique_features": [
+        "NSVisualEffectView vibrancy backdrop",
+        "ProMotion drag support",
+        "Dock activation"
+      ],
+      "tauri_notes": "Use @tauri-apps/api/system API for vibrancy; custom Rust for advanced frame handling"
+    },
+    {
+      "platform": "Windows",
+      "files": [
+        "DesktopWindowsFrame.kt",
+        "DesktopWindowsSmtc.kt",
+        "TrayIcon.jvm.kt"
+      ],
+      "unique_features": [
+        "DWM Mica/Acrylic materials",
+        "System Media Transport Controls (SMTC)",
+        "Taskbar progress"
+      ],
+      "tauri_notes": "Tauri 2.0+ has mica support; SMTC via WinRT Rust bindings"
+    },
+    {
+      "platform": "Linux",
+      "files": [
+        "DesktopMpris.kt",
+        "DBusMenu.kt",
+        "TrayIcon.jvm.kt"
+      ],
+      "unique_features": [
+        "Full MPRIS 2.0 implementation",
+        "D-Bus menu protocol",
+        "StatusNotifierItem support"
+      ],
+      "tauri_notes": "dbus-rs crate or tauri-plugin for MPRIS implementation"
+    }
+  ],
+  "dependencies": {
+    "kotlin": "1.9.20",
+    "compose_multiplatform": "1.5.0 / 1.6.0",
+    "ktor": "2.3.x",
+    "ffmpeg": "7.1.1 via JavaCPP",
+    "ktor_client_okhttp": "for network requests",
+    "coil": "3.0.x for image loading",
+    "kotlinx_serialization": "for JSON parsing",
+    "kotlinx_coroutines": "for async"
+  },
+  "tauri_target_stack": {
+    "frontend": "React 18 + TypeScript or Vue 3 + TypeScript or Svelte 5 + TypeScript",
+    "backend": "Rust 1.75+",
+    "tauri_version": "2.0+",
+    "state_management": "Zustand or Redux Toolkit (React) / Pinia (Vue) / Svelte stores",
+    "styling": "TailwindCSS",
+    "build_tools": "Vite, Tauri CLI, Rust cargo"
+  },
+  "mapping": [
+    {
+      "kotlin_module": "desktopApp",
+      "tauri_equivalent": "src-tauri/main.rs (Rust backend) + tauri.conf.json (config)",
+      "notes": "Main entry point, window management, platform integration"
+    },
+    {
+      "kotlin_module": "shared",
+      "tauri_equivalent": "Rust core library crate (e.g., src-tauri/src/library.rs)",
+      "notes": "Domain models, data fetching, business logic"
+    },
+    {
+      "kotlin_module": "sharedUi",
+      "tauri_equivalent": "src/ directory (React/Vue/Svelte components)",
+      "notes": "UI components, screens, theming"
+    }
+  ],
+  "migration_pitfalls": [
+    "FFmpeg license compatibility (LGPL for Tauri)",
+    "PoToken generation requires headless browser automation",
+    "Native macOS window frame features need Rust FFI",
+    "Linux MPRIS requires D-Bus Rust crate knowledge",
+    "Windows SMTC requires WinRT bindings"
+  ]
+}

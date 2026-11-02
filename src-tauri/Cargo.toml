@@ -1,0 +1,29 @@
+[package]
+name = "bitchord_tauri"
+version = "0.1.0"
+edition = "2021"
+
+[tauri]
+bundle = { active = true, targets = ["all"] }
+
+[dependencies]
+tauri = { version = "2.0", features = ["api-all"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "json", "registry"] }
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Internal crates from rust-backend workspace
+bitchord-app = { path = "../rust-backend/crates/app" }
+bitchord-state = { path = "../rust-backend/crates/state" }
+bitchord-config = { path = "../rust-backend/crates/config" }
+bitchord-commands = { path = "../rust-backend/crates/commands" }
+bitchord-core = { path = "../rust-backend/crates/core" }
+bitchord-library = { path = "../rust-backend/crates/library" }
+bitchord-audio = { path = "../rust-backend/crates/audio" }
+bitchord-db = { path = "../rust-backend/crates/db" }
+bitchord-network = { path = "../rust-backend/crates/network" }
+bitchord-sync = { path = "../rust-backend/crates/sync" }
+bitchord-platform = { path = "../rust-backend/crates/platform" }
+
+[dev-dependencies]

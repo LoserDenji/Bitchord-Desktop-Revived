@@ -1,0 +1,24 @@
+[package]
+name = "bitchord-commands"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tauri commands for BitChord frontend communication"
+keywords = ["tauri", "commands", "api", "music"]
+
+[dependencies]
+tauri.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+bitchord-core = { path = "../core" }
+bitchord-state = { path = "../state" }
+bitchord-config = { path = "../config" }
+bitchord-audio = { path = "../audio" }
+bitchord-library = { path = "../library" }
+bitchord-db = { path = "../db" }
+bitchord-sync = { path = "../sync" }

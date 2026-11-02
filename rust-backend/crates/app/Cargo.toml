@@ -1,0 +1,44 @@
+[package]
+name = "bitchord-app"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Main Tauri application for BitChord desktop music player"
+keywords = ["tauri", "music", "player", "desktop"]
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tauri.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+# Internal crates
+bitchord-core = { path = "../core" }
+bitchord-state = { path = "../state" }
+bitchord-config = { path = "../config" }
+bitchord-audio = { path = "../audio" }
+bitchord-db = { path = "../db" }
+bitchord-library = { path = "../library" }
+bitchord-commands = { path = "../commands" }
+bitchord-network = { path = "../network" }
+bitchord-sync = { path = "../sync" }
+bitchord-platform = { path = "../platform" }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+logging = ["tracing-subscriber"]
+desktop = []
+
+[dev-dependencies]

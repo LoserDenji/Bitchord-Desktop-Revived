@@ -1,0 +1,21 @@
+[package]
+name = "bitchord-network"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Networking layer for BitChord Tauri backend"
+keywords = ["network", "http", "streaming", "music"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tower.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+regex = "1.10"
+bitchord-core = { path = "../core" }

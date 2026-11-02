@@ -1,0 +1,16 @@
+[package]
+name = "bitchord-state"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Global application state management for BitChord Tauri backend"
+keywords = ["state", "tauri", "music"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true
+bitchord-core = { path = "../core" }

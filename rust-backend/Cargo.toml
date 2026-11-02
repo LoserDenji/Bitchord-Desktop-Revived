@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/error",
+    "crates/state",
+    "crates/config",
+    "crates/audio",
+    "crates/db",
+    "crates/library",
+    "crates/commands",
+    "crates/network",
+    "crates/sync",
+    "crates/platform",
+    "crates/app",
+]
+exclude = ["src-tauri"]
+
+# Shared workspace dependencies (via patch or re-export)
+[workspace.dependencies]
+tauri = { version = "2.0", features = ["custom-protocol", "tray-icon", "tracing"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "json", "registry"] }
+thiserror = "1.0"
+anyhow = "1.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde", "std"] }
+tower = "0.4"
+async-trait = "0.1"
+lazy_static = "1.4"
+once_cell = "1.19"
+futures = "0.3"
+parking_lot = { version = "0.12", features = ["serde"] }
+indexmap = { version = "2.7", features = ["serde"] }
+
+# Optional crates - used in feature-specific dependencies of member crates
+lofty = { version = "0.4", default-features = false }
+rodio = { version = "0.17", default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+walkdir = "2.5"

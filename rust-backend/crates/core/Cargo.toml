@@ -1,0 +1,21 @@
+[package]
+name = "bitchord-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Core domain models and traits for BitChord Tauri backend"
+keywords = ["music", "player", "domain-driven-design"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio-test = "0.4"

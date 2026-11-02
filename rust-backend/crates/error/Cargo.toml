@@ -1,0 +1,14 @@
+[package]
+name = "bitchord-error"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Error types and result alias for BitChord"
+keywords = ["error", "result", "music"]
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
