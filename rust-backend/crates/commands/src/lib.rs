@@ -7,9 +7,9 @@ use tracing::info;
 use std::path::PathBuf;
 
 use bitchord_state::{AppState, PlaybackStateResponse};
-use bitchord_core::{Library, LibraryStats, Track, Album, Artist};
+use bitchord_core::{LibraryStats, Track, Album, Artist};
 use bitchord_library::LibraryScanner;
-use bitchord_sync::{PartySync, Participant, SyncMessage};
+use bitchord_sync::SyncMessage;
 
 /// Types for responses
 #[derive(Debug, Clone, serde::Serialize)]
@@ -23,7 +23,7 @@ pub mod library {
     use super::*;
 
     pub async fn scan_library(
-        state: &AppState,
+            _state: &AppState,
         path: String,
     ) -> Result<LibraryScanResult, String> {
         let scan_path = PathBuf::from(path);

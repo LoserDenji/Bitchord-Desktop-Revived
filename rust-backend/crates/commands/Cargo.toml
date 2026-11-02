@@ -17,3 +17,4 @@ bitchord-state = { path = "../state" }
 bitchord-db = { path = "../db" }
 bitchord-library = { path = "../library" }
 bitchord-sync = { path = "../sync" }
+uuid.workspace = true
