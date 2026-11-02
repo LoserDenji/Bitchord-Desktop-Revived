@@ -3,18 +3,15 @@ name = "bitchord-commands"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Tauri command handlers for BitChord backend"
-keywords = ["tauri", "commands", "api", "music"]
-
-[lib]
-crate-type = ["cdylib", "rlib"]
+description = "Command handlers for BitChord backend"
+keywords = ["commands", "api", "music"]
 
 [dependencies]
-tauri.workspace = true
 serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+futures.workspace = true
 bitchord-core = { path = "../core" }
 bitchord-state = { path = "../state" }
 bitchord-db = { path = "../db" }

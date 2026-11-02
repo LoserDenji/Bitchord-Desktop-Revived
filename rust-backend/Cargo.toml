@@ -12,13 +12,11 @@ members = [
     "crates/network",
     "crates/sync",
     "crates/platform",
-    "crates/app",
 ]
 exclude = ["src-tauri"]
 
 # Shared workspace dependencies (via patch or re-export)
 [workspace.dependencies]
-tauri = { version = "2.0", features = ["custom-protocol", "tray-icon", "tracing"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }

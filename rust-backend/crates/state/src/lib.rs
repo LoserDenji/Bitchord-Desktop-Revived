@@ -41,6 +41,9 @@ pub struct PlaybackState {
     pub volume: f32,
 }
 
+/// Alias for backward compatibility
+pub type PlaybackStateResponse = PlaybackState;
+
 impl Default for AppState {
     fn default() -> Self {
         Self {

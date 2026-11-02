@@ -1,28 +1,29 @@
-//! Tauri command handlers
+//! Command handlers for BitChord backend
 //!
-//! This module provides command handlers for the BitChord frontend to backend communication.
-//! Commands are organized into logical groups: Library, Sync, and Playback.
+//! This module provides the core logic for commands.
+//! Tauri command wrappers are defined in src-tauri/src/lib.rs.
 
-use tauri::State;
 use tracing::info;
 use std::path::PathBuf;
 
-use bitchord_state::AppState;
+use bitchord_state::{AppState, PlaybackStateResponse};
 use bitchord_core::{Library, LibraryStats, Track, Album, Artist};
 use bitchord_library::LibraryScanner;
 use bitchord_sync::{PartySync, Participant, SyncMessage};
 
-/// Module containing all command handler groups
-pub mod handlers {
+/// Types for responses
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LibraryScanResult {
+    pub tracks_found: usize,
+    pub bytes_scanned: u64,
+}
+
+/// Library commands implementation
+pub mod library {
     use super::*;
 
-    // ========================================================================
-    // Library Commands
-    // ========================================================================
-
-    #[tauri::command]
     pub async fn scan_library(
-        state: State<'_, AppState>,
+        state: &AppState,
         path: String,
     ) -> Result<LibraryScanResult, String> {
         let scan_path = PathBuf::from(path);
@@ -36,9 +37,6 @@ pub mod handlers {
         let stats = futures::executor::block_on(scanner.scan(&scan_path))
             .map_err(|e| e.to_string())?;
 
-        let mut library_guard = state.library.write();
-        *library_guard = Some(Library::new(scan_path, "Default".into()));
-        
         info!("Library scan complete: {} tracks found", stats.tracks_found);
         
         Ok(LibraryScanResult {
@@ -47,8 +45,7 @@ pub mod handlers {
         })
     }
 
-    #[tauri::command]
-    pub async fn get_library_stats(state: State<'_, AppState>) -> Result<LibraryStats, String> {
+    pub fn get_library_stats(state: &AppState) -> Result<LibraryStats, String> {
         let library = state.library.read();
         if let Some(lib) = library.as_ref() {
             Ok(lib.stats.clone())
@@ -57,28 +54,25 @@ pub mod handlers {
         }
     }
 
-    #[tauri::command]
-    pub async fn list_tracks(state: State<'_, AppState>) -> Result<Vec<Track>, String> {
+    pub fn list_tracks(_state: &AppState) -> Result<Vec<Track>, String> {
         Ok(Vec::new())
     }
 
-    #[tauri::command]
-    pub async fn list_albums(state: State<'_, AppState>) -> Result<Vec<Album>, String> {
+    pub fn list_albums(_state: &AppState) -> Result<Vec<Album>, String> {
         Ok(Vec::new())
     }
 
-    #[tauri::command]
-    pub async fn list_artists(state: State<'_, AppState>) -> Result<Vec<Artist>, String> {
+    pub fn list_artists(_state: &AppState) -> Result<Vec<Artist>, String> {
         Ok(Vec::new())
     }
+}
 
-    // ========================================================================
-    // Sync Commands (Party Mode)
-    // ========================================================================
+/// Sync commands implementation (Party Mode)
+pub mod sync {
+    use super::*;
 
-    #[tauri::command]
-    pub async fn create_sync_session(
-        _state: State<'_, AppState>,
+    pub fn create_sync_session(
+        _state: &AppState,
         session_name: String,
         participant_name: String,
     ) -> Result<String, String> {
@@ -86,9 +80,8 @@ pub mod handlers {
         Ok(uuid::Uuid::new_v4().to_string())
     }
 
-    #[tauri::command]
-    pub async fn join_sync_session(
-        _state: State<'_, AppState>,
+    pub fn join_sync_session(
+        _state: &AppState,
         session_id: String,
         participant_name: String,
     ) -> Result<(), String> {
@@ -96,33 +89,28 @@ pub mod handlers {
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn leave_sync_session(
-        _state: State<'_, AppState>,
+    pub fn leave_sync_session(
+        _state: &AppState,
         session_id: String,
     ) -> Result<(), String> {
         info!("Leaving sync session: {}", session_id);
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn broadcast_playback_state(
-        _state: State<'_, AppState>,
+    pub fn broadcast_playback_state(
+        _state: &AppState,
         _session_id: String,
         _message: SyncMessage,
     ) -> Result<(), String> {
         Ok(())
     }
+}
 
-    // ========================================================================
-    // Playback Commands
-    // ========================================================================
+/// Playback commands implementation
+pub mod playback {
+    use super::*;
 
-    #[tauri::command]
-    pub async fn play_track(
-        state: State<'_, AppState>,
-        track_id: uuid::Uuid,
-    ) -> Result<(), String> {
+    pub fn play_track(state: &AppState, track_id: uuid::Uuid) -> Result<(), String> {
         info!("Playing track: {}", track_id);
         let mut playback_guard = state.playback.write();
         playback_guard.current_track = Some(track_id);
@@ -130,15 +118,13 @@ pub mod handlers {
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn pause_playback(state: State<'_, AppState>) -> Result<(), String> {
+    pub fn pause_playback(state: &AppState) -> Result<(), String> {
         info!("Pausing playback");
         *state.is_playing.write() = false;
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn stop_playback(state: State<'_, AppState>) -> Result<(), String> {
+    pub fn stop_playback(state: &AppState) -> Result<(), String> {
         info!("Stopping playback");
         *state.is_playing.write() = false;
         let mut playback_guard = state.playback.write();
@@ -147,31 +133,24 @@ pub mod handlers {
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn next_track(state: State<'_, AppState>) -> Result<(), String> {
+    pub fn next_track(_state: &AppState) -> Result<(), String> {
         info!("Skipping to next track");
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn previous_track(state: State<'_, AppState>) -> Result<(), String> {
+    pub fn previous_track(_state: &AppState) -> Result<(), String> {
         info!("Skipping to previous track");
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn seek_to(
-        state: State<'_, AppState>,
-        position_ms: u64,
-    ) -> Result<(), String> {
+    pub fn seek_to(state: &AppState, position_ms: u64) -> Result<(), String> {
         info!("Seeking to {}ms", position_ms);
         let mut playback_guard = state.playback.write();
         playback_guard.position_ms = position_ms;
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), String> {
+    pub fn set_volume(state: &AppState, volume: f32) -> Result<(), String> {
         info!("Setting volume to {}", volume);
         if !(0.0..=1.0).contains(&volume) {
             return Err("Volume must be between 0.0 and 1.0".into());
@@ -181,8 +160,7 @@ pub mod handlers {
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn get_playback_state(state: State<'_, AppState>) -> Result<PlaybackStateResponse, String> {
+    pub fn get_playback_state(state: &AppState) -> Result<PlaybackStateResponse, String> {
         let playback = state.playback.read().clone();
         let is_playing = *state.is_playing.read();
         
@@ -195,31 +173,13 @@ pub mod handlers {
         })
     }
 
-    #[tauri::command]
-    pub async fn toggle_shuffle(state: State<'_, AppState>) -> Result<(), String> {
+    pub fn toggle_shuffle(_state: &AppState) -> Result<(), String> {
         info!("Toggling shuffle");
         Ok(())
     }
 
-    #[tauri::command]
-    pub async fn toggle_repeat(state: State<'_, AppState>) -> Result<(), String> {
+    pub fn toggle_repeat(_state: &AppState) -> Result<(), String> {
         info!("Toggling repeat");
         Ok(())
     }
-}
-
-// Types for responses
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct LibraryScanResult {
-    pub tracks_found: usize,
-    pub bytes_scanned: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PlaybackStateResponse {
-    pub current_track: Option<uuid::Uuid>,
-    pub position_ms: u64,
-    pub is_playing: bool,
-    pub volume: f32,
-    pub speed: f32,
 }
