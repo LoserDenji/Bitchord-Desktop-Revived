@@ -9,8 +9,5 @@ keywords = ["sync", "party", "multiplayer", "music"]
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 anyhow.workspace = true
 bitchord-core = { path = "../core" }
-chrono.workspace = true

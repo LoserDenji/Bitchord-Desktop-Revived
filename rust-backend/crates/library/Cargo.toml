@@ -12,13 +12,8 @@ tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
-async-trait.workspace = true
 chrono.workspace = true
 uuid.workspace = true
-walkdir.workspace = true
-lofty.workspace = true
-regex.workspace = true
 sqlx.workspace = true
 bitchord-core = { path = "../core" }
-bitchord-db = { path = "../db" }
 rusqlite = { workspace = true }

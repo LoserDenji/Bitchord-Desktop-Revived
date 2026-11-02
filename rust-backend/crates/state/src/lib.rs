@@ -1,5 +1,6 @@
 //! Application state management
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use bitchord_core::{Library, UserSettings};
@@ -28,7 +29,7 @@ pub struct AppState {
 }
 
 /// Playback state information
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlaybackState {
     /// Current track ID
     pub current_track: Option<Uuid>,
