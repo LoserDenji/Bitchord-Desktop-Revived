@@ -88,4 +88,6 @@ Implement every feature from the Compose app in the Tauri/Rust rewrite. Must fee
 - User is monitoring elsewhere — work autonomously, don't stop until at least one major feature is done
 
 ## Prompt for Delegation
-"Work on the BitChord Tauri rewrite. Read PROJECT_BRIEF.md for context. Pick the highest priority session from the Session Plan in SESSION_PLAN.md and implement it. Use `patch` for edits, `execute_code` with Python for file writes. Run `npm run build` to verify. Commit to GitHub when done. Never modify desktopApp/ or app/, never touch secrets, never run cargo build locally."
+"Work on the BitChord Tauri rewrite. Read PROJECT_BRIEF.md for context. Pick the highest priority session from the Session Plan in SESSION_PLAN.md and implement it. Use `patch` for edits, `execute_code` with Python for file writes. Run `npm run build` to verify. Commit to GitHub when done. Never modify desktopApp/ or app/, never touch secrets, never run cargo build locally.
+
+**NEXT ACTION:** Session 1 — Audio Engine. Read `PROJECT_BRIEF.md` then work."
