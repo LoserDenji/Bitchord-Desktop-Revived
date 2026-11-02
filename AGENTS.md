@@ -22,11 +22,11 @@ modify `app/`, the Go backend, or the shared data layer's Android targets.
 - Android (`android.yml`) and backend (`deploy-backend.yml`) workflows are **removed**
   — desktop-only.
 
-## Releasing
+## Releasing/Compiling (DO NOT COMPILE/BUILD ON LOCAL MACHINE SEND TO GITHUB TO DO IT)
 
 ```bash
-git tag v1.8.35
-git push origin v1.8.35
+git tag v*.*.*
+git push origin v*.*.*
 ```
 
 The release workflow builds packages, runs tests, and creates a **draft** release.

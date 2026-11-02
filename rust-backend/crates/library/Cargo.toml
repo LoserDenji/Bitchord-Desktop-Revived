@@ -13,14 +13,11 @@ tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
-chrono = { workspace = true }
-uuid = { workspace = true }
-rusqlite = { workspace = true }
-walkdir = { workspace = true, optional = true }
-lofty = { workspace = true, optional = true }
+chrono.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+lofty.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
 bitchord-core = { path = "../core" }
 bitchord-db = { path = "../db" }
-
-[features]
-full = ["walkdir", "lofty"]
-default = ["full"]

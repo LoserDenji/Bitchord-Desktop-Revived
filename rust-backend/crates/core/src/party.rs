@@ -14,7 +14,13 @@ pub mod jam_invite {
             return None;
         }
         let after_prefix = &text[prefix.len()..];
-        let code = after_prefix.split('?').next().unwrap_or("").split('#').next().unwrap_or("");
+        let code = after_prefix
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .split('#')
+            .next()
+            .unwrap_or("");
         if code.len() != CODE_LENGTH || !code.chars().all(|c| c.is_alphanumeric()) {
             return None;
         }
@@ -205,4 +211,39 @@ pub struct ApiError {
     #[serde(rename = "error")]
     pub code: String,
     pub message: String,
+}
+
+/// An invite to join a private party.
+/// From Kotlin JamInvite.kt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JamInvite {
+    /// The 6-character alphanumeric invite code.
+    pub code: String,
+    /// The full URL for joining.
+    #[serde(skip_serializing)]
+    pub url: Option<String>,
+}
+
+impl JamInvite {
+    /// Create a new JamInvite from a code.
+    pub fn new(code: impl Into<String>) -> Self {
+        let code = code.into().to_uppercase();
+        Self {
+            code,
+            url: Some(jam_invite::url(&code)),
+        }
+    }
+    
+    /// Create a JamInvite from a URL string.
+    pub fn from_url(url: &str) -> Option<Self> {
+        let code = jam_invite::parse(Some(url))?;
+        Some(Self::new(code))
+    }
+    
+    /// Validate that the code is properly formatted.
+    pub fn is_valid(&self) -> bool {
+        self.code.len() == jam_invite::CODE_LENGTH 
+            && self.code.chars().all(|c| c.is_alphanumeric())
+    }
 }

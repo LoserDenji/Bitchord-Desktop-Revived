@@ -16,6 +16,6 @@ thiserror.workspace = true
 async-trait.workspace = true
 tower.workspace = true
 futures.workspace = true
+regex.workspace = true
 reqwest.workspace = true
-regex = "1.10"
 bitchord-core = { path = "../core" }

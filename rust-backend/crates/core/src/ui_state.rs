@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Sealed interface for representing loading, success, or error states.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", content = "data", untyped)]
+#[serde(tag = "state", content = "data")]
 pub enum UiState<T> {
     #[serde(rename = "LOADING")]
     Loading,

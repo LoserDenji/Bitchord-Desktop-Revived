@@ -46,3 +46,10 @@ AGENTS.md
 /output/
 .superpowers/
 .hermes/
+
+# Tauri / Vue 3 / Rust
+node_modules/
+dist/
+rust-backend/target/
+src-tauri/target/
+Cargo.lock

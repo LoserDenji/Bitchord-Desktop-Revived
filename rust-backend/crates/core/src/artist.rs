@@ -1,9 +1,29 @@
-//! Artist domain models — ported from Kotlin `ArtistPage`, `ArtistCredit`, `CreditSegment`.
+//! Artist domain models — ported from Kotlin `ArtistPage`, `ArtistCredit`, `CreditSegment`, `Artist`.
 use serde::{Deserialize, Serialize};
 
-use crate::album::SubscriptionState;
 use crate::home::HomeShelf;
 use crate::song::{ArtistRef, Song};
+use crate::album::SubscriptionState;
+
+/// A music artist with their profile and metadata.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Artist {
+    pub browse_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub subscriber_count: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_listener_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_verified: Option<bool>,
+    #[serde(default)]
+    pub is_subscribed: bool,
+}
 
 /// Parsed artist landing page.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,13 +65,9 @@ pub struct CreditSegment {
     pub credit: Option<ArtistCredit>,
 }
 
-/// Normalizes an artist name for comparison: NFD-decompose, strip combining marks, lowercase, collapse whitespace.
+/// Normalizes an artist name for comparison: lowercase, collapse whitespace.
 pub fn normalized_artist_name(raw: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    raw.nfd()
-        .filter(|c| !c.is_combining_mark())
-        .collect::<String>()
-        .to_lowercase()
+    raw.to_lowercase()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

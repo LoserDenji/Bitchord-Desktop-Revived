@@ -1,8 +1,8 @@
 //! Home feed and shelf models — ported from Kotlin `HomeShelf`, `MoodGenre`, `HomePage`, `LibraryPage`.
 use serde::{Deserialize, Serialize};
 
-use crate::album::DetailPage;
-use crate::song::{BrowseItem, Song};
+use crate::album::BrowseItem;
+use crate::song::Song;
 
 /// A card in a home-feed carousel: either a track (videoId) or an album/playlist (browseId).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

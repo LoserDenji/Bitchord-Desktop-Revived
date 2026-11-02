@@ -3,12 +3,9 @@ name = "bitchord-error"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Error types and result alias for BitChord"
-keywords = ["error", "result", "music"]
+description = "Error types for BitChord Tauri backend"
+keywords = ["error", "result", "music", "player"]
 
 [dependencies]
 thiserror.workspace = true
-serde.workspace = true
-chrono.workspace = true
-
-[dev-dependencies]
+anyhow.workspace = true

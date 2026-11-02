@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::track::Track;
 use super::album::Album;
-use super::artist::Artist;
+use crate::artist::Artist;
 use super::playlist::Playlist;
 
 #[async_trait]

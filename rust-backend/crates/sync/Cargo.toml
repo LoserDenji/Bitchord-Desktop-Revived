@@ -3,25 +3,12 @@ name = "bitchord-sync"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Party sync protocol for BitChord concurrent listening sessions"
-keywords = ["sync", "party", "session", "music"]
+description = "Party synchronization protocol for BitChord Tauri backend"
+keywords = ["sync", "party", "multiplayer", "music"]
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
-async-trait.workspace = true
-futures.workspace = true
-uuid.workspace = true
-chrono.workspace = true
-tower.workspace = true
-reqwest.workspace = true
-notify = "6.1"
 bitchord-core = { path = "../core" }
-bitchord-state = { path = "../state" }
-
-[dev-dependencies]
-tokio-test = "0.4"

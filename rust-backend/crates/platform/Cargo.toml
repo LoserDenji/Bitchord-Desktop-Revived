@@ -3,18 +3,13 @@ name = "bitchord-platform"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Platform-specific integrations for BitChord (MPRIS, etc)"
-keywords = ["mpris", "dbus", "platform"]
+description = "Platform-specific integrations for BitChord Tauri backend"
+keywords = ["platform", "linux", "mpris", "dbus"]
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-thiserror.workspace = true
 anyhow.workspace = true
+zbus.workspace = true
 bitchord-core = { path = "../core" }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-zbus = "4.0"
-zvariant = "4.0"

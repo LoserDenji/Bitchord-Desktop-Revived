@@ -4,83 +4,83 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::album::Album;
-use super::artist::Artist;
+use crate::artist::Artist;
 
 /// A track represents a single audio file with its metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     /// Unique identifier for this track
     pub id: Uuid,
-    
+
     /// Track title
     pub title: String,
-    
+
     /// Artist information
     pub artist: Vec<Artist>,
-    
+
     /// Album information
     pub album: Option<Album>,
-    
+
     /// Track number on the album (1-indexed)
     pub track_number: Option<u32>,
-    
+
     /// Disc number (for multi-disc albums, 1-indexed)
     pub disc_number: Option<u32>,
-    
+
     /// Total tracks on the album
     pub album_total_tracks: Option<u32>,
-    
+
     /// Duration in milliseconds
     pub duration_ms: u64,
-    
+
     /// Audio bitrate in kbps
     pub bitrate: Option<u32>,
-    
+
     /// Audio sample rate in Hz
     pub sample_rate: Option<u32>,
-    
+
     /// Audio channel count (1 = mono, 2 = stereo, etc.)
     pub channels: Option<u16>,
-    
+
     /// File size in bytes
     pub file_size_bytes: Option<u64>,
-    
+
     /// Full path to the audio file on disk
     pub file_path: std::path::PathBuf,
-    
+
     /// Date when the track was added to the library
     pub added_at: DateTime<Utc>,
-    
+
     /// Date when the track was last modified (from filesystem)
     pub modified_at: Option<DateTime<Utc>>,
-    
+
     /// File modification time (for sync detection)
     pub file_modified_at: Option<DateTime<Utc>>,
-    
+
     /// Genre tags
     pub genres: Vec<String>,
-    
+
     /// Lyrics (plain text)
     pub lyrics: Option<String>,
-    
+
     /// Lyrics with timing information
     pub timed_lyrics: Option<Vec<LyricLine>>,
-    
+
     /// Composer credits
     pub composers: Vec<String>,
-    
+
     /// Copyright info
     pub copyright: Option<String>,
-    
+
     /// Rating from user (0-5 stars)
     pub rating: Option<u8>,
-    
+
     /// Play count
     pub play_count: u32,
-    
+
     /// Skip count
     pub skip_count: u32,
-    
+
     /// Relative path from the music library root
     pub relative_path: std::path::PathBuf,
 }

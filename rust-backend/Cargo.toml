@@ -36,9 +36,27 @@ futures = "0.3"
 parking_lot = { version = "0.12", features = ["serde"] }
 indexmap = { version = "2.7", features = ["serde"] }
 
-# Optional crates - used in feature-specific dependencies of member crates
+# Database
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "macros"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Audio/AV
+cpal = "0.15"
 lofty = { version = "0.4", default-features = false }
 rodio = { version = "0.17", default-features = false }
-rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Networking
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+
+unicode = "0.1"
+unicode-normalization = "0.1"
+
+# Filesystem
 walkdir = "2.5"
+tokio-stream = "0.1"
+infer = "0.16"
+notify = "6.1"
+
+# Platform
+zbus = { version = "3.7", features = ["tokio", "async-io"] }
+regex = "1.10"

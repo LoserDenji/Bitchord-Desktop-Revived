@@ -15,15 +15,11 @@ thiserror.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 futures.workspace = true
-tokio-stream = "0.1"
-walkdir = "2.5"
-notify = "6.1"
-infer = "0.16"
+tokio-stream.workspace = true
+walkdir.workspace = true
+notify.workspace = true
+infer.workspace = true
+lofty.workspace = true
+rodio.workspace = true
+cpal.workspace = true
 bitchord-core = { path = "../core" }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rodio = { workspace = true, features = ["mp3"] }
-cpal = "0.15"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# WebAudio backend for WASM

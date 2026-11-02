@@ -47,9 +47,3 @@ pub struct LibraryScanStats {
     pub tracks_found: usize,
     pub bytes_scanned: u64,
 }
-
-impl Library {
-    pub fn new(root_path: PathBuf) -> Self {
-        Self::new(root_path, "Default".to_string())
-    }
-}

@@ -1,41 +1,36 @@
 //! Playback source - represents what we're playing from
 use serde::{Deserialize, Serialize};
 
+/// The type of playback source
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PlaybackSourceType {
+    /// A YouTube Music track
+    Track,
+    /// An album
+    Album,
+    /// An artist page
+    Artist,
+    /// A playlist
+    Playlist,
+    /// Radio station
+    Radio,
+}
+
 /// Where the current playback is coming from
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PlaybackSource {
-    /// Library track by ID
-    Track { track_id: uuid::Uuid },
-    /// External URL or stream
-    Stream { url: String, metadata: Option<TrackMetadata> },
-    /// Playlist by ID
-    Playlist {
-        playlist_id: uuid::Uuid,
-        position: usize,
-    },
-    /// Artist radio / similar tracks
-    ArtistRadio { artist_id: uuid::Uuid },
-    /// Album playback
-    Album { album_id: uuid::Uuid, track_index: usize },
-    /// User-defined playlist
-    Custom { name: String, items: Vec<PlaylistItem> },
+pub struct PlaybackSource {
+    /// The video ID or browse ID of the source
+    pub id: String,
+    /// The type of the source (track, album, artist, playlist, etc.)
+    #[serde(default)]
+    pub source_type: Option<PlaybackSourceType>,
+    /// When this track started playing
+    #[serde(default)]
+    pub start_time: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackMetadata {
-    pub title: Option<String>,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub duration_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlaylistItem {
-    pub id: uuid::Uuid,
-    pub title: Option<String>,
-}
-
-/// A seekable range for the current playback position
+/// A seekable range for the current playback position (existing content)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SeekableRange {
     /// Start of the range (in ms)

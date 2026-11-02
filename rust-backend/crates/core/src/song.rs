@@ -36,6 +36,7 @@ pub struct Song {
     pub video_id: String,
     pub title: String,
     pub artist: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_text: Option<String>,
@@ -111,7 +112,7 @@ impl Song {
         self.title == other.title && self.artist == other.artist
     }
 
-    /// Duration text in milliseconds, or 0 when the row didn't state one.
+    /// Duration text in milliseconds, or 0 when the row did not state one.
     pub fn duration_millis(&self) -> u64 {
         parse_duration_millis(self.duration_text.as_deref())
     }
@@ -122,7 +123,7 @@ impl Song {
     }
 }
 
-/// Parse a `M:SS` or `H:MM:SS` string into milliseconds. Zero for anything that isn't a duration.
+/// Parse a `M:SS` or `H:MM:SS` string into milliseconds. Zero for anything that is not a duration.
 pub fn parse_duration_millis(text: Option<&str>) -> u64 {
     let trimmed = match text.map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(s) => s,
@@ -131,7 +132,7 @@ pub fn parse_duration_millis(text: Option<&str>) -> u64 {
     let parts: Vec<&str> = trimmed.split(':').collect();
     let numbers: Vec<u64> = parts.iter().filter_map(|p| p.trim().parse().ok()).collect();
     if numbers.len() != parts.len() {
-        return 0; // some part wasn't a number
+        return 0; // some part was not a number
     }
     let seconds = match numbers.len() {
         2 => numbers[0] * 60 + numbers[1],
@@ -144,9 +145,39 @@ pub fn parse_duration_millis(text: Option<&str>) -> u64 {
 /// Replace YouTube's `w<N>-h<N>` size hint with the requested pixel size.
 pub fn artwork_at(url: Option<&str>, px: u32) -> Option<String> {
     let u = url?;
-    let re = regex_lite::Regex::new(r"w\d+-h\d+").ok()?;
-    let replacement = format!("w{px}-h{px}");
-    Some(re.replace(u, replacement.as_str()).into_owned())
+    // Simple replacement: find w{digits}-h{digits} and replace with w{px}-h{px}
+    let mut result = u.to_string();
+    let chars: Vec<char> = result.chars().collect();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        if chars[i] == 'w' && i + 2 < chars.len() && chars[i+1].is_ascii_digit() {
+            // Found potential w pattern
+            let start = i;
+            let mut end_digits = i + 1;
+            while end_digits < chars.len() && chars[end_digits].is_ascii_digit() {
+                end_digits += 1;
+            }
+            if end_digits < chars.len() && chars[end_digits] == '-' && end_digits + 1 < chars.len() && chars[end_digits+1] == 'h' {
+                let h_start = end_digits + 2;
+                let mut h_end = h_start;
+                while h_end < chars.len() && chars[h_end].is_ascii_digit() {
+                    h_end += 1;
+                }
+                if h_end > h_start {
+                    // Found w{num}-h{num} pattern, replace it
+                    let replacement = format!("w{px}-h{px}");
+                    result = format!("{}{}{}", &result[..start], replacement, &result[h_end..]);
+                    chars = result.chars().collect();
+                    i = start + replacement.len();
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    
+    Some(result)
 }
 
 /// Artwork for a list row — 52dp at most, ~140px on 3x screen.

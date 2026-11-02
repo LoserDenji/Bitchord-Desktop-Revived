@@ -3,19 +3,17 @@ name = "bitchord-core"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Core domain models and traits for BitChord Tauri backend"
-keywords = ["music", "player", "domain-driven-design"]
+description = "Core domain models for BitChord Tauri backend"
+keywords = ["domain", "models", "music", "player"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 chrono.workspace = true
-tokio.workspace = true
-async-trait.workspace = true
-thiserror.workspace = true
+uuid.workspace = true
+lazy_static.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-tokio-test = "0.4"
+unicode-normalization.workspace = true
+async-trait.workspace = true

@@ -223,16 +223,3 @@ pub struct PlaybackStateResponse {
     pub volume: f32,
     pub speed: f32,
 }
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Album {
-    pub id: uuid::Uuid,
-    pub name: String,
-    pub artist: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Artist {
-    pub id: uuid::Uuid,
-    pub name: String,
-}
