@@ -13,16 +13,16 @@
 pub struct MprisRoot;
 
 #[cfg(target_os = "linux")]
-#[zbus::interface(name = "org.mpris.MediaPlayer2")]
+#[zbus::dbus_interface(name = "org.mpris.MediaPlayer2")]
 impl MprisRoot {
     /// The identity of the media player.
-    #[zbus(property)]
+    #[dbus_interface(property)]
     fn identity(&self) -> &str {
         "BitChord"
     }
 
     /// Can the player quit?
-    #[zbus(property)]
+    #[dbus_interface(property)]
     fn can_quit(&self) -> bool {
         false
     }
@@ -40,16 +40,16 @@ impl MprisRoot {
 pub struct MprisPlayer;
 
 #[cfg(target_os = "linux")]
-#[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+#[zbus::dbus_interface(name = "org.mpris.MediaPlayer2.Player")]
 impl MprisPlayer {
     /// The current playback status.
-    #[zbus(property)]
+    #[dbus_interface(property)]
     fn playback_status(&self) -> &str {
         "Stopped"
     }
 
     /// The current playback rate.
-    #[zbus(property)]
+    #[dbus_interface(property)]
     fn playback_rate(&self) -> f64 {
         1.0
     }
