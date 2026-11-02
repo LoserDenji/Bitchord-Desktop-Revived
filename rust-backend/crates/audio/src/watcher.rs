@@ -7,9 +7,8 @@ use anyhow::{Context, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
@@ -47,7 +46,7 @@ impl FileEvent {
                 is_audio_path(old) || is_audio_path(new) ||
                 old.is_dir() || new.is_dir()
             }
-            FileEvent::DirectoryCreated(path) | FileEvent::DirectoryRemoved(path) => {
+            FileEvent::DirectoryCreated(_path) | FileEvent::DirectoryRemoved(_path) => {
                 true // All directory events are relevant
             }
         }
@@ -59,11 +58,6 @@ impl FileEvent {
             .and_then(|e| e.to_str())
             .map(|e| AUDIO_EXTENSIONS.contains(&e))
             .unwrap_or(false)
-    }
-
-    /// Check if the path is a directory
-    fn is_audio_dir(path: &PathBuf) -> bool {
-        path.is_dir()
     }
 }
 
@@ -145,8 +139,7 @@ impl AudioWatcher {
                 }
             },
             Config::default()
-                .with_compare_contents(true)
-                .with_delay(Duration::from_millis(100)),
+                .with_compare_contents(true),
         ).context("Failed to create file system watcher")?;
 
         // Watch all directories
