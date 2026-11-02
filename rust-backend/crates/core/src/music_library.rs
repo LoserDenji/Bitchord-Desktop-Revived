@@ -1,7 +1,6 @@
 //! Music library scanning and indexing
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use uuid::Uuid;
 
 /// A folder in the watched music library
 #[derive(Debug, Clone, Serialize, Deserialize)]

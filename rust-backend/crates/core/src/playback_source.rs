@@ -40,7 +40,7 @@ pub struct SeekableRange {
 }
 
 impl SeekableRange {
-    pub fn full(duration_ms: u64) -> Self {
+    pub fn full(_duration_ms: u64) -> Self {
         Self { start: 0, end: 0 }
     }
     

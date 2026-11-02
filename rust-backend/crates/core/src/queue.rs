@@ -2,8 +2,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-use crate::song::Song;
-
 /// A playback queue that manages the order of tracks to play.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

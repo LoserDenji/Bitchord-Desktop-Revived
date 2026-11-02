@@ -1,5 +1,4 @@
 //! Database layer
-use bitchord_core::{Track, Album, Artist, Playlist};
 use sqlx::SqlitePool;
 use anyhow::Result;
 

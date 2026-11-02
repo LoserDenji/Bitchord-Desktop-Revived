@@ -262,7 +262,7 @@ pub struct ArtistRecord {
 }
 
 /// Artist type enum matching Kotlin ArtistType
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum ArtistType {
     #[default]
     Artist,
@@ -479,18 +479,18 @@ impl LibraryRepository {
             "#,
             params![id.to_string()],
             |row| {
-                let parse_uuid = |s: Option<String>| s.map(|s| Uuid::parse_str(&s)).transpose().unwrap();
+                let parse_uuid_opt = |s: Option<String>| s.and_then(|s| Uuid::parse_str(&s).ok());
                 
                 Ok(TrackRecord {
-                    id: Uuid::parse_str(row.get::<_, String>("id"))?,
+                    id: Uuid::parse_str(&row.get::<_, String>("id")?)?,
                     video_id: row.get("video_id")?,
                     title: row.get("title")?,
                     artist: row.get("artist")?,
                     thumbnail_url: row.get("thumbnail_url")?,
                     duration_ms: row.get("duration_ms")?,
-                    album_id: parse_uuid(row.get("album_id"))?,
+                    album_id: parse_uuid_opt(row.get("album_id")?),
                     album_name: row.get("album_name")?,
-                    artist_id: parse_uuid(row.get("artist_id"))?,
+                    artist_id: parse_uuid_opt(row.get("artist_id")?),
                     artist_ids: row.get("artist_ids")?,
                     is_video: row.get::<_, i32>("is_video")? != 0,
                     is_explicit: row.get("is_explicit")?,
@@ -517,8 +517,8 @@ impl LibraryRepository {
                     rating: row.get("rating")?,
                     lyrics: row.get("lyrics")?,
                     release_date: row.get("release_date")?.optional::<DateTime<Utc>>(),
-                    created_at: DateTime::parse_from_rfc3339(row.get::<_, String>("created_at"))?.with_timezone(&Utc),
-                    updated_at: DateTime::parse_from_rfc3339(row.get::<_, String>("updated_at"))?.with_timezone(&Utc),
+                    created_at: DateTime::parse_from_rfc3339(row.get::<_, String>("created_at")?.as_str())?.with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(row.get::<_, String>("updated_at")?.as_str())?.with_timezone(&Utc),
                 })
             },
         )
@@ -658,11 +658,10 @@ impl LibraryRepository {
         self.conn
             .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position")?
             .query_map(params![playlist_id.to_string()], |row| {
-                Uuid::parse_str(row.get::<_, String>(0)?).map(|id| id)
+                let s: String = row.get(0)?;
+                Uuid::parse_str(&s).map_err(rusqlite::Error::from)
             })?
-            .map(|r| r.map(|id| id.to_string()))
             .filter_map(Result::ok)
-            .map(|s| Uuid::parse_str(&s).ok())
             .collect()
     }
 

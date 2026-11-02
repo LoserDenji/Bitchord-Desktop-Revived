@@ -5,9 +5,9 @@
 
 pub mod sqlite;
 
-use bitchord_core::{Library, Track, LibraryStats, ScanConfig, TrackMetadata};
 use anyhow::Result;
 use std::path::PathBuf;
+use bitchord_core::{ScanConfig, TrackMetadata};
 
 /// Library scanner
 pub struct LibraryScanner {

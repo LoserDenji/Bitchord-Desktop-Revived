@@ -32,7 +32,7 @@ pub use error::{Error, Result};
 pub use formats::{ContainerFormat, AudioFormat};
 pub use home::{HomeFeed, HomeShelf, MoodGenre, MoodGenreSection, ShelfItem, Account, AccountChannel, LibraryPage};
 pub use library::{Library, LibraryStats};
-pub use library_ext::TrackMetadata;
+pub use library_ext::{ScanConfig, TrackMetadata};
 pub use playlist::Playlist;
 pub use track::{LyricLine, Track};
 pub use party::{ApiError, JamInvite, PartyActivity, PartyMember, PartyMembership, PartyPlayback, PartyPreview, PartyPreviewMember, PartyQueue, PartySnapshot, PartyTrack};

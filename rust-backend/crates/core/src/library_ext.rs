@@ -2,6 +2,18 @@
 use serde::{Deserialize, Serialize};
 
 /// Track metadata for library scanning
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScanConfig {
+    /// Root directory to scan
+    pub root_path: std::path::PathBuf,
+    /// File extensions to include (.mp3, .flac, etc.)
+    pub extensions: Vec<String>,
+    /// Recursively scan subdirectories
+    pub recursive: bool,
+    /// Maximum concurrent file reads
+    pub max_concurrent: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackMetadata {
     /// Track title

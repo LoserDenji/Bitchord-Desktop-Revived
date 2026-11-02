@@ -21,3 +21,4 @@ regex.workspace = true
 sqlx.workspace = true
 bitchord-core = { path = "../core" }
 bitchord-db = { path = "../db" }
+rusqlite = { workspace = true }
