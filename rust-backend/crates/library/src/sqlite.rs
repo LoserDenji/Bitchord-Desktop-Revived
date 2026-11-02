@@ -665,8 +665,7 @@ impl LibraryRepository {
                     source: Box::new(e),
                 })
             })?
-            .filter_map(Result::ok)
-            .collect()
+            .collect::<SqlResult<Vec<_>>>()
     }
 
     /// Add track-artist association
@@ -682,7 +681,7 @@ impl LibraryRepository {
     }
 
     /// Get artists for a track
-    pub fn get_track_artists(&self, track_id: &Uuid) -> SqlResult<Vec<ArtistRecord>> {
+    pub fn get_track_artists(&self, _track_id: &Uuid) -> SqlResult<Vec<ArtistRecord>> {
         // This would need to join with artists table
         // Simplified implementation
         Ok(Vec::new())
