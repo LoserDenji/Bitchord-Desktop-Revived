@@ -4,7 +4,6 @@
 //! Each entity (Track, Album, Artist, Playlist) has a corresponding table.
 
 use rusqlite::{params, Connection, Result as SqlResult, OptionalExtension};
-use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -272,12 +271,6 @@ pub enum ArtistType {
     Other,
 }
 
-impl Default for ArtistType {
-    fn default() -> Self {
-        ArtistType::Artist
-    }
-}
-
 /// Album record for database operations
 #[derive(Debug, Clone)]
 pub struct AlbumRecord {
@@ -464,64 +457,82 @@ impl LibraryRepository {
 
     /// Get a track by ID
     pub fn get_track(&self, id: &Uuid) -> SqlResult<Option<TrackRecord>> {
-        self.conn.query_row(
-            r#"
-            SELECT id, video_id, title, artist, thumbnail_url, duration_ms,
-                   album_id, album_name, artist_id, artist_ids, is_video,
-                   is_explicit, source_quality, source, local_uri, local_path,
-                   file_path, file_size_bytes, bitrate, sample_rate, channels,
-                   genres, composers, copyright, track_number, disc_number,
-                   album_total_tracks, date_added_seconds, date_modified_seconds,
-                   play_count, skip_count, last_played, rating, lyrics,
-                   release_date, created_at, updated_at
-            FROM tracks
-            WHERE id = ?
-            "#,
-            params![id.to_string()],
-            |row| {
-                let parse_uuid_opt = |s: Option<String>| s.and_then(|s| Uuid::parse_str(&s).ok());
-                
-                Ok(TrackRecord {
-                    id: Uuid::parse_str(&row.get::<_, String>("id")?)?,
-                    video_id: row.get("video_id")?,
-                    title: row.get("title")?,
-                    artist: row.get("artist")?,
-                    thumbnail_url: row.get("thumbnail_url")?,
-                    duration_ms: row.get("duration_ms")?,
-                    album_id: parse_uuid_opt(row.get("album_id")?),
-                    album_name: row.get("album_name")?,
-                    artist_id: parse_uuid_opt(row.get("artist_id")?),
-                    artist_ids: row.get("artist_ids")?,
-                    is_video: row.get::<_, i32>("is_video")? != 0,
-                    is_explicit: row.get("is_explicit")?,
-                    source_quality: row.get("source_quality")?,
-                    source: row.get("source")?,
-                    local_uri: row.get("local_uri")?,
-                    local_path: row.get("local_path")?,
-                    file_path: row.get("file_path")?,
-                    file_size_bytes: row.get("file_size_bytes")?,
-                    bitrate: row.get("bitrate")?,
-                    sample_rate: row.get("sample_rate")?,
-                    channels: row.get::<_, Option<i16>>("channels")?,
-                    genres: row.get("genres")?,
-                    composers: row.get("composers")?,
-                    copyright: row.get("copyright")?,
-                    track_number: row.get("track_number")?,
-                    disc_number: row.get("disc_number")?,
-                    album_total_tracks: row.get("album_total_tracks")?,
-                    date_added_seconds: row.get("date_added_seconds")?,
-                    date_modified_seconds: row.get("date_modified_seconds")?,
-                    play_count: row.get::<_, i32>("play_count")? as u32,
-                    skip_count: row.get::<_, i32>("skip_count")? as u32,
-                    last_played: row.get("last_played")?.optional::<DateTime<Utc>>(),
-                    rating: row.get("rating")?,
-                    lyrics: row.get("lyrics")?,
-                    release_date: row.get("release_date")?.optional::<DateTime<Utc>>(),
-                    created_at: DateTime::parse_from_rfc3339(row.get::<_, String>("created_at")?.as_str())?.with_timezone(&Utc),
-                    updated_at: DateTime::parse_from_rfc3339(row.get::<_, String>("updated_at")?.as_str())?.with_timezone(&Utc),
-                })
-            },
-        )
+        self.conn
+            .query_row(
+                r#"
+                SELECT id, video_id, title, artist, thumbnail_url, duration_ms,
+                       album_id, album_name, artist_id, artist_ids, is_video,
+                       is_explicit, source_quality, source, local_uri, local_path,
+                       file_path, file_size_bytes, bitrate, sample_rate, channels,
+                       genres, composers, copyright, track_number, disc_number,
+                       album_total_tracks, date_added_seconds, date_modified_seconds,
+                       play_count, skip_count, last_played, rating, lyrics,
+                       release_date, created_at, updated_at
+                FROM tracks
+                WHERE id = ?
+                "#,
+                params![id.to_string()],
+                |row| {
+                    let parse_uuid_opt =
+                        |s: Option<String>| s.and_then(|s| Uuid::parse_str(&s).ok());
+
+                    Ok(TrackRecord {
+                        id: Uuid::parse_str(&row.get::<_, String>("id")?)
+                            .map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))?,
+                        video_id: row.get("video_id")?,
+                        title: row.get("title")?,
+                        artist: row.get("artist")?,
+                        thumbnail_url: row.get("thumbnail_url")?,
+                        duration_ms: row.get("duration_ms")?,
+                        album_id: parse_uuid_opt(row.get("album_id")?),
+                        album_name: row.get("album_name")?,
+                        artist_id: parse_uuid_opt(row.get("artist_id")?),
+                        artist_ids: row.get("artist_ids")?,
+                        is_video: row.get::<_, i32>("is_video")? != 0,
+                        is_explicit: row.get("is_explicit")?,
+                        source_quality: row.get("source_quality")?,
+                        source: row.get("source")?,
+                        local_uri: row.get("local_uri")?,
+                        local_path: row.get("local_path")?,
+                        file_path: row.get("file_path")?,
+                        file_size_bytes: row.get("file_size_bytes")?,
+                        bitrate: row.get("bitrate")?,
+                        sample_rate: row.get("sample_rate")?,
+                        channels: row.get::<_, Option<i16>>("channels")?,
+                        genres: row.get("genres")?,
+                        composers: row.get("composers")?,
+                        copyright: row.get("copyright")?,
+                        track_number: row.get("track_number")?,
+                        disc_number: row.get("disc_number")?,
+                        album_total_tracks: row.get("album_total_tracks")?,
+                        date_added_seconds: row.get("date_added_seconds")?,
+                        date_modified_seconds: row.get("date_modified_seconds")?,
+                        play_count: row.get::<_, i32>("play_count")?,
+                        skip_count: row.get::<_, i32>("skip_count")?,
+                        last_played: row
+                            .get::<_, Option<String>>("last_played")?
+                            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok()),
+                        rating: row.get("rating")?,
+                        lyrics: row.get("lyrics")?,
+                        release_date: row
+                            .get::<_, Option<String>>("release_date")?
+                            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok()),
+                        created_at: {
+                            let s = row.get::<_, String>("created_at")?;
+                            DateTime::parse_from_rfc3339(&s)
+                                .map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))?
+                                .with_timezone(&Utc)
+                        },
+                        updated_at: {
+                            let s = row.get::<_, String>("updated_at")?;
+                            DateTime::parse_from_rfc3339(&s)
+                                .map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))?
+                                .with_timezone(&Utc)
+                        },
+                    })
+                },
+            )
+            .map(Some)
     }
 
     /// Create an artist record
@@ -554,7 +565,7 @@ impl LibraryRepository {
                 artist.album_count as i32,
                 artist.subscriber_count,
                 artist.monthly_listener_count,
-                if let Some(v) = artist.is_subscribed { if v { 1 } else { 0 } } else { None },
+                artist.is_subscribed.map(|v| if v { 1 } else { 0 }),
                 artist.created_at.to_rfc3339(),
                 artist.updated_at.to_rfc3339(),
             ],
@@ -659,11 +670,7 @@ impl LibraryRepository {
             .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position")?
             .query_map(params![playlist_id.to_string()], |row| {
                 let s: String = row.get(0)?;
-                Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionError {
-                    type_name: "Uuid",
-                    sql_type: rusqlite::types::Type::Text,
-                    source: Box::new(e),
-                })
+                Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))
             })?
             .collect::<SqlResult<Vec<_>>>()
     }
