@@ -26,13 +26,15 @@ pub mod traits;
 pub mod ui_state;
 
 // Re-exports for convenience
-pub use album::{BrowseItem, BrowseType, DetailPage, LibraryState, SubscriptionState};
-pub use artist::{ArtistPage, ArtistCredit, CreditSegment};
+pub use album::{Album, AlbumPage, BrowseItem, BrowseType, DetailPage, LibraryState, SubscriptionState};
+pub use artist::{Artist, ArtistCredit, ArtistPage, CreditSegment};
 pub use error::{Error, Result};
 pub use formats::{ContainerFormat, AudioFormat};
 pub use home::{HomeFeed, HomeShelf, MoodGenre, MoodGenreSection, ShelfItem, Account, AccountChannel, LibraryPage};
 pub use library::{Library, LibraryStats};
 pub use library_ext::TrackMetadata;
+pub use playlist::Playlist;
+pub use track::{LyricLine, Track};
 pub use party::{ApiError, JamInvite, PartyActivity, PartyMember, PartyMembership, PartyPlayback, PartyPreview, PartyPreviewMember, PartyQueue, PartySnapshot, PartyTrack};
 pub use player::{PlaybackSpeed, RepeatMode, ShuffleMode};
 pub use playback_source::{PlaybackSource, SeekableRange};
