@@ -10,6 +10,5 @@ keywords = ["platform", "linux", "mpris", "dbus"]
 serde.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-zbus.workspace = true
-zbus_macros = { version = "3.7", default-features = false }
+zbus = { workspace = true, features = ["serde"] }
 bitchord-core = { path = "../core" }
