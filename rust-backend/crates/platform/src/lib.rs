@@ -1,17 +1,24 @@
-//! Platform-specific integrations
+//! Platform-specific integrations for BitChord Tauri backend.
 //!
-//! Provides Linux MPRIS 2.0 implementation and OS-specific hooks.
+//! This crate provides platform-specific features:
+//! - MPRIS 2.0 for Linux media control
+//! - Mica/Acrylic for Windows
+//! - Vibrancy for macOS
 
 #[cfg(target_os = "linux")]
 pub mod mpris;
 
-#[cfg(not(target_os = "linux"))]
-pub mod mpris {
-    pub struct MprisManager;
-    impl MprisManager {
-        pub fn new() -> Self { Self }
-        pub fn update(&self, _state: bitchord_core::Track) {}
-    }
-}
-
+#[cfg(target_os = "linux")]
 pub use mpris::MprisManager;
+
+#[cfg(not(target_os = "linux"))]
+pub struct MprisManager;
+
+#[cfg(not(target_os = "linux"))]
+impl MprisManager {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn update_state(&self, _playing: bool) {}
+}
