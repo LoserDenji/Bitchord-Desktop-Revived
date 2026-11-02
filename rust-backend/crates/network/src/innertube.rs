@@ -403,9 +403,9 @@ impl InnerTubeClient {
             });
         }
 
-        response.json::<Value>()
+        Ok(response.json::<Value>()
             .await
-            .map_err(|e| NetworkError::Parse(serde_json::Error::io(std::io::Error::other(e.to_string()))))?
+            .map_err(|e| NetworkError::Parse(serde_json::Error::io(std::io::Error::other(e.to_string()))))?)
     }
 
     async fn session_read(&self) -> InnerTubeSession {
