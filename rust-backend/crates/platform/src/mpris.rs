@@ -7,15 +7,13 @@
 //! zbus requires one interface per type, so we split them into `MprisRoot` and
 //! `MprisPlayer` and register both at `/org/mpris/MediaPlayer2`.
 
-use zbus::interface;
-
 /// Root MPRIS interface: identity, quit, raise.
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub struct MprisRoot;
 
 #[cfg(target_os = "linux")]
-#[interface(name = "org.mpris.MediaPlayer2")]
+#[zbus::interface(name = "org.mpris.MediaPlayer2")]
 impl MprisRoot {
     /// The identity of the media player.
     #[zbus(property)]
@@ -42,7 +40,7 @@ impl MprisRoot {
 pub struct MprisPlayer;
 
 #[cfg(target_os = "linux")]
-#[interface(name = "org.mpris.MediaPlayer2.Player")]
+#[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
 impl MprisPlayer {
     /// The current playback status.
     #[zbus(property)]
