@@ -478,11 +478,11 @@ impl LibraryRepository {
 
                     Ok(TrackRecord {
                         id: Uuid::parse_str(&row.get::<_, String>("id")?)
-                                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure {
-                                                type_name: "Uuid".into(),
-                                                sql_type: rusqlite::types::Type::Text,
-                                                source: Box::new(e),
-                                            })?,
+                                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                                                0,
+                                                rusqlite::types::Type::Text,
+                                                Box::new(e),
+                                            ))?,
                         video_id: row.get("video_id")?,
                         title: row.get("title")?,
                         artist: row.get("artist")?,
@@ -534,21 +534,21 @@ impl LibraryRepository {
                         created_at: {
                             let s = row.get::<_, String>("created_at")?;
                             DateTime::parse_from_rfc3339(&s)
-                                .map_err(|e| rusqlite::Error::FromSqlConversionFailure {
-                                    type_name: "DateTime".into(),
-                                    sql_type: rusqlite::types::Type::Text,
-                                    source: Box::new(e),
-                                })?
+                                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                                    0,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                ))?
                                 .with_timezone(&Utc)
                         },
                         updated_at: {
                             let s = row.get::<_, String>("updated_at")?;
                             DateTime::parse_from_rfc3339(&s)
-                                .map_err(|e| rusqlite::Error::FromSqlConversionFailure {
-                                    type_name: "DateTime".into(),
-                                    sql_type: rusqlite::types::Type::Text,
-                                    source: Box::new(e),
-                                })?
+                                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                                    0,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                ))?
                                 .with_timezone(&Utc)
                         },
                     })
@@ -692,11 +692,11 @@ impl LibraryRepository {
             .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position")?
             .query_map(params![playlist_id.to_string()], |row| {
                 let s: String = row.get(0)?;
-                Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionFailure {
-                    type_name: "Uuid".into(),
-                    sql_type: rusqlite::types::Type::Text,
-                    source: Box::new(e),
-                })
+                Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                ))
             })?
             .collect::<SqlResult<Vec<_>>>()
     }
