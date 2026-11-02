@@ -23,11 +23,6 @@ pub const MUSIC_ORIGIN: &str = "https://music.youtube.com";
 /// The user agent string matching the web client.
 pub const WEB_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
-/// Default retry delay for transient errors.
-const RETRY_BACKOFF: Duration = Duration::from_millis(500);
-/// Maximum number of retry attempts for transport errors.
-const MAX_RETRIES: u32 = 3;
-
 /// Session state extracted from the music.youtube.com shell.
 #[derive(Debug, Clone, Default)]
 pub struct SessionScope {
@@ -346,7 +341,7 @@ impl InnerTubeClient {
         Ok(json)
     }
 
-    async fn post_music_anonymous<F>(&self, endpoint: &str, mut body_builder: F) -> Result<Value>
+    async fn post_music_anonymous<F>(&self, endpoint: &str, body_builder: F) -> Result<Value>
     where
         F: FnOnce(&mut serde_json::Map<String, Value>),
     {
@@ -408,9 +403,6 @@ impl InnerTubeClient {
             .map_err(|e| NetworkError::Parse(serde_json::Error::io(std::io::Error::other(e.to_string()))))?)
     }
 
-    async fn session_read(&self) -> InnerTubeSession {
-        self.session.read().await.clone()
-    }
 }
 
 fn find_visitor_data(element: &Value) -> Option<String> {
