@@ -60,3 +60,6 @@ notify = "6.1"
 # Platform
 zbus = { version = "3.7", features = ["tokio", "async-io"] }
 regex = "1.10"
+
+# Directory utilities
+directories = "5.0"

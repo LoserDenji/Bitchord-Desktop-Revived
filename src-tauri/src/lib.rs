@@ -1,15 +1,16 @@
-// Library module for Tauri commands
-// Commands are defined in main.rs but can be organized here for larger projects
-
-#[tauri::command]
-pub async fn get_platform() -> String {
-    if cfg!(target_os = "windows") {
-        "windows".to_string()
-    } else if cfg!(target_os = "macos") {
-        "macos".to_string()
-    } else if cfg!(target_os = "linux") {
-        "linux".to_string()
-    } else {
-        "unknown".to_string()
-    }
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+  tauri::Builder::default()
+    .setup(|app| {
+      if cfg!(debug_assertions) {
+        app.handle().plugin(
+          tauri_plugin_log::Builder::default()
+            .level(log::LevelFilter::Info)
+            .build(),
+        )?;
+      }
+      Ok(())
+    })
+    .run(tauri::generate_context!())
+    .expect("error while building tauri application");
 }
