@@ -5,52 +5,6 @@
 
 use tauri::Manager;
 
-pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            // Initialize app state
-            let state = bitchord_state::AppState::new();
-            app.manage(state);
-            
-            // Initialize logging in debug mode
-            #[cfg(debug_assertions)]
-            {
-                let _ = app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                );
-            }
-            
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            get_platform,
-            greet,
-            scan_library,
-            get_library_stats,
-            list_tracks,
-            list_albums,
-            list_artists,
-            create_sync_session,
-            join_sync_session,
-            leave_sync_session,
-            broadcast_playback_state,
-            play_track,
-            pause_playback,
-            stop_playback,
-            next_track,
-            previous_track,
-            seek_to,
-            set_volume,
-            get_playback_state,
-            toggle_shuffle,
-            toggle_repeat,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while building tauri application");
-}
-
 #[tauri::command]
 fn get_platform() -> String {
     if cfg!(target_os = "windows") {
@@ -64,9 +18,24 @@ fn get_platform() -> String {
     }
 }
 
+// Window control commands
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! Welcome to BitChord.", name)
+fn minimize_window(window: tauri::Window) -> Result<(), String> {
+    window.minimize()
+}
+
+#[tauri::command]
+fn toggle_maximize(window: tauri::Window) -> Result<(), String> {
+    if window.is_maximized() {
+        window.unmaximize()
+    } else {
+        window.maximize()
+    }
+}
+
+#[tauri::command]
+fn close_window(window: tauri::Window) -> Result<(), String> {
+    window.close()
 }
 
 // Library commands
@@ -165,4 +134,83 @@ fn toggle_shuffle(state: tauri::State<'_, bitchord_state::AppState>) -> Result<(
 #[tauri::command]
 fn toggle_repeat(state: tauri::State<'_, bitchord_state::AppState>) -> Result<(), String> {
     bitchord_commands::playback::toggle_repeat(&state)
+}
+
+// Platform-specific commands
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn mpris_update(state: tauri::State<'_, bitchord_state::AppState>, track_id: Option<uuid::Uuid>, is_playing: bool) -> Result<(), String> {
+    let mpris = bitchord_platform::MprisManager::new();
+    if let Some(id) = track_id {
+        let _ = id;
+    }
+    mpris.update_state(is_playing);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn set_mica(window: tauri::Window, enable: bool) -> Result<(), String> {
+    let _ = window;
+    let _ = enable;
+    Ok(())
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            let state = bitchord_state::AppState::new();
+            app.manage(state);
+
+            #[cfg(debug_assertions)]
+            {
+                let _ = app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                );
+            }
+
+            let win = app.get_webview_window("main").expect("main window");
+            let _ = win.set_title("BitChord");
+            let _ = win.set_decorations(false);
+            let _ = win.set_skip_taskbar(false);
+
+            #[cfg(target_os = "macos")]
+            {
+                let _ = app.handle().activate();
+            }
+
+            let _ = app.tray_icon();
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_platform,
+            minimize_window,
+            toggle_maximize,
+            close_window,
+            scan_library,
+            get_library_stats,
+            list_tracks,
+            list_albums,
+            list_artists,
+            play_track,
+            pause_playback,
+            stop_playback,
+            next_track,
+            previous_track,
+            seek_to,
+            set_volume,
+            get_playback_state,
+            toggle_shuffle,
+            toggle_repeat,
+            #[cfg(target_os = "linux")]
+            mpris_update,
+            #[cfg(target_os = "windows")]
+            set_mica,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while building tauri application");
 }

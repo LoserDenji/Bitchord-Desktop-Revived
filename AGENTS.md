@@ -2,12 +2,21 @@
 
 ## Project overview
 
-BitChord for PC is a Kotlin Multiplatform / Compose Desktop player for Windows, macOS
-and Linux, styled after Apple Music. It is built from the Android client's shared
-modules (`shared`, `sharedUi`) plus a `desktopApp` that adds the desktop shell.
+This is a Tauri (Rust + Vue/JS) rewrite of BitChord, NOT the original Kotlin/Compose app.
 
-The Android app (`app/`) is **not developed here** — this is desktop-only. Do not
-modify `app/`, the Go backend, or the shared data layer's Android targets.
+**OLD (reference only):** Kotlin Multiplatform / Compose Desktop player for Windows, macOS, Linux. Built from Android client's shared modules.
+
+**NEW (current work):** Tauri rewrite targeting <400MB RAM vs 1.5GB original.
+
+## Repository Structure
+
+- `src/` — Vue 3 + TypeScript frontend
+- `src-tauri/` — Tauri Rust backend  
+- `rust-backend/` — Shared Rust workspace (commands, audio, db, etc.)
+- `desktopApp/` — ORIGINAL Compose app (DO NOT MODIFY)
+- `PROJECT_BRIEF.md` — Full project reference
+- `SESSION_PLAN.md` — What to implement each session
+- `DELEGATION_PROMPT.md` — Prompt for delegating to another agent
 
 ## Repository
 
