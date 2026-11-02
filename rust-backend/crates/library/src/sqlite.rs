@@ -731,4 +731,249 @@ impl LibraryRepository {
         )?;
         Ok(())
     }
+    /// Search tracks by query string (full-text search on title, artist, album)
+    pub fn search(&self, query: &str, limit: usize) -> SqlResult<Vec<TrackRecord>> {
+        let pattern = format!("%{}%", query.to_lowercase());
+        let rows = self.conn
+            .prepare(
+                r#"
+                SELECT id, video_id, title, artist, thumbnail_url, duration_ms,
+                       album_id, album_name, artist_id, artist_ids, is_video,
+                       is_explicit, source_quality, source, local_uri, local_path,
+                       file_path, file_size_bytes, bitrate, sample_rate, channels,
+                       genres, composers, copyright, track_number, disc_number,
+                       album_total_tracks, date_added_seconds, date_modified_seconds,
+                       play_count, skip_count, last_played, rating, lyrics,
+                       release_date, created_at, updated_at
+                FROM tracks
+                WHERE LOWER(title) LIKE ?1
+                   OR LOWER(artist) LIKE ?1
+                   OR LOWER(album_name) LIKE ?1
+                ORDER BY play_count DESC, last_played DESC
+                LIMIT ?2
+                "#
+            )?
+            .query_map(params![pattern, limit as i32], |row| {
+                let parse_uuid_opt = |s: Option<String>| s.and_then(|s| Uuid::parse_str(&s).ok());
+
+                Ok(TrackRecord {
+                    id: Uuid::parse_str(&row.get::<_, String>("id")?)
+                        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        ))?,
+                    video_id: row.get("video_id")?,
+                    title: row.get("title")?,
+                    artist: row.get("artist")?,
+                    thumbnail_url: row.get("thumbnail_url")?,
+                    duration_ms: row.get("duration_ms")?,
+                    album_id: parse_uuid_opt(row.get("album_id")?)?,
+                    album_name: row.get("album_name")?,
+                    artist_id: parse_uuid_opt(row.get("artist_id")?)?,
+                    artist_ids: row.get("artist_ids")?,
+                    is_video: row.get::<_, i32>("is_video")? != 0,
+                    is_explicit: row.get("is_explicit")?,
+                    source_quality: row.get("source_quality")?,
+                    source: row.get("source")?,
+                    local_uri: row.get("local_uri")?,
+                    local_path: row.get("local_path")?,
+                    file_path: row.get("file_path")?,
+                    file_size_bytes: row.get("file_size_bytes")?,
+                    bitrate: row.get("bitrate")?,
+                    sample_rate: row.get("sample_rate")?,
+                    channels: row.get::<_, Option<i16>>("channels")?,
+                    genres: row.get("genres")?,
+                    composers: row.get("composers")?,
+                    copyright: row.get("copyright")?,
+                    track_number: row.get("track_number")?,
+                    disc_number: row.get("disc_number")?,
+                    album_total_tracks: row.get("album_total_tracks")?,
+                    date_added_seconds: row.get("date_added_seconds")?,
+                    date_modified_seconds: row.get("date_modified_seconds")?,
+                    play_count: row.get::<_, i32>("play_count")?,
+                    skip_count: row.get::<_, i32>("skip_count")?,
+                    last_played: None,
+                    rating: row.get("rating")?,
+                    lyrics: row.get("lyrics")?,
+                    release_date: None,
+                    created_at: {
+                        let s = row.get::<_, String>("created_at")?;
+                        DateTime::parse_from_rfc3339(&s)
+                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            ))?
+                            .with_timezone(&Utc)
+                    },
+                    updated_at: {
+                        let s = row.get::<_, String>("updated_at")?;
+                        DateTime::parse_from_rfc3339(&s)
+                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            ))?
+                            .with_timezone(&Utc)
+                    },
+                })
+            })?
+            .collect()
+    }
+
+    /// Update an existing track record
+    pub fn update_track(&self, track: &TrackRecord) -> SqlResult<()> {
+        self.conn.execute(
+            r#"
+            UPDATE tracks SET
+                video_id = ?2, title = ?3, artist = ?4, thumbnail_url = ?5,
+                duration_ms = ?6, album_id = ?7, album_name = ?8, artist_id = ?9,
+                artist_ids = ?10, is_video = ?11, is_explicit = ?12,
+                source_quality = ?13, source = ?14, local_uri = ?15, local_path = ?16,
+                file_path = ?17, file_size_bytes = ?18, bitrate = ?19, sample_rate = ?20,
+                channels = ?21, genres = ?22, composers = ?23, copyright = ?24,
+                track_number = ?25, disc_number = ?26, album_total_tracks = ?27,
+                date_added_seconds = ?28, date_modified_seconds = ?29,
+                play_count = ?30, skip_count = ?31, last_played = ?32, rating = ?33,
+                lyrics = ?34, release_date = ?35, created_at = ?36, updated_at = ?37
+            WHERE id = ?1
+            "#,
+            params![
+                track.id.to_string(),
+                track.video_id.as_deref(),
+                &track.title,
+                &track.artist,
+                track.thumbnail_url.as_deref(),
+                track.duration_ms,
+                track.album_id.map(|v| v.to_string()),
+                track.album_name.as_deref(),
+                track.artist_id.map(|v| v.to_string()),
+                track.artist_ids.as_deref(),
+                if track.is_video { 1 } else { 0 },
+                track.is_explicit.map(|v| v as i32),
+                track.source_quality.as_deref(),
+                track.source.as_deref(),
+                track.local_uri.as_deref(),
+                track.local_path.as_deref(),
+                track.file_path.as_deref(),
+                track.file_size_bytes,
+                track.bitrate,
+                track.sample_rate,
+                track.channels,
+                track.genres.as_deref(),
+                track.composers.as_deref(),
+                track.copyright.as_deref(),
+                track.track_number,
+                track.disc_number,
+                track.album_total_tracks,
+                track.date_added_seconds,
+                track.date_modified_seconds,
+                track.play_count,
+                track.skip_count,
+                track.last_played.map(|v| v.to_rfc3339()),
+                track.rating,
+                track.lyrics.as_deref(),
+                track.release_date.map(|v| v.to_rfc3339()),
+                track.created_at.to_rfc3339(),
+                track.updated_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a track by ID
+    pub fn delete_track(&self, id: &Uuid) -> SqlResult<bool> {
+        let rows = self.conn.execute(
+            "DELETE FROM tracks WHERE id = ?",
+            params![id.to_string()],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Get all tracks
+    pub fn get_all_tracks(&self) -> SqlResult<Vec<TrackRecord>> {
+        self.conn
+            .prepare(
+                r#"
+                SELECT id, video_id, title, artist, thumbnail_url, duration_ms,
+                       album_id, album_name, artist_id, artist_ids, is_video,
+                       is_explicit, source_quality, source, local_uri, local_path,
+                       file_path, file_size_bytes, bitrate, sample_rate, channels,
+                       genres, composers, copyright, track_number, disc_number,
+                       album_total_tracks, date_added_seconds, date_modified_seconds,
+                       play_count, skip_count, last_played, rating, lyrics,
+                       release_date, created_at, updated_at
+                FROM tracks
+                ORDER BY title ASC
+                "#
+            )?
+            .query_map([], |row| {
+                let parse_uuid_opt = |s: Option<String>| s.and_then(|s| Uuid::parse_str(&s).ok());
+
+                Ok(TrackRecord {
+                    id: Uuid::parse_str(&row.get::<_, String>("id")?)
+                        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        ))?,
+                    video_id: row.get("video_id")?,
+                    title: row.get("title")?,
+                    artist: row.get("artist")?,
+                    thumbnail_url: row.get("thumbnail_url")?,
+                    duration_ms: row.get("duration_ms")?,
+                    album_id: parse_uuid_opt(row.get("album_id")?)?,
+                    album_name: row.get("album_name")?,
+                    artist_id: parse_uuid_opt(row.get("artist_id")?)?,
+                    artist_ids: row.get("artist_ids")?,
+                    is_video: row.get::<_, i32>("is_video")? != 0,
+                    is_explicit: row.get("is_explicit")?,
+                    source_quality: row.get("source_quality")?,
+                    source: row.get("source")?,
+                    local_uri: row.get("local_uri")?,
+                    local_path: row.get("local_path")?,
+                    file_path: row.get("file_path")?,
+                    file_size_bytes: row.get("file_size_bytes")?,
+                    bitrate: row.get("bitrate")?,
+                    sample_rate: row.get("sample_rate")?,
+                    channels: row.get::<_, Option<i16>>("channels")?,
+                    genres: row.get("genres")?,
+                    composers: row.get("composers")?,
+                    copyright: row.get("copyright")?,
+                    track_number: row.get("track_number")?,
+                    disc_number: row.get("disc_number")?,
+                    album_total_tracks: row.get("album_total_tracks")?,
+                    date_added_seconds: row.get("date_added_seconds")?,
+                    date_modified_seconds: row.get("date_modified_seconds")?,
+                    play_count: row.get::<_, i32>("play_count")?,
+                    skip_count: row.get::<_, i32>("skip_count")?,
+                    last_played: None,
+                    rating: row.get("rating")?,
+                    lyrics: row.get("lyrics")?,
+                    release_date: None,
+                    created_at: {
+                        let s = row.get::<_, String>("created_at")?;
+                        DateTime::parse_from_rfc3339(&s)
+                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            ))?
+                            .with_timezone(&Utc)
+                    },
+                    updated_at: {
+                        let s = row.get::<_, String>("updated_at")?;
+                        DateTime::parse_from_rfc3339(&s)
+                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            ))?
+                            .with_timezone(&Utc)
+                    },
+                })
+            })?
+            .collect()
+    }
 }
