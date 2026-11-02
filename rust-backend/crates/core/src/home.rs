@@ -94,7 +94,7 @@ impl HomeShelf {
 }
 
 /// The signed-in library, as YouTube Music splits it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryPage {
     pub liked_songs: Vec<Song>,

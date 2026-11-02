@@ -30,7 +30,7 @@ pub struct ArtistRef {
 /// A playable YouTube Music track.
 ///
 /// Field names use `camelCase` via serde to match the Kotlin wire/shared format exactly.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Song {
     pub video_id: String,

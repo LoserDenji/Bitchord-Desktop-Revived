@@ -50,6 +50,7 @@ pub struct SubscriptionState {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[derive(Default)]
 pub enum AlbumReleaseType {
+    #[default]
     Album,
     Single,
     EP,
