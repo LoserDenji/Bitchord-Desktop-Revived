@@ -3,6 +3,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 use bitchord_core::{Library, UserSettings};
+use uuid::Uuid;
 
 /// Global application state
 #[derive(Debug)]

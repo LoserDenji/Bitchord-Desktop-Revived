@@ -3,7 +3,7 @@
 //! Tables are based on the shared/sync model from Kotlin BitChord.
 //! Each entity (Track, Album, Artist, Playlist) has a corresponding table.
 
-use rusqlite::{params, Connection, Result as SqlResult, OptionalExtension};
+use rusqlite::{params, Connection, Result as SqlResult};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -478,7 +478,11 @@ impl LibraryRepository {
 
                     Ok(TrackRecord {
                         id: Uuid::parse_str(&row.get::<_, String>("id")?)
-                            .map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))?,
+                                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure {
+                                                type_name: "Uuid".into(),
+                                                sql_type: rusqlite::types::Type::Text,
+                                                source: Box::new(e),
+                                            })?,
                         video_id: row.get("video_id")?,
                         title: row.get("title")?,
                         artist: row.get("artist")?,
@@ -511,22 +515,40 @@ impl LibraryRepository {
                         skip_count: row.get::<_, i32>("skip_count")?,
                         last_played: row
                             .get::<_, Option<String>>("last_played")?
-                            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok()),
+                            .and_then(|s| {
+                                DateTime::parse_from_rfc3339(&s)
+                                    .ok()?
+                                    .with_timezone(&Utc)
+                                    .into()
+                            }),
                         rating: row.get("rating")?,
                         lyrics: row.get("lyrics")?,
                         release_date: row
                             .get::<_, Option<String>>("release_date")?
-                            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok()),
+                            .and_then(|s| {
+                                DateTime::parse_from_rfc3339(&s)
+                                    .ok()?
+                                    .with_timezone(&Utc)
+                                    .into()
+                            }),
                         created_at: {
                             let s = row.get::<_, String>("created_at")?;
                             DateTime::parse_from_rfc3339(&s)
-                                .map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))?
+                                .map_err(|e| rusqlite::Error::FromSqlConversionFailure {
+                                    type_name: "DateTime".into(),
+                                    sql_type: rusqlite::types::Type::Text,
+                                    source: Box::new(e),
+                                })?
                                 .with_timezone(&Utc)
                         },
                         updated_at: {
                             let s = row.get::<_, String>("updated_at")?;
                             DateTime::parse_from_rfc3339(&s)
-                                .map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))?
+                                .map_err(|e| rusqlite::Error::FromSqlConversionFailure {
+                                    type_name: "DateTime".into(),
+                                    sql_type: rusqlite::types::Type::Text,
+                                    source: Box::new(e),
+                                })?
                                 .with_timezone(&Utc)
                         },
                     })
@@ -670,7 +692,11 @@ impl LibraryRepository {
             .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position")?
             .query_map(params![playlist_id.to_string()], |row| {
                 let s: String = row.get(0)?;
-                Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlFailure(Box::new(e)))
+                Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionFailure {
+                    type_name: "Uuid".into(),
+                    sql_type: rusqlite::types::Type::Text,
+                    source: Box::new(e),
+                })
             })?
             .collect::<SqlResult<Vec<_>>>()
     }
