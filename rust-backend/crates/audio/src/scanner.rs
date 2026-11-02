@@ -49,7 +49,7 @@ impl ScannedTrack {
         // Try to detect MIME type using first 512 bytes (file signature)
         let mime = std::fs::read(&path)
             .ok()
-            .and_then(|head| infer::get(&head).map(|m| m.type_str().to_string()));
+            .and_then(|head| infer::get(&head).map(|m| m.mime_type().to_string()));
 
         Ok(Self { path, title, mime, size })
     }
