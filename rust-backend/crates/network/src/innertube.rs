@@ -210,7 +210,11 @@ impl InnerTubeClient {
     }
 
     /// Get the player response for a video/track.
-    pub async fn player(&self, video_id: &str, signature_timestamp: Option<i64>) -> Result<Value> {
+    pub async fn player(
+        &self,
+        video_id: &str,
+        _signature_timestamp: Option<i64>,
+    ) -> Result<Value> {
         let session = self.session.read().await;
         let client_version = session
             .scope
@@ -222,7 +226,7 @@ impl InnerTubeClient {
             body.insert("contentCheckOk".to_string(), serde_json::Value::Bool(true));
             body.insert("racyCheckOk".to_string(), serde_json::Value::Bool(true));
 
-            let mut ctx = serde_json::json!({
+            let ctx = serde_json::json!({
                 "client": {
                     "clientName": "WEB_REMIX",
                     "clientVersion": client_version,
@@ -401,7 +405,7 @@ impl InnerTubeClient {
 
         response.json::<Value>()
             .await
-            .map_err(|e| NetworkError::Parse(serde_json::Error::custom(e.to_string())))
+            .map_err(|e| NetworkError::Parse(serde_json::Error::io(std::io::Error::other(e.to_string()))))?
     }
 
     async fn session_read(&self) -> InnerTubeSession {

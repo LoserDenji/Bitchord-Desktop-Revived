@@ -43,16 +43,16 @@ impl HttpClient {
             .timeout(DEFAULT_REQUEST_TIMEOUT)
             .user_agent(crate::innertube::WEB_USER_AGENT);
         if let Some(url) = proxy {
-            b = b.proxy(reqwest::Proxy::all(url));
+            b = b.proxy(reqwest::Proxy::all(url.as_str()).expect("invalid proxy URL"));
         }
         b
     }
 
     /// Build a client that routes all traffic through `proxy_url`.
     pub fn with_proxy(proxy_url: &str) -> Result<Self> {
-        let url: reqwest::Url = proxy_url
-            .parse()
-            .map_err(|e| NetworkError::Transport(reqwest::Error::new(reqwest::StatusCode::BAD_REQUEST, e)))?;
+        let url: reqwest::Url = proxy_url.parse().map_err(|e| {
+            NetworkError::NotSignedIn(format!("invalid proxy URL: {e}"))
+        })?;
         let client = Self::builder(Some(url)).build()?;
         Ok(Self {
             client,
@@ -102,12 +102,12 @@ impl HttpClient {
     ) -> Result<T> {
         let mut backoff = Duration::from_millis(500);
         let attempts = self.retry_attempts;
+        let mut f = Some(f);
 
         for attempt in 0..attempts.saturating_sub(1) {
-            match f.try_await().await {
+            match f.take().unwrap().try_await().await {
                 Ok(v) => return Ok(v),
                 Err(NetworkError::Timeout(msg)) => {
-                    // Do not retry timeouts — the ceiling has already been hit.
                     debug!(
                         attempt = attempt + 1,
                         "not retrying, request timed out: {msg}"
@@ -126,7 +126,7 @@ impl HttpClient {
             }
         }
         // Final attempt.
-        f.try_await().await
+        f.take().unwrap().try_await().await
     }
 }
 

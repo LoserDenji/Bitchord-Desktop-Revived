@@ -53,7 +53,7 @@ impl FileEvent {
     }
 
     /// Check if the path is an audio file
-    fn is_audio_path(path: &PathBuf) -> bool {
+    fn _is_audio_path(path: &PathBuf) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
             .map(|e| AUDIO_EXTENSIONS.contains(&e))
