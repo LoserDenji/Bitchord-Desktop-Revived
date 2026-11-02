@@ -1,13 +1,12 @@
 //! Audio directory scanner - scans local directories and yields track titles
 
 use anyhow::Result;
-use infer::mime;
-use notify::RecommendedWatcher;
+use infer;
+use notify::{RecommendedWatcher, Watcher};
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
@@ -50,7 +49,7 @@ impl ScannedTrack {
         // Try to detect MIME type using first 512 bytes (file signature)
         let mime = std::fs::read(&path)
             .ok()
-            .and_then(|head| mime::from_slice(&head).map(|m| m.type_str().to_string()));
+            .and_then(|head| infer::from_slice(&head).map(|m| m.type_str().to_string()));
 
         Ok(Self { path, title, mime, size })
     }
@@ -97,7 +96,7 @@ pub enum FileEvent {
 impl From<notify::Event> for FileEvent {
     fn from(event: notify::Event) -> Self {
         match event.kind {
-            notify::EventKind::Create(_, _) => {
+            notify::EventKind::Create(_) => {
                 let path = event.paths.first().cloned().unwrap_or_default();
                 FileEvent::Created(path)
             }
@@ -109,10 +108,6 @@ impl From<notify::Event> for FileEvent {
                 let path = event.paths.first().cloned().unwrap_or_default();
                 FileEvent::Deleted(path)
             }
-            notify::EventKind::Rename(_, _) => match event.paths.as_slice() {
-                [old, new] => FileEvent::Renamed(old.clone(), new.clone()),
-                _ => FileEvent::Renamed(PathBuf::new(), PathBuf::new()),
-            },
             _ => FileEvent::Created(PathBuf::new()),
         }
     }
@@ -315,7 +310,8 @@ impl Stream for TrackStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        std::pin::Pin::new(&mut self.receiver).poll_next(cx)
+        use tokio_stream::StreamExt;
+        std::pin::Pin::new(&mut self.receiver).poll_recv(cx)
     }
 }
 

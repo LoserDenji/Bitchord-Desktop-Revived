@@ -41,18 +41,18 @@ impl FileEvent {
     pub fn is_audio_event(&self) -> bool {
         match self {
             FileEvent::Created(path) | FileEvent::Modified(path) | FileEvent::Deleted(path) => {
-                is_audio_path(path) || is_audio_dir(path)
+                is_audio_path(path) || path.is_dir()
             }
             FileEvent::Renamed(old, new) => {
-                is_audio_path(old) || is_audio_path(new) || 
-                is_audio_dir(old) || is_audio_dir(new)
+                is_audio_path(old) || is_audio_path(new) ||
+                old.is_dir() || new.is_dir()
             }
             FileEvent::DirectoryCreated(path) | FileEvent::DirectoryRemoved(path) => {
                 true // All directory events are relevant
             }
         }
     }
-    
+
     /// Check if the path is an audio file
     fn is_audio_path(path: &PathBuf) -> bool {
         path.extension()
@@ -60,7 +60,7 @@ impl FileEvent {
             .map(|e| AUDIO_EXTENSIONS.contains(&e))
             .unwrap_or(false)
     }
-    
+
     /// Check if the path is a directory
     fn is_audio_dir(path: &PathBuf) -> bool {
         path.is_dir()
@@ -83,13 +83,12 @@ impl From<notify::Event> for FileEvent {
                 let path = event.paths.first().cloned().unwrap_or_default();
                 FileEvent::Deleted(path)
             }
-            notify::EventKind::Rename(rename_kind, _) => {
+            _ => {
                 match event.paths.as_slice() {
                     [old, new] => FileEvent::Renamed(old.clone(), new.clone()),
-                    _ => FileEvent::Renamed(PathBuf::new(), PathBuf::new()),
+                    _ => FileEvent::Created(PathBuf::new()),
                 }
             }
-            _ => FileEvent::Created(PathBuf::new()),
         }
     }
 }
@@ -147,7 +146,6 @@ impl AudioWatcher {
             },
             Config::default()
                 .with_compare_contents(true)
-                .with_report_changes_only(true)
                 .with_delay(Duration::from_millis(100)),
         ).context("Failed to create file system watcher")?;
 
