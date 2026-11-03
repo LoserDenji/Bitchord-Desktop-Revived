@@ -87,18 +87,57 @@ fn broadcast_playback_state(state: tauri::State<'_, bitchord_state::AppState>, s
 
 // Playback commands
 #[tauri::command]
-fn play_track(state: tauri::State<'_, bitchord_state::AppState>, track_id: uuid::Uuid) -> Result<(), String> {
-    bitchord_commands::playback::play_track(&state, track_id)
+fn play_track(
+    state: tauri::State<'_, bitchord_state::AppState>,
+    #[cfg(target_os = "linux")] mpris: tauri::State<'_, bitchord_platform::MprisManager>,
+    track_id: uuid::Uuid,
+) -> Result<(), String> {
+    bitchord_commands::playback::play_track(&state, track_id)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let lib = state.library.read();
+        let track = lib.as_ref().and_then(|l| l.find_track(track_id));
+        mpris.update_playback_state(true, 0u64, track);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
-fn pause_playback(state: tauri::State<'_, bitchord_state::AppState>) -> Result<(), String> {
-    bitchord_commands::playback::pause_playback(&state)
+fn pause_playback(
+    state: tauri::State<'_, bitchord_state::AppState>,
+    #[cfg(target_os = "linux")] mpris: tauri::State<'_, bitchord_platform::MprisManager>,
+) -> Result<(), String> {
+    bitchord_commands::playback::pause_playback(&state)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let playback = state.playback.read();
+        let position = playback.position_ms;
+        let track_id = playback.current_track;
+        drop(playback);
+        let lib = state.library.read();
+        let track = track_id.and_then(|id| lib.as_ref().and_then(|l| l.find_track(id)));
+        mpris.update_playback_state(false, position, track);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
-fn stop_playback(state: tauri::State<'_, bitchord_state::AppState>) -> Result<(), String> {
-    bitchord_commands::playback::stop_playback(&state)
+fn stop_playback(
+    state: tauri::State<'_, bitchord_state::AppState>,
+    #[cfg(target_os = "linux")] mpris: tauri::State<'_, bitchord_platform::MprisManager>,
+) -> Result<(), String> {
+    bitchord_commands::playback::stop_playback(&state)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        mpris.update_playback_state(false, 0u64, None);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -112,8 +151,23 @@ fn previous_track(state: tauri::State<'_, bitchord_state::AppState>) -> Result<(
 }
 
 #[tauri::command]
-fn seek_to(state: tauri::State<'_, bitchord_state::AppState>, position_ms: u64) -> Result<(), String> {
-    bitchord_commands::playback::seek_to(&state, position_ms)
+fn seek_to(
+    state: tauri::State<'_, bitchord_state::AppState>,
+    #[cfg(target_os = "linux")] mpris: tauri::State<'_, bitchord_platform::MprisManager>,
+    position_ms: u64,
+) -> Result<(), String> {
+    bitchord_commands::playback::seek_to(&state, position_ms)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let track_id = state.playback.read().current_track;
+        drop(state.playback.read());
+        let lib = state.library.read();
+        let track = track_id.and_then(|id| lib.as_ref().and_then(|l| l.find_track(id)));
+        mpris.update_playback_state(*state.is_playing.read(), position_ms, track);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -142,9 +196,6 @@ fn toggle_repeat(state: tauri::State<'_, bitchord_state::AppState>) -> Result<()
 #[tauri::command]
 fn mpris_update(
     state: tauri::State<'_, bitchord_state::AppState>,
-    mpris: tauri::State<'_, bitchord_platform::MprisManager>,
-    _track_id: Option<uuid::Uuid>,
-    _is_playing: bool,
 ) -> Result<(), String> {
     let playback = state.playback.read();
     let position = playback.position_ms;
@@ -153,7 +204,9 @@ fn mpris_update(
     let lib = state.library.read();
     let track = track_id.and_then(|id| lib.as_ref().and_then(|l| l.find_track(id)));
     let is_playing = *state.is_playing.read();
-    mpris.update_playback_state(is_playing, position, track);
+    if let Some(mpris) = state.mpris.as_ref() {
+        mpris.update_playback_state(is_playing, position, track);
+    }
     Ok(())
 }
 
