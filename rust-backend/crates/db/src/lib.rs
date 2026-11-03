@@ -66,6 +66,10 @@ impl DbRepository {
             .execute(&self.pool).await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)")
             .execute(&self.pool).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracks_video_id ON tracks(video_id)")
+            .execute(&self.pool).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracks_local_path ON tracks(local_path)")
+            .execute(&self.pool).await?;
 
         // Play history table
         sqlx::query(
@@ -419,8 +423,8 @@ pub struct TrackDbRecord {
     pub rating: Option<i32>,
     pub lyrics: Option<String>,
     pub release_date: Option<String>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -460,14 +464,14 @@ struct TrackDbRow {
     rating: Option<i32>,
     lyrics: Option<String>,
     release_date: Option<String>,
-    created_at: Option<String>,
-    updated_at: Option<String>,
+    created_at: String,
+    updated_at: String,
 }
 
 impl From<TrackDbRow> for TrackDbRecord {
     fn from(row: TrackDbRow) -> Self {
         Self {
-            id: Uuid::parse_str(&row.id).unwrap_or_default(),
+            id: Uuid::parse_str(&row.id).unwrap_or_else(|_| uuid::Uuid::nil()),
             video_id: row.video_id,
             title: row.title,
             artist: row.artist,

@@ -8,7 +8,7 @@ pub mod sqlite;
 use anyhow::Result;
 use std::path::PathBuf;
 use walkdir::WalkDir;
-use lofty::{read_from_path, file::AudioFile, tag::Accessor};
+use lofty::{read_from_path, file::{AudioFile, TaggedFileExt}, tag::Accessor};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use bitchord_core::{ScanConfig, TrackMetadata};
@@ -121,9 +121,9 @@ impl LibraryScanner {
                     track_number,
                     disc_number,
                     duration_ms,
-                    bitrate: Some(audio_file.properties().bitrate()),
-                    sample_rate: Some(audio_file.properties().sample_rate()),
-                    channels: Some(audio_file.properties().channels()),
+                    bitrate: audio_file.properties().overall_bitrate(),
+                    sample_rate: audio_file.properties().sample_rate(),
+                    channels: audio_file.properties().channels().map(|c| c as u16),
                     file_path: file_path.to_path_buf(),
                     file_size,
                     date_added: Utc::now(),
@@ -210,7 +210,7 @@ impl From<TrackMetadata> for TrackRecord {
             last_played: None,
             rating: None,
             lyrics: None,
-            release_date: meta.album.and_then(|_| None),
+            release_date: None,
             created_at: now,
             updated_at: now,
         }

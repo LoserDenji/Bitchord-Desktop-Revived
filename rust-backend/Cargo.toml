@@ -40,7 +40,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Audio/AV
 cpal = "0.15"
-lofty = { version = "0.4", default-features = false, features = ["std"] }
+lofty = { version = "0.24", default-features = false }
 rodio = { version = "0.17", default-features = false }
 
 # Networking
