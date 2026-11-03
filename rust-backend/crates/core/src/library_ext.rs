@@ -1,6 +1,9 @@
 //! Library-related extensions
 use serde::{Deserialize, Serialize};
 
+/// Callback type for scan progress reporting
+pub type ProgressCallback = fn(tracks_found: usize, bytes_scanned: u64, duration_ms: u64);
+
 /// Track metadata for library scanning
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScanConfig {
@@ -12,6 +15,10 @@ pub struct ScanConfig {
     pub recursive: bool,
     /// Maximum concurrent file reads
     pub max_concurrent: usize,
+    /// Batch size for database inserts (default 100)
+    pub batch_size: usize,
+    /// Optional progress callback
+    pub progress_callback: Option<ProgressCallback>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

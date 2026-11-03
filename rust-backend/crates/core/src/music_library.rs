@@ -15,9 +15,9 @@ pub struct LibraryFolder {
     pub last_scanned: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Library scanner configuration
+/// Library scanner configuration (legacy, use library_ext::ScanConfig)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanConfig {
+pub struct LibraryScanConfig {
     /// Root paths to scan
     pub root_paths: Vec<PathBuf>,
     /// File extensions to include
@@ -32,7 +32,7 @@ pub struct ScanConfig {
     pub batch_pause_ms: u64,
 }
 
-impl Default for ScanConfig {
+impl Default for LibraryScanConfig {
     fn default() -> Self {
         Self {
             root_paths: Vec::new(),

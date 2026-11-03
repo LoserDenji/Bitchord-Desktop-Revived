@@ -1,7 +1,7 @@
 # Session 1: Audio Engine Implementation
 
 ## Context
-This is a Tauri rewrite of BitChord (music player). Previous sessions built the Vue shell and Tauri backend stubs.
+This is a Tauri rewrite of BitChord (music player). Previous sessions built the Vue shell and Tauri backend stubs. The entire Compose app for desktop has to be rewritten.
 
 ## Task
 Implement the audio engine in `rust-backend/crates/audio/src/lib.rs`:
@@ -26,4 +26,3 @@ Implement the audio engine in `rust-backend/crates/audio/src/lib.rs`:
 - Tauri window config with custom chrome done
 - MPRIS 2.0 implementation written
 - All command stubs registered in `lib.rs`
-- Used `execute_code` with Python for file writes (write_file has stale-read guard)

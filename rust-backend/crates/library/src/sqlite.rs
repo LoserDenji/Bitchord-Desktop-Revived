@@ -793,10 +793,24 @@ impl LibraryRepository {
                     date_modified_seconds: row.get("date_modified_seconds")?,
                     play_count: row.get::<_, i32>("play_count")?,
                     skip_count: row.get::<_, i32>("skip_count")?,
-                    last_played: None,
+                    last_played: row
+                        .get::<_, Option<String>>("last_played")?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()?
+                                .with_timezone(&Utc)
+                                .into()
+                        }),
                     rating: row.get("rating")?,
                     lyrics: row.get("lyrics")?,
-                    release_date: None,
+                    release_date: row
+                        .get::<_, Option<String>>("release_date")?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()?
+                                .with_timezone(&Utc)
+                                .into()
+                        }),
                     created_at: {
                         let s = row.get::<_, String>("created_at")?;
                         DateTime::parse_from_rfc3339(&s)
@@ -948,10 +962,24 @@ impl LibraryRepository {
                     date_modified_seconds: row.get("date_modified_seconds")?,
                     play_count: row.get::<_, i32>("play_count")?,
                     skip_count: row.get::<_, i32>("skip_count")?,
-                    last_played: None,
+                    last_played: row
+                        .get::<_, Option<String>>("last_played")?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()?
+                                .with_timezone(&Utc)
+                                .into()
+                        }),
                     rating: row.get("rating")?,
                     lyrics: row.get("lyrics")?,
-                    release_date: None,
+                    release_date: row
+                        .get::<_, Option<String>>("release_date")?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()?
+                                .with_timezone(&Utc)
+                                .into()
+                        }),
                     created_at: {
                         let s = row.get::<_, String>("created_at")?;
                         DateTime::parse_from_rfc3339(&s)

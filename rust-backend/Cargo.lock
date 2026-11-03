@@ -370,6 +370,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -385,12 +386,9 @@ name = "bitchord-library"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "bitchord-core",
- "bitchord-db",
  "chrono",
  "lofty",
- "regex",
  "rusqlite",
  "serde",
  "sqlx",
@@ -426,7 +424,6 @@ dependencies = [
  "anyhow",
  "bitchord-core",
  "serde",
- "tokio",
  "tracing",
  "zbus",
 ]
@@ -453,8 +450,6 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
 ]
 
 [[package]]
