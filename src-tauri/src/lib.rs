@@ -143,16 +143,16 @@ fn toggle_repeat(state: tauri::State<'_, bitchord_state::AppState>) -> Result<()
 fn mpris_update(
     state: tauri::State<'_, bitchord_state::AppState>,
     mpris: tauri::State<'_, bitchord_platform::MprisManager>,
-    track_id: Option<uuid::Uuid>,
-    is_playing: bool,
+    _track_id: Option<uuid::Uuid>,
+    _is_playing: bool,
 ) -> Result<(), String> {
-    let track = if let Some(id) = track_id {
-        let lib = state.library.read();
-        lib.as_ref().and_then(|l| l.find_track(id))
-    } else {
-        None
-    };
-    let position = state.current_position.read().clone();
+    let playback = state.playback.read();
+    let position = playback.position_ms;
+    let track_id = playback.current_track;
+    drop(playback);
+    let lib = state.library.read();
+    let track = track_id.and_then(|id| lib.as_ref().and_then(|l| l.find_track(id)));
+    let is_playing = *state.is_playing.read();
     mpris.update_playback_state(is_playing, position, track);
     Ok(())
 }

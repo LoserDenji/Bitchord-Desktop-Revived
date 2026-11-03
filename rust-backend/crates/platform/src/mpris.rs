@@ -273,5 +273,11 @@ impl MprisManager {
         Self
     }
 
-    pub fn update_state(&self, _playing: bool) {}
+    pub fn update_playback(&self, _playing: bool) {}
+
+    pub fn update_position(&self, _pos_ms: u64) {}
+
+    pub fn update_track(&self, _track: Option<bitchord_core::Track>) {}
+
+    pub fn update_playback_state(&self, _playing: bool, _position_ms: u64, _track: Option<bitchord_core::Track>) {}
 }

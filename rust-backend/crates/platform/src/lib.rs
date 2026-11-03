@@ -6,19 +6,13 @@
 //! - Vibrancy for macOS
 
 #[cfg(target_os = "linux")]
-pub mod mpris;
+mod mpris;
 
 #[cfg(target_os = "linux")]
-pub use mpris::MprisManager;
+pub use mpris::{MprisManager, MprisState, PlaybackStatus};
 
 #[cfg(not(target_os = "linux"))]
-pub struct MprisManager;
+mod mpris_stub;
 
 #[cfg(not(target_os = "linux"))]
-impl MprisManager {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn update_state(&self, _playing: bool) {}
-}
+pub use mpris_stub::MprisManager;
