@@ -85,8 +85,8 @@ fn leave_sync_session(state: tauri::State<'_, bitchord_state::AppState>, session
 }
 
 #[tauri::command]
-fn broadcast_playback_state(state: tauri::State<'_, bitchord_state::AppState>, session_id: String, message: bitchord_sync::SyncMessage) -> Result<(), String> {
-    bitchord_commands::sync::broadcast_playback_state(&state, session_id, message)
+fn broadcast_playback_state(state: tauri::State<'_, bitchord_state::AppState>, session_id: String, action: bitchord_sync::ControlAction) -> Result<(), String> {
+    bitchord_commands::sync::broadcast_playback_state(&state, session_id, action)
 }
 
 // Playback commands
@@ -335,40 +335,40 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_platform,
-            minimize_window,
-            toggle_maximize,
-            close_window,
-            scan_library,
-            get_library_stats,
-            list_tracks,
-            list_albums,
-            list_artists,
-            play_track,
-            pause_playback,
-            stop_playback,
-            next_track,
-            previous_track,
-            seek_to,
-            set_volume,
-            get_playback_state,
-            toggle_shuffle,
-            toggle_repeat,
-            #[cfg(target_os = "linux")]
-            mpris_update,
-            #[cfg(target_os = "windows")]
-            set_mica,
-            #[cfg(target_os = "macos")]
-            set_vibrancy,
-            #[cfg(target_os = "macos")]
-            dock_bounce,
-            #[cfg(target_os = "macos")]
-                        activate_app,
-                        create_sync_session,
-                        join_sync_session,
-                        leave_sync_session,
-                        broadcast_playback_state,
-                    ])
+                    get_platform,
+                    minimize_window,
+                    toggle_maximize,
+                    close_window,
+                    scan_library,
+                    get_library_stats,
+                    list_tracks,
+                    list_albums,
+                    list_artists,
+                    play_track,
+                    pause_playback,
+                    stop_playback,
+                    next_track,
+                    previous_track,
+                    seek_to,
+                    set_volume,
+                    get_playback_state,
+                    toggle_shuffle,
+                    toggle_repeat,
+                    #[cfg(target_os = "linux")]
+                    mpris_update,
+                    #[cfg(target_os = "windows")]
+                    set_mica,
+                    #[cfg(target_os = "macos")]
+                    set_vibrancy,
+                    #[cfg(target_os = "macos")]
+                    dock_bounce,
+                    #[cfg(target_os = "macos")]
+                    activate_app,
+                    create_sync_session,
+                    join_sync_session,
+                    leave_sync_session,
+                    broadcast_playback_state,
+                ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
 }

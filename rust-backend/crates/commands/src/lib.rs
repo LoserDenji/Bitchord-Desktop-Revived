@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use bitchord_state::{AppState, PlaybackStateResponse};
 use bitchord_core::{LibraryStats, Track, Album, Artist};
 use bitchord_library::LibraryScanner;
-use bitchord_sync::{SyncMessage, SyncEvent, Participant};
+use bitchord_sync::{SyncMessage, ControlAction, Participant, SyncSession};
 
 /// Types for responses
 #[derive(Debug, Clone, serde::Serialize)]
@@ -81,10 +81,8 @@ pub mod sync {
         let sync_manager = state.sync.read();
         if let Some(manager) = sync_manager.as_ref() {
             let manager = manager.clone();
-            let participant = Participant::new(uuid::Uuid::new_v4().to_string(), participant_name);
-            
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-            rt.block_on(manager.create_session(participant.client_id))
+            rt.block_on(manager.create_session(format!("{}:{}", session_name, participant_name)))
                 .map_err(|e| e.to_string())
         } else {
             Ok(uuid::Uuid::new_v4().to_string())
@@ -101,10 +99,8 @@ pub mod sync {
         let sync_manager = state.sync.read();
         if let Some(manager) = sync_manager.as_ref() {
             let manager = manager.clone();
-            let participant = Participant::new(uuid::Uuid::new_v4().to_string(), participant_name);
-            
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-            rt.block_on(manager.join_session(&session_id, participant))
+            rt.block_on(manager.join_session(&session_id))
                 .map_err(|e| e.to_string())
         } else {
             Ok(())
@@ -121,8 +117,7 @@ pub mod sync {
         if let Some(manager) = sync_manager.as_ref() {
             let manager = manager.clone();
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-            let client_id = uuid::Uuid::new_v4().to_string();
-            rt.block_on(manager.leave_session(&session_id, &client_id))
+            rt.block_on(manager.leave_session(&session_id))
                 .map_err(|e| e.to_string())
         } else {
             Ok(())
@@ -132,13 +127,18 @@ pub mod sync {
     pub fn broadcast_playback_state(
         state: &AppState,
         session_id: String,
-        message: SyncMessage,
+        action: ControlAction,
     ) -> Result<(), String> {
+        info!("Broadcasting playback state: {:?}", action);
+        
         let sync_manager = state.sync.read();
         if let Some(manager) = sync_manager.as_ref() {
             let manager = manager.clone();
+            let msg = SyncMessage::State { 
+                playback: serde_json::json!({ "is_playing": true, "position_ms": 0 })
+            };
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-            rt.block_on(manager.broadcast_message(&session_id, message))
+            rt.block_on(manager.broadcast_message(&session_id, msg))
                 .map_err(|e| e.to_string())
         } else {
             Ok(())
