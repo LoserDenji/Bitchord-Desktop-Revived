@@ -25,6 +25,8 @@ pub struct LibraryStats {
 }
 
 /// A music library containing tracks, albums, artists, and playlists
+use crate::track::Track;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Library {
     /// Root folder of the library
@@ -44,6 +46,13 @@ pub struct Library {
 }
 
 impl Library {
+    /// Find a track by its UUID
+    pub fn find_track(&self, id: uuid::Uuid) -> Option<&Track> {
+        // This would search through the library's tracks
+        // For now, return None since tracks are stored in the database
+        None
+    }
+
     pub fn new(root_path: PathBuf, name: String) -> Self {
         Self {
             root_path,

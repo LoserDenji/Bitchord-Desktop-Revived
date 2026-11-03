@@ -231,6 +231,13 @@ impl MprisManager {
         self.state.update_track(track);
     }
 
+    /// Update all playback state at once
+    pub fn update_playback_state(&self, playing: bool, position_ms: u64, track: Option<Track>) {
+        self.state.update_playback(playing);
+        self.state.update_position(position_ms);
+        self.state.update_track(track);
+    }
+
     /// Register both MPRIS interfaces at `/org/mpris/MediaPlayer2` on the session bus.
     pub async fn register(self, conn: &zbus::Connection) -> Result<()> {
         let object_server = conn.object_server();

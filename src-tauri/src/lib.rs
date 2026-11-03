@@ -140,12 +140,20 @@ fn toggle_repeat(state: tauri::State<'_, bitchord_state::AppState>) -> Result<()
 
 #[cfg(target_os = "linux")]
 #[tauri::command]
-fn mpris_update(state: tauri::State<'_, bitchord_state::AppState>, track_id: Option<uuid::Uuid>, is_playing: bool) -> Result<(), String> {
-    let mpris = bitchord_platform::MprisManager::new();
-    if let Some(id) = track_id {
-        let _ = id;
-    }
-    mpris.update_state(is_playing);
+fn mpris_update(
+    state: tauri::State<'_, bitchord_state::AppState>,
+    mpris: tauri::State<'_, bitchord_platform::MprisManager>,
+    track_id: Option<uuid::Uuid>,
+    is_playing: bool,
+) -> Result<(), String> {
+    let track = if let Some(id) = track_id {
+        let lib = state.library.read();
+        lib.as_ref().and_then(|l| l.find_track(id))
+    } else {
+        None
+    };
+    let position = state.current_position.read().clone();
+    mpris.update_playback_state(is_playing, position, track);
     Ok(())
 }
 
@@ -162,6 +170,12 @@ pub fn run() {
         .setup(|app| {
             let state = bitchord_state::AppState::new();
             app.manage(state);
+
+            #[cfg(target_os = "linux")]
+            {
+                let mpris = bitchord_platform::MprisManager::new();
+                app.manage(mpris);
+            }
 
             #[cfg(debug_assertions)]
             {
