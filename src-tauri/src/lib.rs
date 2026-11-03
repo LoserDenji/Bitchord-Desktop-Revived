@@ -5,6 +5,9 @@
 
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
+use objc;
+
 #[tauri::command]
 fn get_platform() -> String {
     if cfg!(target_os = "windows") {
@@ -255,6 +258,41 @@ fn set_mica(window: tauri::Window, enable: bool) -> Result<(), String> {
     Ok(())
 }
 
+// macOS-specific commands
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn set_vibrancy(window: tauri::Window, style: &str) -> Result<(), String> {
+    use tauri::Vibrancy;
+    
+    let vibrancy = match style.to_lowercase().as_str() {
+        "fullscreen" => Vibrancy::Fullscreen,
+        "medium" => Vibrancy::Medium,
+        "ultrathin" => Vibrancy::UltraThin,
+        "regular" => Vibrancy::Regular,
+        "sidebar" => Vibrancy::Sidebar,
+        _ => Vibrancy::None,
+    };
+    
+    window.set_vibrancy(vibrancy).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn dock_bounce(_window: tauri::Window) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn activate_app() -> Result<(), String> {
+    unsafe {
+        let _ = msg_send![objc::class!(NSApplication), sharedApplication];
+    }
+    
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -314,6 +352,12 @@ pub fn run() {
             mpris_update,
             #[cfg(target_os = "windows")]
             set_mica,
+            #[cfg(target_os = "macos")]
+            set_vibrancy,
+            #[cfg(target_os = "macos")]
+            dock_bounce,
+            #[cfg(target_os = "macos")]
+            activate_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
