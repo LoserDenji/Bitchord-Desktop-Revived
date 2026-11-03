@@ -768,9 +768,9 @@ impl LibraryRepository {
                     artist: row.get("artist")?,
                     thumbnail_url: row.get("thumbnail_url")?,
                     duration_ms: row.get("duration_ms")?,
-                    album_id: parse_uuid_opt(row.get("album_id")?)?,
+                    album_id: parse_uuid_opt(row.get("album_id")?),
                     album_name: row.get("album_name")?,
-                    artist_id: parse_uuid_opt(row.get("artist_id")?)?,
+                    artist_id: parse_uuid_opt(row.get("artist_id")),
                     artist_ids: row.get("artist_ids")?,
                     is_video: row.get::<_, i32>("is_video")? != 0,
                     is_explicit: row.get("is_explicit")?,
@@ -832,8 +832,7 @@ impl LibraryRepository {
                             .with_timezone(&Utc)
                     },
                 })
-            })?
-            .collect()
+            .collect::<SqlResult<Vec<_>>>()
     }
 
     /// Update an existing track record
@@ -937,9 +936,9 @@ impl LibraryRepository {
                     artist: row.get("artist")?,
                     thumbnail_url: row.get("thumbnail_url")?,
                     duration_ms: row.get("duration_ms")?,
-                    album_id: parse_uuid_opt(row.get("album_id")?)?,
+                    album_id: parse_uuid_opt(row.get("album_id")?),
                     album_name: row.get("album_name")?,
-                    artist_id: parse_uuid_opt(row.get("artist_id")?)?,
+                    artist_id: parse_uuid_opt(row.get("artist_id")),
                     artist_ids: row.get("artist_ids")?,
                     is_video: row.get::<_, i32>("is_video")? != 0,
                     is_explicit: row.get("is_explicit")?,
