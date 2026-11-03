@@ -213,8 +213,45 @@ fn mpris_update(
 #[cfg(target_os = "windows")]
 #[tauri::command]
 fn set_mica(window: tauri::Window, enable: bool) -> Result<(), String> {
-    let _ = window;
-    let _ = enable;
+    if enable {
+        // Enable Mica effect with tinted backdrop
+        let _ = window.set_background_color(tauri::Color(255, 255, 255, 15));
+        
+        // Set DwmSetWindowAttribute for true Mica effect
+        unsafe {
+            use std::ffi::c_void;
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                DwmSetWindowAttribute, DWMWA_MICA_EFFECT, DWMWA_WINDOW_CORNER_PREFERRED,
+                DWMWN_WINDOW_CORNER_PREFERENCE_ROUND,
+            };
+            
+            let handle = window.hwnd();
+            if handle.is_null() {
+                return Ok(());
+            }
+            
+            // Set corner preference to rounded
+            let corner_pref: u32 = DWMWN_WINDOW_CORNER_PREFERENCE_ROUND;
+            let _ = DwmSetWindowAttribute(
+                handle as HANDLE,
+                DWMWA_WINDOW_CORNER_PREFERRED,
+                &corner_pref as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+            
+            // Enable Mica effect
+            let mica_enabled: u32 = 1;
+            let _ = DwmSetWindowAttribute(
+                handle as HANDLE,
+                DWMWA_MICA_EFFECT,
+                &mica_enabled as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+    } else {
+        let _ = window.set_background_color(tauri::Color(255, 255, 255, 255));
+    }
     Ok(())
 }
 
