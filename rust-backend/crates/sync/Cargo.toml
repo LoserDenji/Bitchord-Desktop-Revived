@@ -11,4 +11,11 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+tokio.workspace = true
+futures.workspace = true
+uuid.workspace = true
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 bitchord-core = { path = "../core" }
+
+[features]
+default = []

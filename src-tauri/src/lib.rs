@@ -4,6 +4,7 @@
 //! Wires up all command handlers and initializes the app state.
 
 use tauri::Manager;
+use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
 use objc;
@@ -287,7 +288,7 @@ fn dock_bounce(_window: tauri::Window) -> Result<(), String> {
 #[tauri::command]
 fn activate_app() -> Result<(), String> {
     unsafe {
-        let _ = msg_send![objc::class!(NSApplication), sharedApplication];
+        let _ = objc::msg_send![objc::class!(NSApplication), sharedApplication];
     }
     
     Ok(())
@@ -296,7 +297,12 @@ fn activate_app() -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let state = bitchord_state::AppState::new();
+            let mut state = bitchord_state::AppState::new();
+            
+            // Initialize sync manager
+            let sync_manager = Arc::new(bitchord_sync::SyncManager::new());
+            *state.sync.write() = Some(sync_manager);
+            
             app.manage(state);
 
             #[cfg(target_os = "linux")]
@@ -357,8 +363,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             dock_bounce,
             #[cfg(target_os = "macos")]
-            activate_app,
-        ])
+                        activate_app,
+                        create_sync_session,
+                        join_sync_session,
+                        leave_sync_session,
+                        broadcast_playback_state,
+                    ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
 }

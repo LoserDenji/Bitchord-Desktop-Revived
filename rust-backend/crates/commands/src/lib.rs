@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use bitchord_state::{AppState, PlaybackStateResponse};
 use bitchord_core::{LibraryStats, Track, Album, Artist};
 use bitchord_library::LibraryScanner;
-use bitchord_sync::SyncMessage;
+use bitchord_sync::{SyncMessage, SyncEvent, Participant};
 
 /// Types for responses
 #[derive(Debug, Clone, serde::Serialize)]
@@ -72,37 +72,77 @@ pub mod sync {
     use super::*;
 
     pub fn create_sync_session(
-        _state: &AppState,
+        state: &AppState,
         session_name: String,
         participant_name: String,
     ) -> Result<String, String> {
         info!("Creating sync session: {} with participant: {}", session_name, participant_name);
-        Ok(uuid::Uuid::new_v4().to_string())
+        
+        let sync_manager = state.sync.read();
+        if let Some(manager) = sync_manager.as_ref() {
+            let manager = manager.clone();
+            let participant = Participant::new(uuid::Uuid::new_v4().to_string(), participant_name);
+            
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            rt.block_on(manager.create_session(participant.client_id))
+                .map_err(|e| e.to_string())
+        } else {
+            Ok(uuid::Uuid::new_v4().to_string())
+        }
     }
 
     pub fn join_sync_session(
-        _state: &AppState,
+        state: &AppState,
         session_id: String,
         participant_name: String,
     ) -> Result<(), String> {
         info!("Entering sync session: {} as {}", session_id, participant_name);
-        Ok(())
+        
+        let sync_manager = state.sync.read();
+        if let Some(manager) = sync_manager.as_ref() {
+            let manager = manager.clone();
+            let participant = Participant::new(uuid::Uuid::new_v4().to_string(), participant_name);
+            
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            rt.block_on(manager.join_session(&session_id, participant))
+                .map_err(|e| e.to_string())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn leave_sync_session(
-        _state: &AppState,
+        state: &AppState,
         session_id: String,
     ) -> Result<(), String> {
         info!("Leaving sync session: {}", session_id);
-        Ok(())
+        
+        let sync_manager = state.sync.read();
+        if let Some(manager) = sync_manager.as_ref() {
+            let manager = manager.clone();
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            let client_id = uuid::Uuid::new_v4().to_string();
+            rt.block_on(manager.leave_session(&session_id, &client_id))
+                .map_err(|e| e.to_string())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn broadcast_playback_state(
-        _state: &AppState,
-        _session_id: String,
-        _message: SyncMessage,
+        state: &AppState,
+        session_id: String,
+        message: SyncMessage,
     ) -> Result<(), String> {
-        Ok(())
+        let sync_manager = state.sync.read();
+        if let Some(manager) = sync_manager.as_ref() {
+            let manager = manager.clone();
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            rt.block_on(manager.broadcast_message(&session_id, message))
+                .map_err(|e| e.to_string())
+        } else {
+            Ok(())
+        }
     }
 }
 

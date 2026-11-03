@@ -26,6 +26,9 @@ pub struct AppState {
     
     /// Is playback active
     pub is_playing: RwLock<bool>,
+    
+    /// Sync/party mode manager
+    pub sync: RwLock<Option<Arc<bitchord_sync::SyncManager>>>,
 }
 
 /// Playback state information
@@ -55,6 +58,7 @@ impl Default for AppState {
             queue: RwLock::new(Vec::new()),
             current_position: RwLock::new(0),
             is_playing: RwLock::new(false),
+            sync: RwLock::new(None),
         }
     }
 }
