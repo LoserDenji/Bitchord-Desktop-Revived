@@ -21,41 +21,45 @@ When contributing:
 
 ## Development Setup
 The project requires the following tools:
-- **JDK**: Java Development Kit 17 (Eclipse Temurin 17 recommended).
-- **Android SDK**: `compileSdk = 36`, `targetSdk = 36`, `minSdk = 26`.
-- **C/C++ NDK & CMake**: CMake 3.22.1+ and Android NDK (for native audio DSP components configured under `app/src/main/cpp`).
+- **JDK**: Java Development Kit 21 (Eclipse Temurin 21 recommended).
+- **CMake and a C++17 toolchain**: for the Automix analyser (`native/analyzer` and `desktopApp/native/jni`). The build still succeeds without them; the analyser is simply skipped.
 - **Listen Together Backend (Optional)**: Go 1.22+ if developing or testing the party server (`backend/`).
 
 ## Build and Test Commands
 Run Gradle commands from the repository root.
 
-Build:
+Build a distributable app image:
 ```bash
-./gradlew assembleDevDebug
+./gradlew :desktopApp:createDistributable
+```
+
+Run the app:
+```bash
+./gradlew :desktopApp:run
 ```
 
 Windows:
 ```powershell
-.\gradlew.bat assembleDevDebug
+.\gradlew.bat :desktopApp:createDistributable
 ```
 
 Tests:
 ```bash
-./gradlew testDevDebugUnitTest
+./gradlew :shared:jvmTest :desktopApp:test
 ```
 
 Windows:
 ```powershell
-.\gradlew.bat testDevDebugUnitTest
+.\gradlew.bat :shared:jvmTest :desktopApp:test
 ```
 
 Run a specific test:
 ```bash
-./gradlew testDevDebugUnitTest --tests "com.music.bitchord.playback.audio.DirectAudioStreamingRegressionTest"
+./gradlew :desktopApp:test --tests "<fully.qualified.TestClass>"
 ```
 
 ## Code Quality
-- Follow idiomatic Kotlin and Jetpack Compose conventions.
+- Follow idiomatic Kotlin and Compose Multiplatform conventions.
 - Maintain the project's existing architecture and separation of concerns (UI, domain logic, playback services, and data repositories).
 - Write unit tests for new logic, fixes, and edge cases.
 - Contributors should run relevant tests, must not introduce new failures, and should document known pre-existing failures when applicable.
@@ -64,7 +68,7 @@ Run a specific test:
 ## Audio Changes and Telemetry
 For audio changes: application telemetry must not be presented as proof of physical hardware behavior unless that hardware behavior was actually verified.
 
-Distinguish clearly between source metadata, decoder format, internal DSP format, AudioTrack output, AudioFlinger/HAL state, advertised device capability, and external physical endpoint behavior.
+Distinguish clearly between source metadata, decoder format, internal DSP format, the platform audio sink output, and external hardware behavior.
 
 ## Review Process
 All pull requests require review and approval by repository maintainers before merging. Maintainers review changes for correctness, architecture fit, and maintainability.

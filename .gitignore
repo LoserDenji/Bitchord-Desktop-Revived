@@ -1,40 +1,31 @@
 # Gradle
 .gradle/
 .vscode/
-/build/
-/app/build/
-/desktopApp/bin/
 build/
+/desktopApp/bin/
 gradle-app.setting
 !gradle-wrapper.jar
 !gradle-wrapper.properties
 
-# Local configuration file (SDK path, etc.)
+# Local configuration file
 local.properties
 
 # Kotlin
 .kotlin/
 
-# Android Studio / IntelliJ
+# IDE / IntelliJ
 .idea/
 *.iml
 *.ipr
 *.iws
 .navigation/
 captures/
-.externalNativeBuild/
-.cxx/
 *.hprof
 
 # Log/OS files
 *.log
 .DS_Store
 Thumbs.db
-
-# Release signing — never commit the key or its passwords
-keystore.properties
-*.jks
-*.keystore
 
 # Project scratch / debug artifacts
 .shots/
@@ -46,10 +37,3 @@ AGENTS.md
 /output/
 .superpowers/
 .hermes/
-
-# Tauri / Vue 3 / Rust
-node_modules/
-dist/
-rust-backend/target/
-src-tauri/target/
-Cargo.lock

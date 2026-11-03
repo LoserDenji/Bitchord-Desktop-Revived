@@ -1,0 +1,162 @@
+name: Desktop Build
+
+on:
+  push:
+    branches: [desktop-only]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Write local.properties
+        run: |
+          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
+          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
+
+      - run: chmod +x gradlew
+
+      - name: Tests
+        run: ./gradlew :shared:jvmTest :desktopApp:test
+
+      - name: Build
+        run: ./gradlew :desktopApp:createDistributable
+
+      - name: Verify Automix assets are packaged
+        run: |
+          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/lib/app/desktopApp*.jar)
+          jar tf "$jar" | grep -q 'models/.*\.onnx'
+          jar tf "$jar" | grep -q 'native/libbitchord_analysis.so' \
+            || echo "::warning::analyser native library was not built (cmake/g++ missing?)"
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-linux
+          path: desktopApp/build/compose/binaries/main/app
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-reports
+          path: |
+            desktopApp/build/reports/tests/
+            shared/build/reports/tests/
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Write local.properties
+        shell: bash
+        run: |
+          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
+          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
+
+      - name: CMake version
+        run: cmake --version
+
+      - name: Tests
+        run: .\gradlew.bat :shared:jvmTest :desktopApp:test
+
+      - name: Build
+        run: .\gradlew.bat :desktopApp:createDistributable
+
+      - name: Verify Automix assets are packaged
+        shell: bash
+        run: |
+          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/app/desktopApp*.jar)
+          jar tf "$jar" | grep -q 'models/.*\.onnx'
+          jar tf "$jar" | grep -q 'native/bitchord_analysis.dll' \
+            || echo "::warning::analyser native library was not built (MinGW g++ missing?)"
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-windows
+          path: desktopApp/build/compose/binaries/main/app
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-reports
+          path: |
+            desktopApp/build/reports/tests/
+            shared/build/reports/tests/
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Write local.properties
+        run: |
+          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
+          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
+
+      - run: chmod +x gradlew
+
+      - name: Tests
+        run: ./gradlew :shared:jvmTest :desktopApp:test
+
+      - name: Build
+        run: ./gradlew :desktopApp:createDistributable
+
+      - name: Verify Automix assets are packaged
+        run: |
+          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord.app/Contents/app/desktopApp*.jar)
+          jar tf "$jar" | grep -q 'models/.*\.onnx'
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-macos
+          path: desktopApp/build/compose/binaries/main/app
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-test-reports
+          path: |
+            desktopApp/build/reports/tests/
+            shared/build/reports/tests/

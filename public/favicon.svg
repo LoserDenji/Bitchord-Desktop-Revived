@@ -1,5 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="currentColor">
-  <path d="M50 5 L95 95 L5 95 Z"/>
-  <circle cx="50" cy="50" r="20"/>
-  <text x="50" y="58" font-size="12" text-anchor="middle" fill="white">B</text>
-</svg>

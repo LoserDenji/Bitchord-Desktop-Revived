@@ -166,7 +166,7 @@ java {
     }
 }
 
-/** Builds the Automix analyser from the same C++ the Android app compiles. */
+/** Builds the Automix analyser from `native/analyzer` and `native/jni`. */
 // Per target, because both write the library under the same name and a Windows cross-build
 // otherwise left a `.dll` where the next Linux run looked for its `.so`.
 val analysisNativeDir = layout.buildDirectory.dir("native/$targetOs")
@@ -237,7 +237,7 @@ val buildAnalysisNative by tasks.registering {
     val crossing = crossBuildingForWindows
     val toolchain = project.file("native/mingw-w64.cmake")
     inputs.dir(rootProject.file("native/analyzer"))
-    inputs.dir(rootProject.file("app/src/main/cpp/jni"))
+    inputs.dir(project.file("native/jni"))
     inputs.dir(project.file("native"))
     inputs.property("target", targetOs)
     outputs.dir(outputDir)
@@ -380,8 +380,8 @@ tasks.named<ProcessResources>("processResources") {
             into("yt-dlp")
         }
     }
-    // The Automix models, taken from the Android module rather than copied into this one.
-    from(rootProject.file("app/src/main/assets")) {
+    // The Automix models, unpacked from the jar by DesktopAnalysisRuntime.
+    from(project.file("models")) {
         include("*.onnx")
         into("models")
     }
