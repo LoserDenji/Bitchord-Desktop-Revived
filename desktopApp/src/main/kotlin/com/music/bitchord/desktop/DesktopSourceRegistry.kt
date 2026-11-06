@@ -1,0 +1,775 @@
+package com.music.bitchord.desktop
+
+import com.music.bitchord.data.model.SearchFilter
+import com.music.bitchord.data.model.SearchResult
+import com.music.bitchord.data.model.Song
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withTimeoutOrNull
+
+/** What playback got to start with, and what is still being looked for. */
+internal class DesktopLiveResolution(
+    val stream: DesktopStream,
+    /**
+     * The substitution search that had not finished when sound started, or null when nothing is
+     * outstanding.
+     */
+    val pendingSubstitute: Deferred<DesktopStream?>? = null,
+)
+
+internal data class DesktopSourceDescriptor(
+    val id: String,
+    val name: String,
+    val detail: String,
+    val kind: DesktopSourceKind,
+    val configured: Boolean,
+    val enabled: Boolean,
+    val supportsLossless: Boolean,
+    /** Enabled, but the ceiling in force will not let it answer a stream. */
+    val skippedByQuality: Boolean = false,
+)
+
+/** Desktop counterpart of Android's SourceRegistry. */
+internal object DesktopSourceRegistry {
+    private interface SourceAdapter {
+        val config: DesktopSourceConfig
+        val descriptor: DesktopSourceDescriptor
+        suspend fun resolve(song: Song, quality: String?): Result<DesktopStream?>
+        /** Every copy this source holds of [song], most confident first. */
+        suspend fun matches(song: Song): List<Song> = emptyList()
+
+        suspend fun match(song: Song): Song? = matches(song).firstOrNull()
+        fun owns(song: Song): Boolean = false
+    }
+
+    private class AddonAdapter(
+        override val config: DesktopSourceConfig,
+    ) : SourceAdapter {
+        override val descriptor: DesktopSourceDescriptor
+            get() = config.descriptor()
+
+        override fun owns(song: Song): Boolean =
+            DesktopAddonSource.parseTrack(song.videoId)?.sourceId == config.id
+
+        override suspend fun resolve(song: Song, quality: String?): Result<DesktopStream?> =
+            DesktopAddonSource.stream(config, song, quality)
+
+        override suspend fun matches(song: Song): List<Song> = DesktopAddonSource.matches(config, song)
+    }
+
+    private class ModuleAdapter(
+        override val config: DesktopSourceConfig,
+    ) : SourceAdapter {
+        override val descriptor: DesktopSourceDescriptor
+            get() = config.descriptor()
+
+        override fun owns(song: Song): Boolean =
+            DesktopModuleSource.parseTrack(song.videoId)?.let { ref ->
+                ref.sourceId == null || ref.sourceId == config.id
+            } == true
+
+        override suspend fun resolve(song: Song, quality: String?): Result<DesktopStream?> =
+            DesktopModuleSource.stream(config, song, quality)
+
+        override suspend fun matches(song: Song): List<Song> = DesktopModuleSource.matches(config, song)
+    }
+
+    private class JioAdapter(
+        override val config: DesktopSourceConfig,
+    ) : SourceAdapter {
+        override val descriptor: DesktopSourceDescriptor
+            get() = config.descriptor()
+
+        override fun owns(song: Song): Boolean = song.videoId.startsWith("jiosaavn:")
+
+        override suspend fun resolve(song: Song, quality: String?): Result<DesktopStream?> =
+            DesktopJioSaavn.stream(song.videoId)
+
+        override suspend fun matches(song: Song): List<Song> = DesktopJioSaavn.matches(song)
+    }
+
+    private class YouTubeAdapter(
+        override val config: DesktopSourceConfig,
+    ) : SourceAdapter {
+        override val descriptor: DesktopSourceDescriptor
+            get() = config.descriptor()
+
+        override suspend fun resolve(song: Song, quality: String?): Result<DesktopStream?> =
+            DesktopStreamClient.resolve(song, youtubeCeiling(quality)).map { it.copy(sourceId = config.id) }
+
+        /** Allows an unavailable module/Jio stream to fall back by identity. */
+        override suspend fun matches(song: Song): List<Song> = youTubeMatches(song)
+    }
+
+    /** YouTube Music's copies of [song], most confident first, found by title and artist. */
+    private suspend fun youTubeMatches(song: Song): List<Song> {
+        if (song.title.isBlank() || song.isVideo) return emptyList()
+        for (query in DesktopTrackMatcher.queries(song)) {
+            val candidates = DesktopSearchClient.search(query, SearchFilter.SONGS)
+                .getOrDefault(emptyList())
+                .mapNotNull { (it as? SearchResult.Track)?.song }
+            DesktopTrackMatcher.ranked(candidates, song).ifEmpty { null }?.let { return it }
+        }
+        return emptyList()
+    }
+
+    /**
+     * The YouTube upload Automix measures [song] on: the row itself when it is one, else the best
+     * YouTube Music match for an addon, module or JioSaavn row. Android's
+     * `TrackAnalyzer.analysisUriFor` does the same.
+     */
+    suspend fun youTubeIdentity(song: Song): Song? =
+        if (hasYouTubeOriginal(song)) song else youTubeMatches(song).firstOrNull()
+
+    /**
+     * Whether resolving [song] could ask an addon for it — an addon's own row, or a YouTube row
+     * with an addon ranked above YouTube to substitute it.
+     *
+     * Such a track is not read ahead: an addon is only asked for a stream once the track is about
+     * to play, as on Android, whose read-ahead only warms sources that are
+     * `worthPrefetching`.
+     */
+    fun mayServeFromAddon(song: Song): Boolean {
+        val addons = playbackAdapters(null).filterIsInstance<AddonAdapter>()
+        if (addons.isEmpty()) return false
+        if (DesktopAddonSource.parseTrack(song.videoId) != null) return true
+        return hasYouTubeOriginal(song) && !song.isVideo && !DesktopOriginalVersion.isPinned(song.videoId)
+    }
+
+    private fun DesktopSourceConfig.descriptor() = DesktopSourceDescriptor(
+        id = id,
+        name = displayName,
+        detail = if (kind.needsServer && baseUrl.isBlank()) "Setup required" else kind.detail,
+        kind = kind,
+        configured = isComplete,
+        enabled = enabled,
+        supportsLossless = kind.supportsLossless,
+        skippedByQuality = enabled && !DesktopPersistence().audioQuality().permits(kind),
+    )
+
+    private fun configs(): List<DesktopSourceConfig> = DesktopPersistence().sourceConfigs()
+
+    /**
+     * The sources a *stream* may come from: enabled, complete, and permitted by the ceiling in
+     * force.
+     */
+    private fun playbackAdapters(quality: String?, forDownload: Boolean = false): List<SourceAdapter> {
+        val ceiling = ceiling(quality)
+        return adapters(forDownload).filter { ceiling.permits(it.config.kind) }
+    }
+
+    /**
+     * The one source the listener named, when they named one that could answer at all.
+     *
+     * Naming a source that is switched off, or that the quality ceiling will not let through, is
+     * left as the whole list: the panel only offers sources that can serve, so a list arriving here
+     * without the named one means the track moved between settings, and the ordinary ranking is
+     * the answer to that rather than a failure to find.
+     */
+    private fun List<SourceAdapter>.askedOf(sourceId: String?, song: Song): List<SourceAdapter> {
+        if (sourceId == null) return this
+        val only = firstOrNull { it.config.id == sourceId } ?: return this
+        DesktopTrackLog.log("  '${song.title}' is set to play from ${only.descriptor.name}")
+        return listOf(only)
+    }
+
+    /**
+     * For a download, minus any addon whose manifest says `allowDownloads: 0`, so the next source
+     * in line serves the file.
+     */
+    private fun adapters(forDownload: Boolean = false): List<SourceAdapter> =
+        configs()
+            .inSourceOrder()
+            .filter { it.enabled && it.isComplete }
+            .filterNot { forDownload && it.kind == DesktopSourceKind.ADDON && !DesktopAddonSource.allowsDownloads(it) }
+            .map { config ->
+                when (config.kind) {
+                    DesktopSourceKind.ADDON -> AddonAdapter(config)
+                    DesktopSourceKind.CUSTOM_MODULE,
+                    DesktopSourceKind.MODULE,
+                    -> ModuleAdapter(config)
+                    DesktopSourceKind.JIOSAAVN -> JioAdapter(config)
+                    DesktopSourceKind.YOUTUBE -> YouTubeAdapter(config)
+                }
+            }
+
+    fun descriptors(): List<DesktopSourceDescriptor> = configs()
+        .inSourceOrder()
+        .map { it.descriptor() }
+
+    fun isEnabled(sourceId: String): Boolean = configs().firstOrNull { it.id == sourceId }?.enabled == true
+
+    /** Searching is YouTube Music's job, and only YouTube Music's. */
+    suspend fun search(query: String, filter: SearchFilter): Result<List<SearchResult>> =
+        DesktopSearchClient.search(query, filter)
+
+    suspend fun resolve(
+        song: Song,
+        quality: String?,
+        excludedSourceId: String? = null,
+        /** A download: addons that said `allowDownloads: 0` are left out, see [adapters]. */
+        forDownload: Boolean = false,
+    ): Result<DesktopStream> {
+        // A source named in the player's track-information panel is asked alone, and the walk it
+        // would otherwise have been part of is what plays the track when that source turns out to
+        // have no copy of it. Refusing to play is not a reasonable answer to a preference.
+        val chosen = DesktopSourcePins.of(song.videoId)
+        val asked = runResolve(song, quality, excludedSourceId, forDownload, chosen)
+        if (chosen == null || asked.isSuccess) return asked
+        DesktopTrackLog.log(
+            "  ${configs().firstOrNull { it.id == chosen }?.displayName ?: chosen} has no copy of " +
+                "'${song.title}', playing it from the usual order",
+        )
+        return runResolve(song, quality, excludedSourceId, forDownload, null)
+    }
+
+    private suspend fun runResolve(
+        song: Song,
+        quality: String?,
+        excludedSourceId: String?,
+        forDownload: Boolean,
+        chosenSourceId: String?,
+    ): Result<DesktopStream> = runCatching {
+        val available = playbackAdapters(quality, forDownload).askedOf(chosenSourceId, song)
+        val moduleReference = DesktopModuleSource.parseTrack(song.videoId)
+        val addonReference = DesktopAddonSource.parseTrack(song.videoId)
+        val owned = when {
+            addonReference != null -> available.firstOrNull { it.config.id == addonReference.sourceId }
+            moduleReference?.sourceId != null -> available.firstOrNull { it.config.id == moduleReference.sourceId }
+            moduleReference != null -> available.firstOrNull {
+                it.config.kind == DesktopSourceKind.CUSTOM_MODULE || it.config.kind == DesktopSourceKind.MODULE
+            }
+            song.videoId.startsWith("jiosaavn:") -> available.firstOrNull { it.config.kind == DesktopSourceKind.JIOSAAVN }
+            else -> null
+        }
+
+        // A row from an addon that is out of the walk only for policy — a download from one whose
+        // manifest says `allowDownloads: 0` — is looked up elsewhere, like any other track, rather
+        // than refused the way a disabled source's row is.
+        val heldBack = addonReference != null && owned == null &&
+            configs().any { it.id == addonReference.sourceId && it.enabled && it.isComplete }
+        if (!heldBack && (addonReference != null || moduleReference != null || song.videoId.startsWith("jiosaavn:"))) {
+            if (owned == null) error("The source for this track is disabled or no longer configured")
+            // This path has nothing to race.
+            DesktopTrackLog.log(
+                "resolving '${song.title}' — this row belongs to ${owned.descriptor.name}" +
+                    ", asking at the ${(quality ?: DesktopPersistence().audioQuality().name).lowercase()} rung",
+            )
+            if (owned.config.id != excludedSourceId) {
+                owned.resolve(song, quality).getOrNull()
+                    ?.takeIf { playableHere(owned, it) }
+                    ?.let {
+                        DesktopTrackLog.log(
+                            "  ${owned.descriptor.name} served it at " +
+                                it.format.summary.ifBlank { "an unstated format" },
+                        )
+                        return@runCatching it
+                    }
+                DesktopTrackLog.log("  ${owned.descriptor.name} had no usable stream for it")
+            }
+            // Android walks on to other active sources when the pinned source cannot produce a
+            // stream.
+            for (fallback in available.filter { it !== owned && it.config.id != excludedSourceId }) {
+                val matched = fallback.match(song) ?: continue
+                fallback.resolve(matched, quality).getOrNull()
+                    ?.takeIf { playableHere(fallback, it) }
+                    ?.let {
+                        DesktopTrackLog.log(
+                            "  fell through to ${fallback.descriptor.name} at " +
+                                it.format.summary.ifBlank { "an unstated format" },
+                        )
+                        return@runCatching it
+                    }
+            }
+            error("${owned.descriptor.name} did not return an audio stream")
+        }
+
+        // A normal YouTube row is offered to every higher-priority source first so a configured
+        // FLAC/module or JioSaavn copy is used when available.
+        for (source in available.filter {
+            it.config.kind != DesktopSourceKind.YOUTUBE &&
+                it.config.id != excludedSourceId &&
+                !DesktopOriginalVersion.isPinned(song.videoId)
+        }) {
+            val matched = source.match(song) ?: continue
+            source.resolve(matched, quality).getOrNull()
+                ?.takeIf { playableHere(source, it) }
+                ?.let { return@runCatching it }
+        }
+        val youtube = available.firstOrNull {
+            it.config.kind == DesktopSourceKind.YOUTUBE && it.config.id != excludedSourceId
+        }
+            // YouTube is the non-removable fallback and is force-enabled on read.
+            ?: error(
+                if (excludedSourceId != null) {
+                    "No other source has a copy of this track"
+                } else {
+                    "No enabled music source is configured"
+                },
+            )
+        // A held-back addon row carries that addon's id, which means nothing to YouTube.
+        val target = if (heldBack) youtube.match(song) ?: error("No other source has a copy of this track") else song
+        youtube.resolve(target, quality).fold(
+            onSuccess = { it ?: error("${youtube.descriptor.name} did not return an audio stream") },
+            onFailure = { throw it },
+        )
+    }
+
+    /**
+     * Resolves a track for immediate playback, racing the sources ranked above YouTube against
+     * YouTube itself.
+     */
+    suspend fun resolveLive(
+        song: Song,
+        quality: String?,
+        excludedSourceId: String? = null,
+    ): Result<DesktopLiveResolution> = runCatching {
+        val available = playbackAdapters(quality).askedOf(DesktopSourcePins.of(song.videoId), song)
+        val owned = available.any { it.owns(song) } ||
+            DesktopModuleSource.parseTrack(song.videoId) != null ||
+            song.videoId.startsWith("jiosaavn:")
+        if (owned) {
+            return@runCatching DesktopLiveResolution(resolve(song, quality, excludedSourceId).getOrThrow())
+        }
+
+        val youtube = available.firstOrNull {
+            it.config.kind == DesktopSourceKind.YOUTUBE && it.config.id != excludedSourceId
+        }
+        val higher = if (DesktopOriginalVersion.isPinned(song.videoId)) {
+            // Sent back to YouTube's own upload by hand.
+            DesktopTrackLog.log("'${song.title}' is pinned to YouTube's original by the listener")
+            emptyList()
+        } else {
+            available.filter {
+                it.config.kind != DesktopSourceKind.YOUTUBE && it.config.id != excludedSourceId
+            }
+        }
+        // Nothing outranks YouTube, so there is no race to run — this is the plain resolve.
+        if (higher.isEmpty() || youtube == null) {
+            return@runCatching DesktopLiveResolution(resolve(song, quality, excludedSourceId).getOrThrow())
+        }
+
+        // Both legs are parented to the registry's own scope rather than the caller's.
+        DesktopTrackLog.log(
+            "resolving '${song.title}' by '${song.artist}' — racing " +
+                higher.joinToString { it.descriptor.name } + " against YouTube",
+        )
+        if (song.isVideo) {
+            // A video upload is another recording, and can be another song altogether — the sources
+            // are never asked to stand in for one.
+            DesktopTrackLog.log("  this row is a video upload, so no source will be asked to match it")
+        } else {
+            DesktopTrackLog.log(
+                "  asking for: " + DesktopTrackMatcher.queries(song).joinToString(" | ").ifBlank { "(nothing)" },
+            )
+        }
+        // A seam owns the first seconds of this track, so what it is handed is the copy that answers
+        // at once — YouTube Music, which is the one leg that never has to ask a catalogue. The other
+        // leg is left running and comes back as the pending substitute, which the engine installs
+        // once the blend is over: never across it, and never before it is armed.
+        val forSeam = mixEngaged
+        val lookup = scope.async {
+            // Given the upgrade's patience rather than the race's: this answer is no longer in a
+            // hurry, and a seam plus its settle outlasts the 20s the race is worth.
+            withTimeoutOrNull(if (forSeam) UPGRADE_TIMEOUT_MS else SUBSTITUTE_TIMEOUT_MS) {
+                firstSubstitute(higher, song, quality, bestOfAll = forSeam)
+            }
+        }
+        val fallback = scope.async { youtube.resolve(song, quality).getOrNull() }
+
+        val quick: DesktopStream? = if (forSeam) null else select {
+            lookup.onAwait { it }
+            // A YouTube leg that finished without a URL has not won anything.
+            fallback.onAwait { stream -> if (stream != null) null else lookup.await() }
+        }
+
+        if (quick != null) {
+            fallback.cancel()
+            DesktopTrackLog.log(
+                "substituted: '${song.title}' served by ${sourceNameFor(quick)} over YouTube" +
+                    " at ${quick.format.summary.ifBlank { "an unstated format" }}",
+            )
+            // Winning the race is not the same as being the best copy.
+            return@runCatching DesktopLiveResolution(quick, betterThan(quick, higher, song, quality))
+        }
+
+        val youtubeStream = fallback.await()
+            ?: lookup.await()
+            ?: error("No enabled music source could play this track")
+        // Outside a seam, "still running" is the only answer worth holding: one already in hand had
+        // its turn at the race, and whatever did not win it is not going to. Under a seam every
+        // answer is held, however it landed — the catalogue usually finishes while YouTube is still
+        // fetching its URL, and throwing that copy away for having been early is how a track came
+        // out of the blend in the same quality it went in.
+        val pending = if (forSeam) lookup else lookup.takeIf { it.isActive }
+        if (pending != null) {
+            DesktopTrackLog.log(
+                if (forSeam) {
+                    "'${song.title}' starts on YouTube Music for its seam; the better copy waits " +
+                        "for the mix to be over"
+                } else {
+                    "'${song.title}' started on YouTube while the other sources keep looking"
+                },
+            )
+        }
+        DesktopLiveResolution(youtubeStream, pending)
+    }
+
+    /**
+     * A patient second look for a copy that beats the one now playing, or null when nothing could.
+     */
+    private fun betterThan(
+        playing: DesktopStream,
+        candidates: List<SourceAdapter>,
+        song: Song,
+        quality: String?,
+    ): Deferred<DesktopStream?>? {
+        val chasingAtmos = wantsAtmos() && !playing.format.isDolbyAtmos
+        // A lossless copy settles the quality question, but not the mix one: with Atmos
+        // wanted, a FLAC is still worth a look for the immersive version of the same
+        // recording — see [worthSwapping].
+        if (playing.format.isLossless && !chasingAtmos) return null
+        val winnerRank = configs().firstOrNull { it.id == playing.sourceId }?.kind?.rank
+            ?: DesktopSourceKind.YOUTUBE.rank
+        val better = if (chasingAtmos) {
+            // Atmos is not a rung, so where the winner sits in the walk says nothing
+            // about whether a catalogue holds the mix — a sibling on the same rung was
+            // never asked at all, which is how a FLAC from one module kept the other
+            // module's Atmos copy unheard. Every source except the one now playing.
+            candidates.filter { it.config.id != playing.sourceId }
+        } else {
+            candidates.filter { it.config.kind.rank < winnerRank }
+        }
+        if (better.isEmpty()) return null
+        DesktopTrackLog.log(
+            "still looking for a better copy of '${song.title}' from " +
+                better.joinToString { it.descriptor.name },
+        )
+        // The registry's own scope, like both legs of the race above: this outlives the call that
+        // started it by design.
+        return scope.async { withTimeoutOrNull(UPGRADE_TIMEOUT_MS) { firstSubstitute(better, song, quality) } }
+    }
+
+    /**
+     * A usable stream from any of [sources], each asked in parallel.
+     *
+     * By default the first one that answers is the answer, because the track is silent while this
+     * runs. [bestOfAll] is for the copy a seam is holding: nothing is waiting on it, so every
+     * source gets its say and the best of them is what gets handed over.
+     */
+    private suspend fun firstSubstitute(
+        sources: List<SourceAdapter>,
+        song: Song,
+        quality: String?,
+        bestOfAll: Boolean = false,
+    ): DesktopStream? = coroutineScope {
+        if (bestOfAll) {
+            // The race takes the first copy that beats YouTube because a track is waiting to start.
+            // A seam has already agreed to wait, so the shallow copy that answered in two seconds is
+            // not the answer — taking it anyway was how a track came out of a blend on 16-bit/44.1
+            // from one catalogue while the 24-bit/96 of the same recording had answered a second
+            // later and been cancelled for having been late.
+            val asked = sources.map { source ->
+                async { runCatching { openBest(source, song, quality) }.getOrNull() }
+            }
+            // Every source, up to the race's own patience in total: a source that has stopped
+            // answering does not get to hold the upgrade behind the whole of its timeout.
+            var best: DesktopStream? = null
+            val deadline = System.currentTimeMillis() + SUBSTITUTE_TIMEOUT_MS
+            asked.forEach { answered ->
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0L) return@forEach
+                val stream = runCatching { withTimeoutOrNull(left) { answered.await() } }.getOrNull()
+                    ?: return@forEach
+                best = betterOf(best, stream)
+            }
+            asked.forEach { it.cancel() }
+            return@coroutineScope best
+        }
+        val running = sources
+            .map { source ->
+                async { openBest(source, song, quality) }
+            }
+            .toMutableList()
+        var held: DesktopStream? = null
+        var graceEndsAt = 0L
+        try {
+            while (running.isNotEmpty()) {
+                // Asked again each turn: a seam that comes due part-way through ends the wait, and
+                // the stereo copy that was held is the answer.
+                val atmosWanted = wantsAtmos()
+                val done = if (held == null) {
+                    select<Deferred<DesktopStream?>> {
+                        running.forEach { candidate -> candidate.onAwait { candidate } }
+                    }
+                } else {
+                    // Whoever answered first is a fallback now, not the answer: give the
+                    // remaining sources a moment to mint the immersive copy before handing
+                    // a stereo one back.
+                    val left = graceEndsAt - System.currentTimeMillis()
+                    if (left <= 0L || mixEngaged) break
+                    withTimeoutOrNull(left) {
+                        select<Deferred<DesktopStream?>> {
+                            running.forEach { candidate -> candidate.onAwait { candidate } }
+                        }
+                    } ?: break
+                }
+                running -= done
+                val stream = done.await() ?: continue
+                // Atmos is a mix, not a rung: a stereo copy that arrives first — usually a
+                // FLAC from a catalogue that has no immersive version at all — must not shut
+                // out the Atmos answer another source is still preparing for the same track.
+                if (!atmosWanted || stream.isDolbyAtmos || stream.format.isDolbyAtmos) {
+                    return@coroutineScope stream
+                }
+                if (held == null) {
+                    held = stream
+                    graceEndsAt = System.currentTimeMillis() + ATMOS_GRACE_MS
+                    DesktopTrackLog.log(
+                        "holding ${stream.format.summary.ifBlank { "a stereo copy" }} of " +
+                            "'${song.title}' while the other sources look for Dolby Atmos",
+                    )
+                } else {
+                    held = betterOf(held, stream)
+                }
+            }
+            held
+        } finally {
+            running.forEach { it.cancel() }
+        }
+    }
+
+    /** Whether a copy found after the fact is worth interrupting playback for. */
+    internal fun worthSwapping(candidate: DesktopStreamFormat, playing: DesktopStreamFormat?): Boolean {
+        if (playing?.isDolbyAtmos == true) return false
+        if (candidate.isDolbyAtmos) return true
+        if (playing == null) return candidate.isLossless
+        if (candidate.isLossless != playing.isLossless) return candidate.isLossless
+        if (candidate.isLossless) {
+            val depthGain = candidate.bitDepth != null && playing.bitDepth != null &&
+                candidate.bitDepth > playing.bitDepth
+            val rateGain = candidate.sampleRateHz != null && playing.sampleRateHz != null &&
+                candidate.sampleRateHz > playing.sampleRateHz
+            val noDepthLoss = candidate.bitDepth == null || playing.bitDepth == null ||
+                candidate.bitDepth >= playing.bitDepth
+            val noRateLoss = candidate.sampleRateHz == null || playing.sampleRateHz == null ||
+                candidate.sampleRateHz >= playing.sampleRateHz
+            return (depthGain || rateGain) && noDepthLoss && noRateLoss
+        }
+        val gain = (candidate.kbps ?: return false) - (playing.kbps ?: return false)
+        return gain >= UPGRADE_MIN_GAIN_KBPS
+    }
+
+    /**
+     * A second look, asked from scratch once the first one has settled for nothing better.
+     *
+     * The live race deliberately takes the first copy that beats YouTube, so a slower lossless
+     * source can still be searching when a lossy one wins — and a source that answered HTTP 502
+     * that minute may well answer properly now. Mirrors Android's `SourceResolver.upgradeFor`.
+     */
+    suspend fun upgradeFor(
+        song: Song,
+        playing: DesktopStream?,
+        quality: String? = null,
+    ): DesktopStream? {
+        // This is an explicit second look. Empty catalogue answers and failed/expired stream URLs
+        // from the first pass must not make the retry a cache hit.
+        DesktopAddonSource.clearCompletedTrackCalls()
+        val chasingAtmos = wantsAtmos() && playing?.format?.isDolbyAtmos != true
+        val playingRank = configs().firstOrNull { it.id == playing?.sourceId }?.kind?.rank
+            ?: DesktopSourceKind.YOUTUBE.rank
+        // A named source is asked for the better copy, and nothing else is: an upgrade that arrives
+        // from a source the listener just turned down is not an upgrade they asked for.
+        val chosen = DesktopSourcePins.of(song.videoId)
+        val better = playbackAdapters(quality).filter {
+            it.config.kind != DesktopSourceKind.YOUTUBE && it.config.id != playing?.sourceId &&
+                (chosen == null || it.config.id == chosen) &&
+                // The immersive mix is asked of every other source, whatever its rung: the
+                // question is which catalogue holds it, not which one ranks higher.
+                (chasingAtmos || it.config.kind.rank < playingRank)
+        }
+        if (better.isEmpty()) return null
+        DesktopTrackLog.log(
+            "asking ${better.joinToString { it.descriptor.name }} again for a better copy of " +
+                "'${song.title}'",
+        )
+        return withTimeoutOrNull(UPGRADE_TIMEOUT_MS) { firstSubstitute(better, song, quality) }
+    }
+
+    /** Whether a stream a source handed back can actually be played here. */
+    /**
+     * The best copy [source] can actually serve for [song], or null when it has none.
+     *
+     * More than one row is opened, because a catalogue that holds a track can still fail on the
+     * particular row matched first — and rows advertising the tier being asked for go first.
+     */
+    private suspend fun openBest(
+        source: SourceAdapter,
+        song: Song,
+        quality: String?,
+    ): DesktopStream? {
+        val matches = source.matches(song)
+        if (matches.isEmpty()) {
+            // A leg cancelled by a sibling winning the race has not missed anything.
+            if (currentCoroutineContext().isActive) {
+                DesktopTrackLog.log("${source.descriptor.name} has no copy of '${song.title}'")
+            }
+            return null
+        }
+        val wantsLossless = ceiling(quality) == DesktopAudioQuality.LOSSLESS
+        var settleFor: DesktopStream? = null
+        for (match in preferred(matches, song, wantsLossless).take(STREAM_ATTEMPTS)) {
+            val stream = source.resolve(match, quality).getOrNull() ?: continue
+            if (!playableHere(source, stream)) continue
+            val served = stream.format
+            if (!wantsLossless || served.isLossless || served.isDolbyAtmos) {
+                DesktopTrackLog.log(
+                    "${source.descriptor.name} matched '${match.title}' by '${match.artist}'" +
+                        " → ${served.summary.ifBlank { "an unstated format" }}",
+                )
+                return stream
+            }
+            DesktopTrackLog.log(
+                "${source.descriptor.name} offered ${served.summary.ifBlank { "an unstated format" }}" +
+                    " for '${match.title}'; looking further",
+            )
+            // The floor is the best of what was refused, not the first of it.
+            settleFor = betterOf(settleFor, stream)
+        }
+        if (settleFor == null && currentCoroutineContext().isActive) {
+            DesktopTrackLog.log("${source.descriptor.name} matched '${song.title}' but returned no stream")
+        }
+        return settleFor
+    }
+
+    /** The matching rows in the order they are worth opening. */
+    internal fun preferred(matches: List<Song>, target: Song, wantsLossless: Boolean): List<Song> {
+        val sameLength = matches.filter { DesktopTrackMatcher.withinSeconds(it, target, SAME_RECORDING_SEC) }
+        val eligible = sameLength.ifEmpty { matches }
+        // An immersive mix is only ever a row. A catalogue may publish Atmos as its own
+        // entry rather than as an alternate rendition of the stereo one, in which case no
+        // `?atmos=` hint on the stereo row can ever reach it — choosing the row *is* the
+        // way to hear it, which makes it the first question asked, ahead of any rung.
+        val ranked = if (wantsAtmos()) {
+            val immersiveFirst = eligible.sortedByDescending { it.sourceQuality == DesktopModuleSource.DOLBY }
+            if (immersiveFirst.first().sourceQuality == DesktopModuleSource.DOLBY) return immersiveFirst
+            eligible
+        } else {
+            // With the switch off they cannot be played at all, and three of them in front
+            // would spend the whole attempt budget before [playableHere] let the FLAC
+            // behind them through.
+            eligible.sortedBy { it.sourceQuality == DesktopModuleSource.DOLBY }
+        }
+        if (!wantsLossless) return ranked
+        // Stable, so the confidence order the matcher produced survives inside each tier.
+        return ranked.sortedByDescending { it.sourceQuality == DesktopModuleSource.LOSSLESS }
+    }
+
+    /**
+     * Raised by the playback engine for as long as a transition owns the decks — the arming lead,
+     * the blend itself, and the hand-over out of it.
+     *
+     * Written from the audio thread and read from the searches that wait on it, so it is volatile
+     * rather than confined.
+     */
+    @Volatile internal var mixEngaged = false
+
+    /**
+     * Whether an immersive mix should be preferred right now.
+     *
+     * Waiting for Atmos holds a stereo copy for [ATMOS_GRACE_MS] and, when the mix answers, means
+     * re-opening the deck for it: a network read, a demuxer and a sink flush all at once. Landing
+     * that inside a seam re-cues a song the blend is still counting from, which is what put its
+     * lyrics ahead of the singing for the rest of the track. The immersive mix is asked again as
+     * soon as [mixEngaged] comes down.
+     */
+    internal fun wantsAtmos(): Boolean =
+        !mixEngaged && DesktopCodecs.supportsDolbyAtmos && DesktopAddonSettings.dolbyAtmosEnabled
+
+    /** Which of two renditions of the same recording is the better one. */
+    private fun betterOf(current: DesktopStream?, candidate: DesktopStream): DesktopStream {
+        val held = current ?: return candidate
+        val a = candidate.format
+        val b = held.format
+        // Atmos before lossless, and not the other way round: an Atmos row only reaches here when
+        // the listener asked for Atmos, and a FLAC on the same recording is the lesser answer.
+        if (a.isDolbyAtmos != b.isDolbyAtmos) return if (a.isDolbyAtmos) candidate else held
+        if (a.isLossless != b.isLossless) return if (a.isLossless) candidate else held
+        return if ((a.kbps ?: 0) > (b.kbps ?: 0)) candidate else held
+    }
+
+    private fun playableHere(source: SourceAdapter, stream: DesktopStream): Boolean {
+        // Both flags, because a rendition can announce itself either way: an addon states
+        // `atmos`, while a module's E-AC-3 is only ever visible in the codec it named.
+        val atmos = stream.isDolbyAtmos || stream.format.isDolbyAtmos
+        if (atmos && !DesktopCodecs.supportsDolbyAtmos) {
+            DesktopTrackLog.log(
+                "${source.descriptor.name} offered a Dolby Atmos rendition, " +
+                    "which this build has no E-AC-3 decoder for",
+            )
+            return false
+        }
+        if (atmos && !DesktopAddonSettings.dolbyAtmosEnabled) {
+            DesktopTrackLog.log(
+                "${source.descriptor.name} offered a Dolby Atmos rendition, which is switched off",
+            )
+            return false
+        }
+        return true
+    }
+
+    /** Whether this row has a YouTube upload behind it to go back to. */
+    fun hasYouTubeOriginal(song: Song): Boolean =
+        DesktopAddonSource.parseTrack(song.videoId) == null &&
+            DesktopModuleSource.parseTrack(song.videoId) == null &&
+            !song.videoId.startsWith("jiosaavn:") &&
+            song.videoId.isNotBlank()
+
+    /** The configured source a stream came from, for a log line. */
+    internal fun sourceNameFor(stream: DesktopStream): String =
+        configs().firstOrNull { it.id == stream.sourceId }?.displayName ?: "a configured source"
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** How long the live path waits on the sources before starting on whatever YouTube has. */
+    private const val SUBSTITUTE_TIMEOUT_MS = 20_000L
+
+    /**
+     * The patient second look's budget. Longer than the race's, because nobody is waiting on the
+     * first note by then and a cold addon routinely needs more than one call to settle.
+     */
+    private const val UPGRADE_TIMEOUT_MS = 90_000L
+
+    /** How many matched rows are opened before a source is written off. */
+    private const val STREAM_ATTEMPTS = 3
+
+    /** The runtime agreement that says two rows are the same recording. */
+    private const val SAME_RECORDING_SEC = 2
+
+    /** The smallest bitrate gain worth a break in the audio for. */
+    private const val UPGRADE_MIN_GAIN_KBPS = 96
+
+    /**
+     * How long a stereo copy is held while the other sources still look for the Atmos mix.
+     *
+     * A catalogue that has Atmos answers in about a second once its module is warm, and the
+     * copy held here is only ever a fallback — YouTube is already playing by this point — so
+     * the wait costs nothing a listener can hear, while skipping it costs them the mix.
+     */
+    private const val ATMOS_GRACE_MS = 2_500L
+
+    /** The ceiling a call is made under: an explicit override, else the stored rung. */
+    internal fun ceiling(qualityOverride: String?): DesktopAudioQuality =
+        qualityOverride?.let { override ->
+            DesktopAudioQuality.entries.firstOrNull { it.name.equals(override, ignoreCase = true) }
+        } ?: DesktopPersistence().audioQuality()
+
+    private fun youtubeCeiling(qualityOverride: String?): Int = ceiling(qualityOverride).maxKbps
+}

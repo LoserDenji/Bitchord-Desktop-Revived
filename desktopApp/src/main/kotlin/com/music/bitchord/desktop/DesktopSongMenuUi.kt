@@ -1,0 +1,956 @@
+package com.music.bitchord.desktop
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.ThumbDown
+import androidx.compose.material.icons.rounded.ThumbDownOffAlt
+import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.music.bitchord.data.model.LikeStatus
+import com.music.bitchord.data.model.Song
+import com.music.bitchord.ui.LyricsProviderState
+import com.music.bitchord.ui.icons.BitChordIcons
+import java.util.Locale
+
+/** The verbs the song menu needs that the player does not otherwise know about. */
+internal data class DesktopSongActions(
+    val signedIn: Boolean,
+    val disliked: Boolean,
+    val downloaded: Boolean,
+    val downloadInProgress: Boolean,
+    val sleepTimerMinutes: Int?,
+    val sleepAfterTrack: Boolean,
+    val onToggleDislike: (Song) -> Unit,
+    val onAddToPlaylist: (Song) -> Unit,
+    val onDownload: (Song) -> Unit,
+    val onRemoveDownload: (Song) -> Unit,
+    val onStartRadio: (Song) -> Unit,
+    val onPlayNext: (Song) -> Unit,
+    val onAddToQueue: (Song) -> Unit,
+    val onOpenAlbum: (String) -> Unit,
+    val onOpenArtist: (String) -> Unit,
+    val onSleepTimer: (Int?) -> Unit,
+    val onSleepAfterTrack: () -> Unit,
+    val onShare: (Song) -> Unit,
+)
+
+/**
+ * One lyrics provider as the song menu's provider drawer shows it: its label,
+ * what its lookup turned up, and whether it is the one the sheet shows now.
+ */
+internal data class DesktopLyricsProviderRow(
+    val label: String,
+    val state: LyricsProviderState,
+    val current: Boolean,
+)
+
+/** The "…" beside the player's star, and the menu it opens. */
+@Composable
+internal fun DesktopSongMenuAnchor(
+    song: Song,
+    liked: Boolean,
+    actions: DesktopSongActions,
+    onToggleLike: () -> Unit,
+    onRevertToOriginal: (() -> Unit)?,
+    onUpgradeQuality: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    var open by remember(song.videoId) { mutableStateOf(false) }
+    Box(modifier) {
+        DesktopMoreButton(onClick = { open = true })
+        if (open) {
+            DesktopSongMenuFor(
+                song = song,
+                liked = liked,
+                actions = actions,
+                onToggleLike = onToggleLike,
+                onRevertToOriginal = onRevertToOriginal,
+                onUpgradeQuality = onUpgradeQuality,
+                onDismiss = { open = false },
+            )
+        }
+    }
+}
+
+/** The menu [DesktopSongMenuAnchor] opens, for a caller that has its own button. */
+@Composable
+internal fun DesktopSongMenuFor(
+    song: Song,
+    liked: Boolean,
+    actions: DesktopSongActions,
+    onToggleLike: () -> Unit,
+    onRevertToOriginal: (() -> Unit)?,
+    onUpgradeQuality: (() -> Unit)?,
+    onDismiss: () -> Unit,
+    /**
+     * The player's own menu, rather than one raised from a list. It is the one
+     * that offers the lyric sheet, its translation and its romanisation, and it
+     * does not offer to queue the track that is already playing.
+     */
+    fromPlayer: Boolean = false,
+    /**
+     * Show the lyric sheet, or the queue, in the player's content column. The
+     * desktop player keeps these two as rows on this menu rather than glyphs in
+     * its overflow. Null on a menu raised from a list, which has no player to
+     * switch.
+     */
+    onShowLyrics: (() -> Unit)? = null,
+    onShowQueue: (() -> Unit)? = null,
+    /**
+     * Asks the shared player to switch the lyric sheet between the originals and
+     * their translation — the toggle the desktop overflow used to hold, now a row
+     * on this menu. Null on a menu raised from a list, which has no player.
+     */
+    onTranslate: (() -> Unit)? = null,
+    /** Whether the sheet shows its translation now, for the row's checkmark. */
+    showingTranslation: Boolean = false,
+    /** Whether the playing track has lyrics to translate; false greys the row out. */
+    translateEnabled: Boolean = true,
+    /**
+     * Asks the shared player to switch the lyric sheet between the originals and
+     * their romanisation — the same pair of letters the sheet's own footer holds,
+     * but on this menu the row sits under [onTranslate].
+     */
+    onRomanize: (() -> Unit)? = null,
+    showingRomanization: Boolean = false,
+    romanizeEnabled: Boolean = true,
+    /**
+     * The lyrics providers to offer, each with its search state and whether it
+     * is the one the sheet shows now. Passing a non-empty list with an
+     * [onSelectLyricsProvider] adds a "Lyrics provider" row that opens them —
+     * and the manual search box above them — inline. Null on a menu raised from
+     * a list, which has no lyrics to switch.
+     */
+    lyricsProviders: List<DesktopLyricsProviderRow> = emptyList(),
+    onSelectLyricsProvider: ((String) -> Unit)? = null,
+    /**
+     * Runs a manual lyrics lookup for a typed title and artist, across every
+     * enabled provider. The submenu stays open through it, so the provider list
+     * below the search box updates as the race resolves.
+     */
+    onSearchLyrics: ((title: String, artist: String) -> Unit)? = null,
+    /**
+     * The player's current lyrics offset and the means to change it. Passing a
+     * setter adds a "Lyrics offset" row that opens a stepper; the offset shifts
+     * every synced lyric against the clock and, on desktop, resets to zero for a
+     * new track. Null on a menu raised from a list, which has no player to nudge.
+     */
+    lyricsOffsetMs: Int = 0,
+    onSetLyricsOffset: ((Int) -> Unit)? = null,
+    /**
+     * Starts a Listen Together party for the playing track. Only the player's
+     * menu passes it — a list row's menu has no party to host.
+     */
+    onListenTogether: (() -> Unit)? = null,
+    /**
+     * Takes the track out of the playlist whose row this menu was raised over. Only
+     * a menu over a row of the user's own playlist passes it; Apple's shelves, the
+     * player and a radio queue have nothing to remove.
+     */
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+) {
+    val close = onDismiss
+    DesktopSongMenu(
+        song = song,
+        signedIn = actions.signedIn,
+        likeStatus = when {
+            liked -> LikeStatus.LIKE
+            actions.disliked -> LikeStatus.DISLIKE
+            else -> LikeStatus.INDIFFERENT
+        },
+        downloaded = actions.downloaded,
+        downloadInProgress = actions.downloadInProgress,
+        sleepTimerMinutes = actions.sleepTimerMinutes,
+        sleepAfterTrack = actions.sleepAfterTrack,
+        onRevertToOriginal = onRevertToOriginal?.let { { it(); close() } },
+        onUpgradeQuality = onUpgradeQuality?.let { { it(); close() } },
+        // Rating stays open: the menu says what the rating now is, and closing it is the
+        // one way to not see that it worked.
+        onToggleLike = onToggleLike,
+        onToggleDislike = { actions.onToggleDislike(song) },
+        onAddToPlaylist = { actions.onAddToPlaylist(song); close() },
+        onDownload = { actions.onDownload(song); close() },
+        onRemoveDownload = { actions.onRemoveDownload(song); close() },
+        onStartRadio = { actions.onStartRadio(song); close() },
+        onPlayNext = { actions.onPlayNext(song); close() },
+        onAddToQueue = { actions.onAddToQueue(song); close() },
+        onOpenAlbum = { id -> actions.onOpenAlbum(id); close() },
+        onOpenArtist = { id -> actions.onOpenArtist(id); close() },
+        onSleepTimer = { actions.onSleepTimer(it); close() },
+        onSleepAfterTrack = { actions.onSleepAfterTrack(); close() },
+        onShare = { actions.onShare(song); close() },
+        fromPlayer = fromPlayer,
+        onShowLyrics = onShowLyrics?.let { { it(); close() } },
+        onShowQueue = onShowQueue?.let { { it(); close() } },
+        onTranslate = onTranslate?.let { { it(); close() } },
+        showingTranslation = showingTranslation,
+        translateEnabled = translateEnabled,
+        onRomanize = onRomanize?.let { { it(); close() } },
+        showingRomanization = showingRomanization,
+        romanizeEnabled = romanizeEnabled,
+        // Neither closes the menu: the provider submenu shows the search running
+        // and the state landing on each row, which closing would hide.
+        lyricsProviders = lyricsProviders,
+        onSelectLyricsProvider = onSelectLyricsProvider,
+        onSearchLyrics = onSearchLyrics,
+        lyricsOffsetMs = lyricsOffsetMs,
+        onSetLyricsOffset = onSetLyricsOffset,
+        onListenTogether = onListenTogether?.let { { it(); close() } },
+        onRemoveFromPlaylist = onRemoveFromPlaylist?.let { { it(); close() } },
+        onDismiss = close,
+    )
+}
+
+/** Everything the player can do to the track it is playing, in one menu. */
+@Composable
+internal fun DesktopSongMenu(
+    song: Song,
+    signedIn: Boolean,
+    likeStatus: LikeStatus,
+    downloaded: Boolean,
+    downloadInProgress: Boolean,
+    onRemoveDownload: () -> Unit,
+    sleepTimerMinutes: Int?,
+    sleepAfterTrack: Boolean,
+    /** Sends the playing track back to YouTube's own upload and keeps it there. */
+    onRevertToOriginal: (() -> Unit)?,
+    /** The way back from a revert, for a track pinned to YouTube's own upload. */
+    onUpgradeQuality: (() -> Unit)?,
+    onToggleLike: () -> Unit,
+    onToggleDislike: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onDownload: () -> Unit,
+    onStartRadio: () -> Unit,
+    onPlayNext: () -> Unit,
+    onAddToQueue: () -> Unit,
+    onOpenAlbum: ((String) -> Unit)?,
+    onOpenArtist: ((String) -> Unit)?,
+    onSleepTimer: (Int?) -> Unit,
+    onSleepAfterTrack: () -> Unit,
+    onShare: () -> Unit,
+    /** The player's menu for the track it is playing, rather than one raised from a list. */
+    fromPlayer: Boolean = false,
+    /** Show the lyric sheet / the queue; null when there is no player to switch. */
+    onShowLyrics: (() -> Unit)? = null,
+    onShowQueue: (() -> Unit)? = null,
+    /** Show the translation of the lyric sheet; null when there is no player to switch. */
+    onTranslate: (() -> Unit)? = null,
+    showingTranslation: Boolean = false,
+    translateEnabled: Boolean = true,
+    /** Show the romanisation of the lyric sheet; null when there is no player to switch. */
+    onRomanize: (() -> Unit)? = null,
+    showingRomanization: Boolean = false,
+    romanizeEnabled: Boolean = true,
+    /** Providers to offer with their search state; empty hides the "Lyrics provider" row. */
+    lyricsProviders: List<DesktopLyricsProviderRow> = emptyList(),
+    onSelectLyricsProvider: ((String) -> Unit)? = null,
+    /** Manual title+artist lookup across the enabled providers; null hides the search box. */
+    onSearchLyrics: ((title: String, artist: String) -> Unit)? = null,
+    /** The player's lyrics offset and its setter; a null setter hides the "Lyrics offset" row. */
+    lyricsOffsetMs: Int = 0,
+    onSetLyricsOffset: ((Int) -> Unit)? = null,
+    /** Starts a Listen Together party for the playing track; null hides the row. */
+    onListenTogether: (() -> Unit)? = null,
+    /** Takes the track out of the playlist whose row this menu was raised over; null hides the row. */
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+    onDismiss: () -> Unit,
+) {
+    var pickingSleepTimer by remember { mutableStateOf(false) }
+    var pickingLyricsProvider by remember { mutableStateOf(false) }
+    var pickingLyricsOffset by remember { mutableStateOf(false) }
+    val liked = likeStatus == LikeStatus.LIKE
+    val disliked = likeStatus == LikeStatus.DISLIKE
+    // A local file or a finished download has no YouTube identity behind it to rate, queue into a
+    // playlist, fetch again, or share a link for.
+    val isOffline = song.localUri != null
+
+    DesktopMenuSurface(onDismiss = onDismiss) {
+        // One drawer for both: the manual search box on top, and under it every
+        // provider with what its lookup turned up — the lyric sheet's old footer
+        // and its provider picker, folded into the song menu.
+        if (pickingLyricsProvider) {
+            DesktopMenuHeader(DesktopStrings["d_lyrics_provider", "Lyrics provider"]) { pickingLyricsProvider = false }
+            DesktopMenuDivider()
+            if (onSearchLyrics != null) {
+                DesktopLyricsSearchForm(
+                    initialTitle = song.title,
+                    initialArtist = song.artist,
+                    onSearch = { title, artist -> onSearchLyrics(title, artist) },
+                )
+                DesktopMenuDivider()
+            }
+            lyricsProviders.forEach { provider ->
+                val status = when {
+                    provider.current -> DesktopStrings["d_found", "Found"]
+                    provider.state == LyricsProviderState.FOUND -> DesktopStrings["d_found", "Found"]
+                    provider.state == LyricsProviderState.NOT_FOUND -> DesktopStrings["d_not_found", "Not found"]
+                    provider.state == LyricsProviderState.FETCHING -> DesktopStrings["d_searching", "Searching…"]
+                    else -> ""
+                }
+                DesktopMenuRow(
+                    icon = BitChordIcons.MusicNote,
+                    label = provider.label,
+                    value = status,
+                    selected = provider.current,
+                    // A provider the search already drew a blank on cannot be
+                    // switched to; the current one is what is already showing.
+                    enabled = !provider.current && provider.state != LyricsProviderState.NOT_FOUND,
+                ) { onSelectLyricsProvider?.invoke(provider.label) }
+            }
+            return@DesktopMenuSurface
+        }
+        // The lyric sheet's offset drawer folded into this menu: two steppers and
+        // a reset, shifting every synced line against the clock by a tenth of a
+        // second at a time.
+        if (pickingLyricsOffset && onSetLyricsOffset != null) {
+            DesktopMenuHeader(DesktopStrings["d_lyrics_offset", "Lyrics offset"]) { pickingLyricsOffset = false }
+            DesktopMenuDivider()
+            DesktopLyricsOffsetControl(lyricsOffsetMs) { onSetLyricsOffset(it) }
+            return@DesktopMenuSurface
+        }
+        if (pickingSleepTimer) {
+            DesktopMenuHeader(DesktopStrings["sleep_timer", "Sleep timer"]) { pickingSleepTimer = false }
+            DesktopMenuDivider()
+            DesktopSleepTimer.presets.forEach { minutes ->
+                DesktopMenuRow(
+                    icon = BitChordIcons.Clock,
+                    label = DesktopStrings.format("d_count_minutes", minutes, fallback = "$minutes minutes"),
+                    selected = sleepTimerMinutes == minutes && !sleepAfterTrack,
+                ) { onSleepTimer(minutes) }
+            }
+            DesktopMenuRow(
+                icon = BitChordIcons.Clock,
+                label = DesktopStrings["d_end_of_this_track", "End of this track"],
+                selected = sleepAfterTrack,
+                onClick = onSleepAfterTrack,
+            )
+            if (sleepTimerMinutes != null || sleepAfterTrack) {
+                DesktopMenuDivider()
+                DesktopMenuRow(BitChordIcons.Clock, DesktopStrings["d_turn_off", "Turn off"]) { onSleepTimer(null) }
+            }
+            return@DesktopMenuSurface
+        }
+
+        // The two are never both offered.
+        (onRevertToOriginal ?: onUpgradeQuality)?.let { action ->
+            DesktopMenuRow(
+                icon = if (onRevertToOriginal != null) BitChordIcons.Undo else BitChordIcons.AudioLines,
+                label = if (onRevertToOriginal != null) "Revert to original" else "Upgrade quality",
+                onClick = action,
+            )
+            DesktopMenuDivider()
+        }
+
+        if (signedIn && !isOffline) {
+            DesktopMenuRow(
+                icon = if (liked) BitChordIcons.StarFilled else BitChordIcons.Star,
+                label = if (liked) "Remove from liked" else "Like",
+                tint = if (liked) DesktopAccent else null,
+                onClick = onToggleLike,
+            )
+            DesktopMenuRow(
+                icon = if (disliked) BitChordIcons.ThumbDown else BitChordIcons.ThumbDown,
+                label = if (disliked) "Undo dislike" else "Dislike",
+                tint = if (disliked) DesktopAccent else null,
+                onClick = onToggleDislike,
+            )
+        }
+        if (!isOffline) {
+            DesktopMenuRow(BitChordIcons.ListPlus, DesktopStrings["add_to_playlist", "Add to playlist"], onClick = onAddToPlaylist)
+        }
+        // The way back out of the playlist this row was read from, beside the way into one. Only a
+        // menu raised over a row of an owned playlist is given it.
+        onRemoveFromPlaylist?.let {
+            DesktopMenuRow(
+                BitChordIcons.Minus,
+                DesktopStrings["d_remove_from_playlist", "Remove from playlist"],
+                onClick = it,
+            )
+        }
+        if (signedIn || !isOffline) DesktopMenuDivider()
+
+        // A saved copy is offered its own way out whatever the track is playing from — a download
+        // being played *is* a local file, and hiding the row there left no way to remove it.
+        // Only starting a new download needs a YouTube identity behind it.
+        when {
+            downloadInProgress -> DesktopMenuRow(
+                icon = BitChordIcons.Download,
+                label = DesktopStrings["cancel_download", "Cancel download"],
+                busy = true,
+                onClick = onDownload,
+            )
+            downloaded -> DesktopMenuRow(
+                icon = BitChordIcons.Check,
+                label = DesktopStrings["saved_to_downloads", "Saved to Downloads"],
+                tint = DesktopAccent,
+                value = DesktopStrings["delete", "Delete"],
+                onClick = onRemoveDownload,
+            )
+            !isOffline -> DesktopMenuRow(
+                icon = BitChordIcons.Download,
+                label = DesktopStrings["download", "Download"],
+                onClick = onDownload,
+            )
+        }
+        DesktopMenuRow(BitChordIcons.Radio, DesktopStrings["start_radio", "Start radio"], onClick = onStartRadio)
+        // The player's menu is raised over the track already playing, so it has
+        // nothing to put it next to: the queue it would join is the one the
+        // player is showing. A list row keeps both.
+        if (!fromPlayer) {
+            DesktopMenuRow(BitChordIcons.ListStart, DesktopStrings["play_next", "Play next"], onClick = onPlayNext)
+            DesktopMenuRow(BitChordIcons.ListEnd, DesktopStrings["add_to_queue", "Add to queue"], onClick = onAddToQueue)
+        }
+        // The queue the player's content column shows, brought up into this
+        // transport block rather than left down in the lyrics group. Only the
+        // player's menu passes it.
+        onShowQueue?.let {
+            DesktopMenuRow(BitChordIcons.Queue, DesktopStrings["d_view_queue", "View queue"], onClick = it)
+        }
+        // The party the player's own menu can start for the track it is playing.
+        onListenTogether?.let {
+            DesktopMenuRow(BitChordIcons.Headphones, DesktopStrings["listen_together", "Listen together"], onClick = it)
+        }
+
+        // The lyric sheet the player's content column can show, and the ways of
+        // reading it: the translation the overflow used to hold now lives here,
+        // and "Lyrics provider" opens the search box and the list of providers
+        // with what each turned up, the sheet's old footer folded into this menu.
+        // Only the player's menu passes any of them.
+        if (onShowLyrics != null || onTranslate != null || onRomanize != null ||
+            onSelectLyricsProvider != null || onSetLyricsOffset != null
+        ) {
+            DesktopMenuDivider()
+            onShowLyrics?.let {
+                DesktopMenuRow(BitChordIcons.Lyrics, DesktopStrings["d_view_lyrics", "View lyrics"], onClick = it)
+            }
+            onTranslate?.let {
+                DesktopMenuRow(
+                    icon = BitChordIcons.Languages,
+                    label = DesktopStrings["d_translate", "Translate"],
+                    enabled = translateEnabled,
+                    selected = showingTranslation,
+                    onClick = it,
+                )
+            }
+            onRomanize?.let {
+                DesktopMenuRow(
+                    icon = BitChordIcons.Globe,
+                    label = DesktopStrings["d_romanize", "Romanize"],
+                    enabled = romanizeEnabled,
+                    selected = showingRomanization,
+                    onClick = it,
+                )
+            }
+            if (onSelectLyricsProvider != null && lyricsProviders.isNotEmpty()) {
+                DesktopMenuRow(
+                    icon = BitChordIcons.MusicNote,
+                    label = DesktopStrings["d_lyrics_provider", "Lyrics provider"],
+                    value = lyricsProviders.firstOrNull { it.current }?.label.orEmpty(),
+                ) { pickingLyricsProvider = true }
+            }
+            if (onSetLyricsOffset != null) {
+                DesktopMenuRow(
+                    icon = BitChordIcons.Sliders,
+                    label = DesktopStrings["d_lyrics_offset", "Lyrics offset"],
+                    value = if (lyricsOffsetMs != 0) formatLyricsOffset(lyricsOffsetMs) else "",
+                ) { pickingLyricsOffset = true }
+            }
+        }
+
+        val albumId = song.albumId
+        val artistId = song.artistId
+        if ((albumId != null && onOpenAlbum != null) || (artistId != null && onOpenArtist != null)) {
+            DesktopMenuDivider()
+            if (albumId != null && onOpenAlbum != null) {
+                DesktopMenuRow(BitChordIcons.Album, DesktopStrings["open_album", "Open album"]) { onOpenAlbum(albumId) }
+            }
+            if (artistId != null && onOpenArtist != null) {
+                DesktopMenuRow(BitChordIcons.Person, DesktopStrings["open_artist", "Open artist"]) { onOpenArtist(artistId) }
+            }
+        }
+
+        DesktopMenuDivider()
+        DesktopMenuRow(
+            icon = BitChordIcons.Clock,
+            label = DesktopStrings["sleep_timer", "Sleep timer"],
+            value = sleepTimerLabel(sleepTimerMinutes, sleepAfterTrack),
+        ) { pickingSleepTimer = true }
+        if (!isOffline) {
+            DesktopMenuRow(BitChordIcons.ArrowUpRight, DesktopStrings["share", "Share"], onClick = onShare)
+        }
+    }
+}
+
+private fun sleepTimerLabel(minutes: Int?, afterTrack: Boolean): String = when {
+    afterTrack -> "End of track"
+    minutes != null -> "$minutes min"
+    else -> ""
+}
+
+/**
+ * The "Search lyrics" submenu's body: a title and an artist field, prefilled
+ * with the track's own credits, and the two ways out. A manual ask for when the
+ * automatic lookup found nothing and the listener knows better than the tag —
+ * a cover, a mislabelled upload, a feature the credits left off.
+ */
+@Composable
+private fun DesktopLyricsSearchForm(
+    initialTitle: String,
+    initialArtist: String,
+    onSearch: (title: String, artist: String) -> Unit,
+) {
+    var title by remember { mutableStateOf(initialTitle) }
+    var artist by remember { mutableStateOf(initialArtist) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        OutlinedTextField(
+            value = title,
+            onValueChange = { title = it },
+            label = { Text(DesktopStrings["d_song_title", "Song title"]) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = artist,
+            onValueChange = { artist = it },
+            label = { Text(DesktopStrings["d_song_artists", "Song artists"]) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = { onSearch(title.trim(), artist.trim()) }, enabled = title.isNotBlank()) {
+                Text(DesktopStrings["d_search", "Search"])
+            }
+        }
+    }
+}
+
+/**
+ * The "Lyrics offset" submenu's body: two steppers either side of the current shift and, once it
+ * is off zero, a reset. A tenth of a second at a time, within the same five-second range the
+ * lyric sheet's own drawer uses, so a line landing a beat early or late can be nudged into place.
+ */
+@Composable
+private fun DesktopLyricsOffsetControl(currentMs: Int, onChange: (Int) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DesktopOffsetStepper("−", enabled = currentMs > MIN_LYRICS_OFFSET_MS) {
+                onChange(currentMs - LYRICS_OFFSET_STEP_MS)
+            }
+            Text(
+                text = formatLyricsOffset(currentMs),
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+            )
+            DesktopOffsetStepper("+", enabled = currentMs < MAX_LYRICS_OFFSET_MS) {
+                onChange(currentMs + LYRICS_OFFSET_STEP_MS)
+            }
+        }
+        if (currentMs != 0) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(onClick = { onChange(0) }) {
+                    Text(DesktopStrings["d_reset", "Reset"])
+                }
+            }
+        }
+    }
+}
+
+/** One round −/+ button of the offset control, dimmed once the range is reached. */
+@Composable
+private fun DesktopOffsetStepper(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = if (enabled) 0.08f else 0.03f))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleLarge,
+            color = if (enabled) Color.White else DesktopSecondary,
+        )
+    }
+}
+
+private fun formatLyricsOffset(offsetMs: Int): String =
+    String.format(Locale.getDefault(), "%+.1f s", offsetMs / 1_000f)
+
+/** The offset's step and its five-second range either way, matching the lyric sheet's drawer. */
+private const val LYRICS_OFFSET_STEP_MS = 100
+private const val MIN_LYRICS_OFFSET_MS = -5_000
+private const val MAX_LYRICS_OFFSET_MS = 5_000
+
+@Composable
+internal fun DesktopAppleCollectionMenu(
+    playlist: Boolean,
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit,
+    onOpen: () -> Unit,
+    onFind: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DesktopMenuSurface(onDismiss) {
+        DesktopMenuRow(BitChordIcons.Play, "Play") { onDismiss(); onPlay() }
+        DesktopMenuRow(BitChordIcons.Shuffle, "Shuffle") { onDismiss(); onShuffle() }
+        DesktopMenuDivider()
+        DesktopMenuRow(BitChordIcons.Album, if (playlist) "Go to Playlist" else "Go to Album") { onDismiss(); onFind() }
+        DesktopMenuRow(BitChordIcons.ListMusic, "Open") { onDismiss(); onOpen() }
+    }
+}
+
+/**
+ * The window's one open menu: what opened it, and what to draw over it.
+ *
+ * A menu in a `Popup` lives in a window of its own, so the page behind it cannot be blurred —
+ * there is nothing in that window to read. Holding the open menu here instead lets the frame draw
+ * it in an overlay of its own, in the window, on the same glass the quick-search palette uses.
+ */
+internal class DesktopMenuSlot {
+    /** Where the menu hangs from, in window coordinates. */
+    var anchor by mutableStateOf(IntRect.Zero)
+        private set
+    var onDismiss by mutableStateOf<() -> Unit>({})
+        private set
+    var draw by mutableStateOf<(@Composable () -> Unit)?>(null)
+        private set
+
+    /** Which opening this is. A fresh menu must not inherit the last one's measured size. */
+    var opening by mutableStateOf(0)
+        private set
+
+    val isOpen get() = draw != null
+
+    fun open(anchor: IntRect, onDismiss: () -> Unit, draw: @Composable () -> Unit) {
+        if (this.draw == null) opening++
+        this.anchor = anchor
+        this.onDismiss = onDismiss
+        this.draw = draw
+    }
+
+    fun close() {
+        draw = null
+    }
+}
+
+internal val LocalDesktopMenuSlot = staticCompositionLocalOf<DesktopMenuSlot> {
+    error("A desktop menu has to be drawn inside DesktopFrame, which provides its overlay")
+}
+
+/**
+ * The panel a menu is drawn in, handed to the frame's overlay.
+ *
+ * The zero-sized marker is what finds the anchor: its parent layout node is the button, or the
+ * one-point box the pointer host plants, which is exactly the rect a popup used to hang from. It
+ * takes no room and no pointer events, so the caller's layout is unchanged.
+ */
+@Composable
+private fun DesktopMenuSurface(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    val slot = LocalDesktopMenuSlot.current
+    // Null until this menu has been laid out. Opening the slot before that would place a menu
+    // against the window's origin for the frame it takes the real anchor to arrive.
+    var anchor by remember { mutableStateOf<IntRect?>(null) }
+    Box(
+        Modifier
+            .size(0.dp)
+            .onGloballyPositioned { coords ->
+                coords.parentLayoutCoordinates?.boundsInWindow()?.let { bounds ->
+                    anchor = IntRect(
+                        bounds.left.toInt(),
+                        bounds.top.toInt(),
+                        bounds.right.toInt(),
+                        bounds.bottom.toInt(),
+                    )
+                }
+            },
+    )
+    val placed = anchor
+    SideEffect { if (placed != null) slot.open(placed, onDismiss, content) }
+    DisposableEffect(Unit) { onDispose { slot.close() } }
+}
+
+/**
+ * The open menu, drawn over everything else in the window.
+ *
+ * Placed by hand rather than by a popup: the card's own size is only known once it has been
+ * measured, so it stays invisible for that first pass and appears already where it belongs.
+ */
+@Composable
+internal fun DesktopMenuOverlay(slot: DesktopMenuSlot) {
+    val draw = slot.draw ?: return
+    val anchor = slot.anchor
+    val opening = slot.opening
+    val onDismiss = slot.onDismiss
+    val outside = remember { MutableInteractionSource() }
+    val inside = remember { MutableInteractionSource() }
+    var window by remember { mutableStateOf(IntSize.Zero) }
+    // Measured afresh for every opening: a menu placed with the last one's size would settle on
+    // the wrong side of its button, then jump once its own size came in.
+    var card by remember(opening) { mutableStateOf(IntSize.Zero) }
+    // Settled on the first measure of this opening and kept: a drawer growing inside the card
+    // would otherwise flip it to the other side of the button while the pointer is on it.
+    var above by remember(opening) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(opening, card, window) {
+        if (above == null && card != IntSize.Zero && window != IntSize.Zero) {
+            above = !fitsBelow(anchor, window, card) && fitsAbove(anchor, card)
+        }
+    }
+    val settled = above != null && card != IntSize.Zero
+    val placed = if (settled) menuPlacement(anchor, window, card, above!!) else IntOffset.Zero
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onSizeChanged { window = it }
+            // The page under the menu keeps its own clicks out, as a popup window did.
+            .clickable(interactionSource = outside, indication = null, onClick = onDismiss),
+    ) {
+        val shape = RoundedCornerShape(12.dp)
+        Column(
+            Modifier
+                .offset { placed }
+                .graphicsLayer { alpha = if (settled) 1f else 0f }
+                .onSizeChanged { card = it }
+                .widthIn(min = 232.dp, max = 300.dp)
+                .desktopMenuGlass(shape)
+                .clickable(interactionSource = inside, indication = null, onClick = {})
+                .padding(vertical = 6.dp)
+                // A menu with every optional row on it is taller than a small window; capped and
+                // scrolled rather than run off the screen.
+                .heightIn(max = 460.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            draw()
+        }
+    }
+}
+
+private fun fitsBelow(anchor: IntRect, window: IntSize, card: IntSize): Boolean =
+    anchor.bottom + MENU_MARGIN + card.height + MENU_MARGIN <= window.height
+
+private fun fitsAbove(anchor: IntRect, card: IntSize): Boolean =
+    anchor.top - card.height - MENU_MARGIN >= MENU_MARGIN
+
+/** Where a menu hangs relative to the button that opened it. */
+private fun menuPlacement(anchor: IntRect, window: IntSize, card: IntSize, placeAbove: Boolean): IntOffset {
+    val below = anchor.bottom + MENU_MARGIN
+    val above = anchor.top - card.height - MENU_MARGIN
+    val y = when {
+        placeAbove && fitsAbove(anchor, card) -> above
+        fitsBelow(anchor, window, card) -> below
+        // Neither side has room, so it sits between the margins as tall as the window allows.
+        else -> MENU_MARGIN
+    }
+    val x = anchor.left.coerceIn(
+        MENU_MARGIN,
+        (window.width - card.width - MENU_MARGIN).coerceAtLeast(MENU_MARGIN),
+    )
+    return IntOffset(x, y.coerceAtMost((window.height - card.height - MENU_MARGIN).coerceAtLeast(MENU_MARGIN)))
+}
+
+/** Air kept between a menu and the window's edges. */
+private const val MENU_MARGIN = 12
+
+/** A submenu's title, and the way back out of it. */
+@Composable
+private fun DesktopMenuHeader(title: String, onBack: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 32.dp)
+            .clickable(onClick = onBack)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(BitChordIcons.ChevronLeft, DesktopStrings["back", "Back"], tint = DesktopSecondary, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
+        )
+    }
+}
+
+@Composable
+private fun DesktopMenuDivider() {
+    HorizontalDivider(
+        Modifier.padding(vertical = 5.dp),
+        thickness = 0.5.dp,
+        color = DesktopCardEdge,
+    )
+}
+
+/** One menu row. */
+@Composable
+private fun DesktopMenuRow(
+    icon: ImageVector,
+    label: String,
+    tint: Color? = null,
+    value: String = "",
+    selected: Boolean = false,
+    enabled: Boolean = true,
+    busy: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 5.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(if (hovered && enabled) DesktopRowHover else Color.Transparent)
+            .hoverable(interaction, enabled = enabled)
+            .clickable(enabled = enabled, onClick = onClick)
+            .heightIn(min = 32.dp)
+            .padding(horizontal = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(15.dp), color = DesktopAccent, strokeWidth = 2.dp)
+        } else {
+            Icon(
+                icon,
+                null,
+                tint = tint ?: if (enabled) Color.White.copy(alpha = 0.82f) else DesktopSecondary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        Spacer(Modifier.width(11.dp))
+        Text(
+            label,
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = tint ?: if (enabled) Color.White else DesktopSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (value.isNotBlank()) {
+            Text(value, style = MaterialTheme.typography.bodySmall, color = DesktopSecondary)
+        }
+        if (selected) {
+            Spacer(Modifier.width(8.dp))
+            Icon(BitChordIcons.Check, null, tint = DesktopAccent, modifier = Modifier.size(15.dp))
+        }
+    }
+}
+
+/** The "…" the menu hangs off, sized and tinted to sit beside the player's star. */
+@Composable
+internal fun DesktopMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Box(
+        modifier
+            .size(34.dp)
+            .clip(RoundedCornerShape(17.dp))
+            .background(if (hovered) Color.White.copy(alpha = 0.12f) else Color.Transparent)
+            .hoverable(interaction)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Three dots drawn rather than taken from the icon set.
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            repeat(3) {
+                Box(
+                    Modifier
+                        .size(3.5.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White.copy(alpha = 0.75f)),
+                )
+            }
+        }
+    }
+}

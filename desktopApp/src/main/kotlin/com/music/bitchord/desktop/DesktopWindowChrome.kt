@@ -1,0 +1,298 @@
+package com.music.bitchord.desktop
+
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.background
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.WindowScope
+import java.awt.MouseInfo
+
+// The window's own frame, drawn by the application rather than by the system.
+
+/** What the caption buttons act on. */
+internal class DesktopWindowActions(
+    val minimize: () -> Unit,
+    val toggleMaximize: () -> Unit,
+    val close: () -> Unit,
+)
+
+internal val LocalDesktopWindowActions = staticCompositionLocalOf<DesktopWindowActions?> { null }
+
+/** The window, for the drag area. */
+internal val LocalDesktopWindowScope = staticCompositionLocalOf<WindowScope?> { null }
+
+/** A region that moves the window, and maximizes it on a double click. */
+@Composable
+internal fun DesktopTitleBarDragArea(
+    modifier: Modifier = Modifier,
+    /** A press that ends without a drag clicks the bar — the top bar opens the player with it. */
+    onTap: (() -> Unit)? = null,
+    content: @Composable () -> Unit = {},
+) {
+    val scope = LocalDesktopWindowScope.current
+    val actions = LocalDesktopWindowActions.current
+    if (!DesktopPlatform.drawsOwnWindowFrame || scope == null) {
+        Box(modifier) { content() }
+        return
+    }
+    // The gesture lives on a sibling underneath the content: anything with its
+    // own pointer input (buttons, sliders) is hit first and consumes the press,
+    // so only the empty toolbar moves the window. The press colour is drawn by a
+    // second sibling above the content, so the tint covers the whole bar even
+    // when the press lands on a control.
+    val pressSource = remember { MutableInteractionSource() }
+    Box(modifier) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .captionPress(pressSource, scope, actions, onTap),
+        )
+        content()
+        if (onTap != null) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(BAR_PRESS_CORNER))
+                    .indication(pressSource, LocalIndication.current),
+            )
+        }
+    }
+}
+
+/** The caption buttons. In the title bar when there is one, otherwise on the toolbar. */
+@Composable
+internal fun DesktopWindowButtons(modifier: Modifier = Modifier) {
+    if (!DesktopPlatform.drawsOwnWindowFrame) return
+    val actions = LocalDesktopWindowActions.current ?: return
+    val maximized by DesktopWindowMode.maximized.collectAsState()
+    val windowInfo = androidx.compose.ui.platform.LocalWindowInfo.current
+    val isFocused = windowInfo.isWindowFocused
+    val inactiveFill = if (!isFocused && DesktopPlatform.isMac) Color.White.copy(alpha = 0.22f) else null
+
+    Row(
+        modifier = modifier.height(CAPTION_HEIGHT).padding(start = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        MacCaptionButton("Close", MAC_CLOSE, onClick = actions.close, inactiveFill = inactiveFill) { glyph ->
+            val reach = GLYPH_HALF.toPx()
+            val line = HAIRLINE.toPx()
+            drawLine(
+                color = glyph,
+                start = Offset(center.x - reach, center.y - reach),
+                end = Offset(center.x + reach, center.y + reach),
+                strokeWidth = line,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = glyph,
+                start = Offset(center.x + reach, center.y - reach),
+                end = Offset(center.x - reach, center.y + reach),
+                strokeWidth = line,
+                cap = StrokeCap.Round,
+            )
+        }
+        MacCaptionButton("Minimize", MAC_MINIMIZE, onClick = actions.minimize, inactiveFill = inactiveFill) { glyph ->
+            drawLine(
+                color = glyph,
+                start = Offset(center.x - GLYPH_HALF.toPx(), center.y),
+                end = Offset(center.x + GLYPH_HALF.toPx(), center.y),
+                strokeWidth = HAIRLINE.toPx(),
+                cap = StrokeCap.Round,
+            )
+        }
+        MacCaptionButton(
+            if (maximized) "Restore" else "Maximize",
+            MAC_MAXIMIZE,
+            onClick = actions.toggleMaximize,
+            inactiveFill = inactiveFill,
+        ) { glyph ->
+            val reach = GLYPH_HALF.toPx()
+            val line = HAIRLINE.toPx()
+            // The opposing corner marks used by macOS' green zoom control. They remain legible at
+            // 100% Windows scaling, unlike a tiny outlined square.
+            drawLine(glyph, Offset(center.x - reach, center.y + reach), Offset(center.x + reach, center.y - reach), line, StrokeCap.Round)
+            drawLine(glyph, Offset(center.x + reach, center.y - reach), Offset(center.x + 1.dp.toPx(), center.y - reach), line, StrokeCap.Round)
+            drawLine(glyph, Offset(center.x + reach, center.y - reach), Offset(center.x + reach, center.y - 1.dp.toPx()), line, StrokeCap.Round)
+            drawLine(glyph, Offset(center.x - reach, center.y + reach), Offset(center.x - 1.dp.toPx(), center.y + reach), line, StrokeCap.Round)
+            drawLine(glyph, Offset(center.x - reach, center.y + reach), Offset(center.x - reach, center.y + 1.dp.toPx()), line, StrokeCap.Round)
+        }
+    }
+}
+
+@Composable
+private fun MacCaptionButton(
+    label: String,
+    fill: Color,
+    onClick: () -> Unit,
+    inactiveFill: Color? = null,
+    glyph: androidx.compose.ui.graphics.drawscope.DrawScope.(Color) -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val buttonColor = if (inactiveFill != null && !hovered) inactiveFill else fill
+    Box(
+        Modifier
+            .size(CAPTION_TOUCH_SIZE)
+            .hoverable(interaction)
+            // The arrow, not the hand: this is window furniture, and the pointer says so before the
+            // click does.
+            .pointerHoverIcon(PointerIcon.Default)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics { contentDescription = label }
+            .drawBehind {
+                drawCircle(buttonColor, radius = MAC_DOT_RADIUS.toPx())
+                if (hovered) glyph(MAC_GLYPH)
+            },
+        contentAlignment = Alignment.Center,
+    ) {}
+}
+
+/**
+ * The platform's own caption metrics, which is what makes these read as the window's controls
+ * rather than the application's.
+ */
+private val CAPTION_TOUCH_SIZE = 22.dp
+private val CAPTION_HEIGHT = 24.dp
+private val MAC_DOT_RADIUS = 6.dp
+
+/** Half the width of a glyph, and the weight every one of them is drawn at. */
+private val GLYPH_HALF = 2.5.dp
+private val HAIRLINE = 0.75.dp
+
+/** How much the bar's press highlight rounds its corners. */
+private val BAR_PRESS_CORNER = 8.dp
+
+private val MAC_CLOSE = Color(0xFFFF5F57)
+private val MAC_MINIMIZE = Color(0xFFFFBD2E)
+private val MAC_MAXIMIZE = Color(0xFF28C840)
+private val MAC_GLYPH = Color(0xB3000000)
+
+/**
+ * A press on empty caption: moves the window, and a second one in quick succession maximizes it,
+ * the way the system caption always has.
+ *
+ * On Windows the move is handed to the system ([DesktopWindowsFrame.startDrag]), which runs its own
+ * move loop — DWM slides the window, Aero Snap works, and no edge is left exposed to paint white.
+ * On macOS it is handed to AppKit via [DesktopMacFrame.startDrag] for smooth ProMotion dragging.
+ * The double click is counted here rather than left to Windows: the area is client area as far as
+ * Windows knows, so it never sends the caption's own double click. Without the native frame the
+ * window is moved from the pointer, as WindowDraggableArea did.
+ */
+private fun Modifier.captionPress(
+    interaction: MutableInteractionSource?,
+    scope: WindowScope,
+    actions: DesktopWindowActions?,
+    onTap: (() -> Unit)?,
+): Modifier =
+    pointerInput(scope, actions, onTap, interaction) {
+        var lastPressAt = 0L
+        var lastPressPosition = Offset.Zero
+        awaitEachGesture {
+            // Consumed presses are seen too: a control in the bar claimed the
+            // down, and the bar only lends it the press colour. The click, the
+            // double click and the drag all stay with the control.
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val claimed = down.isConsumed
+            val double = !claimed &&
+                down.uptimeMillis - lastPressAt <= viewConfiguration.doubleTapTimeoutMillis &&
+                (down.position - lastPressPosition).getDistance() <= viewConfiguration.touchSlop
+            if (double) {
+                lastPressAt = 0L
+                down.consume()
+                actions?.toggleMaximize()
+                return@awaitEachGesture
+            }
+            if (!claimed) {
+                lastPressAt = down.uptimeMillis
+                lastPressPosition = down.position
+            }
+            // A press that ends where it began is the bar's click; only a pointer that crosses
+            // the touch slop is a window move. Waiting for that split lets one empty space
+            // answer to both.
+            if (onTap != null) {
+                // tryEmit rather than emit: this gesture scope's suspension is
+                // restricted, so the suspend emit is out of reach here.
+                val press = interaction?.let { source ->
+                    PressInteraction.Press(down.position).also { source.tryEmit(it) }
+                }
+                if (claimed) {
+                    // Only the colour is the bar's: watch the press out without
+                    // touching its events, and leave the click to its control.
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        if (event.changes.none { it.id == down.id && it.pressed }) break
+                    }
+                    if (press != null) interaction.tryEmit(PressInteraction.Release(press))
+                    return@awaitEachGesture
+                }
+                var dragged = false
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Main)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                        dragged = true
+                        change.consume()
+                        break
+                    }
+                }
+                if (!dragged) {
+                    if (press != null) interaction.tryEmit(PressInteraction.Release(press))
+                    onTap()
+                    return@awaitEachGesture
+                }
+                if (press != null) interaction.tryEmit(PressInteraction.Cancel(press))
+            }
+            if (DesktopWindowsFrame.startDrag()) return@awaitEachGesture
+            if (DesktopPlatform.isMac && DesktopMacFrame.startDrag()) return@awaitEachGesture
+            val window = scope.window
+            val windowAtStart = window.location
+            val pointerAtStart = MouseInfo.getPointerInfo()?.location ?: return@awaitEachGesture
+            drag(down.id) {
+                val pointer = MouseInfo.getPointerInfo()?.location ?: return@drag
+                window.setLocation(
+                    windowAtStart.x + pointer.x - pointerAtStart.x,
+                    windowAtStart.y + pointer.y - pointerAtStart.y,
+                )
+            }
+        }
+    }

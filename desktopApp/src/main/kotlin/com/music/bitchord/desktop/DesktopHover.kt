@@ -1,0 +1,178 @@
+package com.music.bitchord.desktop
+
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.dp
+
+/**
+ * What a card does when the pointer is over it: rises a little, and casts a little more shadow.
+ *
+ * A desktop app answers the pointer before it is clicked — it is most of what separates one from a
+ * page in a browser, and the cards here answered nothing at all. The movement is small on purpose:
+ * a shelf of them is a lot of motion if each one leaps.
+ *
+ * The scale is applied about the card's own centre, so a row of them does not shuffle sideways as
+ * one grows, and the shadow is animated with it rather than switched on, which would read as a
+ * flicker at the boundary.
+ */
+@Composable
+internal fun Modifier.desktopHoverLift(
+    shape: Shape,
+    scale: Float = HOVER_SCALE,
+    elevation: androidx.compose.ui.unit.Dp = HOVER_ELEVATION,
+): Modifier = composed {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val lift by animateFloatAsState(
+        targetValue = if (hovered) 1f else 0f,
+        animationSpec = tween(HOVER_MS),
+        label = "hoverLift",
+    )
+    this
+        .hoverable(interaction)
+        .graphicsLayer {
+            val grown = 1f + (scale - 1f) * lift
+            scaleX = grown
+            scaleY = grown
+        }
+        .shadow(elevation * lift, shape)
+}
+
+/** Barely more than a nudge — enough to acknowledge the pointer, not enough to jostle the shelf. */
+private const val HOVER_SCALE = 1.035f
+
+private val HOVER_ELEVATION = 18.dp
+
+/** Quick enough to feel like a response rather than an animation. */
+private const val HOVER_MS = 140
+
+
+/**
+ * A round button's acknowledgement of the pointer: the faintest wash behind the glyph.
+ *
+ * The toolbar and player buttons were bare clickable boxes, so pointing at one did nothing until it
+ * was pressed. On a desktop that reads as a web page. Kept very light — these sit over artwork and
+ * a frosted bar, and anything stronger would look like a selected state rather than a hovered one.
+ */
+@Composable
+internal fun Modifier.desktopHoverWash(): Modifier = composed {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val wash by animateFloatAsState(
+        targetValue = if (hovered) 1f else 0f,
+        animationSpec = tween(WASH_MS),
+        label = "hoverWash",
+    )
+    this
+        .hoverable(interaction)
+        .drawBehind {
+            if (wash <= 0.01f) return@drawBehind
+            drawCircle(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.12f * wash),
+                radius = size.minDimension / 2f,
+            )
+        }
+}
+
+private const val WASH_MS = 120
+
+/**
+ * A list row's acknowledgement of the pointer: a faint rounded wash behind the whole row.
+ *
+ * The sidebar rows answered the pointer only once selected, so pointing at an unselected one did
+ * nothing until it was clicked. Apple Music lights a row the moment the cursor enters it; this is
+ * that wash, kept lighter than the selected pill so hovering never reads as chosen. It draws its own
+ * rounded rect rather than relying on the caller's clip, so it can sit anywhere in the chain.
+ */
+@Composable
+internal fun Modifier.desktopHoverFill(
+    corner: androidx.compose.ui.unit.Dp = ROW_HOVER_CORNER,
+    alpha: Float = ROW_HOVER_ALPHA,
+): Modifier = composed {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val wash by animateFloatAsState(
+        targetValue = if (hovered) 1f else 0f,
+        animationSpec = tween(WASH_MS),
+        label = "hoverFill",
+    )
+    this
+        .hoverable(interaction)
+        .drawBehind {
+            if (wash <= 0.01f) return@drawBehind
+            val radius = corner.toPx()
+            drawRoundRect(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = alpha * wash),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius),
+            )
+        }
+}
+
+private val ROW_HOVER_CORNER = 7.dp
+private const val ROW_HOVER_ALPHA = 0.07f
+
+/**
+ * How a cover answers the pointer: it darkens. Rows and buttons wash white, but a sleeve
+ * washing white reads as a washed-out picture rather than a pointed-at one, and the site's
+ * own artwork hover is a black scrim. Drawn over the artwork, so it is the same shade on
+ * every sleeve in the app.
+ */
+@Composable
+internal fun Modifier.desktopArtHoverShade(): Modifier = composed {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    this
+        .hoverable(interaction)
+        .desktopArtShade(hovered)
+}
+
+/** The scrim itself, for a tile that already owns the [hoverable] its hover comes from. */
+@Composable
+internal fun Modifier.desktopArtShade(hovered: Boolean): Modifier = composed {
+    val shade by animateFloatAsState(
+        targetValue = if (hovered) 1f else 0f,
+        animationSpec = tween(ART_HOVER_MS),
+        label = "artShade",
+    )
+    this.drawWithContent {
+        drawContent()
+        if (shade <= 0.001f) return@drawWithContent
+        drawRect(androidx.compose.ui.graphics.Color.Black.copy(alpha = ART_HOVER_ALPHA * shade))
+    }
+}
+
+/** The site's own artwork scrim: half black. */
+internal const val ART_HOVER_ALPHA = 0.5f
+internal const val ART_HOVER_MS = 140
+
+/**
+ * A click that reaches the whole tile but lights none of it.
+ *
+ * The words under a cover start the same thing the cover does, so they take the click. Left to the
+ * plain [clickable], though, the pointer crossing them painted a wash over the whole box — a
+ * rectangle of text answering as though it were the picture. The tiles put their highlight on the
+ * artwork with [desktopHoverFill]; this keeps the click without a second one.
+ */
+@Composable
+internal fun Modifier.desktopQuietClick(enabled: Boolean = true, onClick: () -> Unit): Modifier = composed {
+    clickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null,
+        enabled = enabled,
+        onClick = onClick,
+    )
+}

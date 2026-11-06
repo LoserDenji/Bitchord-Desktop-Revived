@@ -1,0 +1,65 @@
+package com.music.bitchord.desktop
+
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+
+/**
+ * The toggles read far from the Settings sheet that sets them.
+ *
+ * Mirrors Android's `AppSettings` for these few: a composable deep in the player or the lyrics
+ * pane can collect one without it being threaded down through every caller.
+ */
+internal object DesktopAppearanceSettings {
+
+    private fun flag(key: String, default: Boolean) =
+        MutableStateFlow(DesktopPersistence().boolean(key, default))
+
+    private val _reduceAnimation = flag(KEY_REDUCE_ANIMATION, false)
+    private val _reduceDynamicBlur = flag(KEY_REDUCE_DYNAMIC_BLUR, false)
+    private val _hideVolumeBar = flag(KEY_HIDE_VOLUME_BAR, false)
+    private val _ambientBackdrop = flag(KEY_AMBIENT_BACKDROP, true)
+    private val _turntableArt = flag(KEY_TURNTABLE_ART, false)
+    private val _lyricsClassic = flag(KEY_LYRICS_CLASSIC, false)
+
+    /** Freezes the main player's gradient instead of drifting. */
+    val reduceAnimation: StateFlow<Boolean> = _reduceAnimation
+
+    /** Swaps frosted glass for solid fills across the app. */
+    val reduceDynamicBlur: StateFlow<Boolean> = _reduceDynamicBlur
+
+    /** Removes the volume slider from the main player. */
+    val hideVolumeBar: StateFlow<Boolean> = _hideVolumeBar
+
+    /** Diffuses current artwork colors under the window glass chrome like Apple Music. */
+    val ambientBackdrop: StateFlow<Boolean> = _ambientBackdrop
+
+    /** The player's artwork as a record on a turntable rather than a sleeve. */
+    val turntableArt: StateFlow<Boolean> = _turntableArt
+
+    /** The player's words drawn small and heavy, blurred away from the sung line. */
+    val lyricsClassic: StateFlow<Boolean> = _lyricsClassic
+
+    fun setReduceAnimation(value: Boolean) = write(KEY_REDUCE_ANIMATION, value, _reduceAnimation)
+
+    fun setReduceDynamicBlur(value: Boolean) = write(KEY_REDUCE_DYNAMIC_BLUR, value, _reduceDynamicBlur)
+
+    fun setHideVolumeBar(value: Boolean) = write(KEY_HIDE_VOLUME_BAR, value, _hideVolumeBar)
+
+    fun setAmbientBackdrop(value: Boolean) = write(KEY_AMBIENT_BACKDROP, value, _ambientBackdrop)
+
+    fun setTurntableArt(value: Boolean) = write(KEY_TURNTABLE_ART, value, _turntableArt)
+
+    fun setLyricsClassic(value: Boolean) = write(KEY_LYRICS_CLASSIC, value, _lyricsClassic)
+
+    private fun write(key: String, value: Boolean, into: MutableStateFlow<Boolean>) {
+        DesktopPersistence().saveBoolean(key, value)
+        into.value = value
+    }
+
+    internal const val KEY_REDUCE_ANIMATION = "reduce_animation"
+    internal const val KEY_REDUCE_DYNAMIC_BLUR = "reduce_dynamic_blur"
+    internal const val KEY_HIDE_VOLUME_BAR = "hide_volume_bar"
+    internal const val KEY_AMBIENT_BACKDROP = "ambient_backdrop"
+    internal const val KEY_TURNTABLE_ART = "turntable_art"
+    internal const val KEY_LYRICS_CLASSIC = "lyrics_classic"
+}
