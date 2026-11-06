@@ -1,0 +1,187 @@
+name: Build desktop apps
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp, e.g. 1.8.30 (defaults to the one in the build)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One version for every platform, so the four builds come out with matching names.
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          default_version=$(sed -n 's/^[[:space:]]*?: "\([0-9A-Za-z.@_-]*\)".*/\1/p' desktopApp/build.gradle.kts | head -n 1)
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            version="$INPUT_VERSION"
+          else
+            version="$default_version"
+          fi
+          # It is interpolated into file names and Gradle arguments, so keep it boring.
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Invalid version '$version' — expected something like 1.8.30 or 1.8-beta1."
+            exit 1
+          fi
+          echo "Building BitChord $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+            arch: x86_64
+          - os: windows-2022
+            platform: windows
+            arch: x64
+          - os: macos-15
+            platform: macos
+            arch: arm64
+          # macOS x64 is a separate runner: jpackage only builds the host architecture.
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make the Gradle wrapper executable
+        if: matrix.platform != 'windows'
+        run: chmod +x gradlew
+
+      - name: Install Linux build tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ fakeroot rpm cpio
+
+      # desktopApp/build.gradle.kts asks for g++ and Ninja on Windows (rather than MSVC),
+      # so provide a MinGW toolchain. Without it the build still succeeds, but silently
+      # drops the Automix analyser and the native window frame.
+      - name: Set up the MinGW toolchain
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-ninja
+
+      - name: Add MinGW and WiX to PATH
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $mingw = "C:\msys64\mingw64\bin"
+          if (-not (Test-Path "$mingw\g++.exe")) {
+            throw "MinGW was not installed where expected ($mingw)."
+          }
+          $mingw | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # jpackage builds the .exe/.msi through WiX v3. It ships with the image, but
+          # the path is not always on PATH.
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $candle = Get-ChildItem "${env:ProgramFiles(x86)}\WiX Toolset*\bin\candle.exe" -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($candle) {
+              $candle.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            } else {
+              Write-Warning "WiX Toolset not found; packageExe/packageMsi will fail."
+            }
+          }
+
+      - name: Build Windows packages
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          .\gradlew.bat --no-daemon --console=plain "-Pbitchord.version=$env:VERSION" `
+            :desktopApp:windowsPortable :desktopApp:packageExe :desktopApp:packageMsi
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "desktopApp/build/compose/binaries/main/exe/*.exe" "dist/BitChord-$env:VERSION-windows-x64-setup.exe"
+          Copy-Item "desktopApp/build/compose/binaries/main/msi/*.msi" "dist/BitChord-$env:VERSION-windows-x64.msi"
+          Copy-Item "desktopApp/build/distributions/*-portable.zip" "dist/BitChord-$env:VERSION-windows-x64-portable.zip"
+
+      - name: Build macOS packages
+        if: matrix.platform == 'macos'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --console=plain "-Pbitchord.version=$VERSION" \
+            :desktopApp:packageDmg :desktopApp:packagePkg
+          mkdir -p dist
+          cp desktopApp/build/compose/binaries/main/dmg/*.dmg "dist/BitChord-$VERSION-macos-$ARCH.dmg"
+          cp desktopApp/build/compose/binaries/main/pkg/*.pkg "dist/BitChord-$VERSION-macos-$ARCH.pkg"
+
+      - name: Build Linux packages
+        if: matrix.platform == 'linux'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --console=plain "-Pbitchord.version=$VERSION" \
+            :desktopApp:createDistributable :desktopApp:packageDeb :desktopApp:packageRpm
+          mkdir -p dist
+          cp desktopApp/build/compose/binaries/main/deb/*.deb "dist/BitChord-$VERSION-linux-amd64.deb"
+          cp desktopApp/build/compose/binaries/main/rpm/*.rpm "dist/BitChord-$VERSION-linux-x86_64.rpm"
+
+          # The AppImage is the one Linux format jpackage cannot produce; packaging/appimage.sh
+          # wraps the app image it did produce. APPIMAGE_EXTRACT_AND_RUN inside the script means
+          # this works on a runner with no FUSE.
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          bash desktopApp/packaging/appimage.sh \
+            desktopApp/build/compose/binaries/main/app/BitChord \
+            "dist/BitChord-$VERSION-linux-x86_64.AppImage" \
+            "$RUNNER_TEMP/appimagetool"
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
