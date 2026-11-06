@@ -189,3 +189,30 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  # A tag is a release: collect every platform's packages and publish them together.
+  release:
+    name: Publish release
+    needs: [prepare, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: BitChord-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: BitChord ${{ needs.prepare.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          # Alpha/beta/rc builds stay off the "latest" endpoint; hotfixes do not.
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          fail_on_unmatched_files: true
