@@ -101,18 +101,22 @@ jobs:
       # so provide a MinGW toolchain. Without it the build still succeeds, but silently
       # drops the Automix analyser and the native window frame.
       - name: Set up the MinGW toolchain
+        id: msys2
         if: matrix.platform == 'windows'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: false
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-ninja
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja
 
       - name: Add MinGW and WiX to PATH
         if: matrix.platform == 'windows'
         shell: pwsh
+        env:
+          # The action does not necessarily use C:\msys64, so ask it where it installed.
+          MSYS2_LOCATION: ${{ steps.msys2.outputs['msys2-location'] }}
         run: |
-          $mingw = "C:\msys64\mingw64\bin"
+          $mingw = Join-Path $env:MSYS2_LOCATION "ucrt64\bin"
           if (-not (Test-Path "$mingw\g++.exe")) {
             throw "MinGW was not installed where expected ($mingw)."
           }
