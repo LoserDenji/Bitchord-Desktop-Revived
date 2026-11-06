@@ -1,0 +1,754 @@
+# BitChord Desktop — Build & Runtime Fixes
+
+This is the fixed source tree of `bitchord-desktop` (v1.9.1). The original
+source did not compile — the Rust shell (`src-tauri/src`) had missing module
+imports, a missing crate re-export, a plugin API misuse, and two invalid
+fields in `tauri.conf.json`. Every fix is additive or corrective; **no file
+was removed and no feature was dropped** (verified by a full recursive diff
+against the original archive: 5 files changed, 0 removed).
+
+## What was fixed
+
+### 1. `src-tauri/src/commands.rs` — missing module imports (18 compile errors)
+`commands.rs` referenced `agent::…` and `media::…` without importing the
+crate modules, so every use failed to resolve. Added:
+
+```rust
+use crate::{agent, media};
+```
+
+### 2. `src-tauri/src/media.rs` — missing `Manager` trait import (3 compile errors)
+`AppHandle::state`, `try_state` and `get_webview_window` come from Tauri's
+`Manager` trait, which was not in scope. Changed the import to:
+
+```rust
+use tauri::{AppHandle, Manager};
+```
+
+### 3. `src-tauri/src/lib.rs` — window-state plugin built incorrectly (1 compile error)
+`tauri_plugin_window_state::Builder` implements no `Plugin` trait itself; the
+plugin instance is produced by its `build()` method:
+
+```rust
+.plugin(tauri_plugin_window_state::Builder::default().build())
+```
+
+### 4. `src-tauri/core/src/lib.rs` — `Core` not exported from the core crate (3 compile errors)
+The shell uses `bitchord_core::Core`, but the type lives in the private-ish
+`bridge` module and was never re-exported. Added at the crate root:
+
+```rust
+pub use bridge::Core;
+```
+
+### 5. `src-tauri/tauri.conf.json` — invalid config fields (build-time config validation error)
+`bundle.linux.appCategories` and `bundle.linux.desktopFileTemplate` do not
+exist in the Tauri v2 configuration schema (`tauri-utils` `LinuxConfig` only
+has `appimage`, `deb`, `rpm`), so `tauri-build` rejected the whole config and
+no build could start. Replaced the block with `"linux": {}`. Nothing is lost:
+desktop categories were already derived from `bundle.category` ("Music").
+
+## How the Windows installer was produced
+
+Cross-compiled from Linux with the officially documented Tauri toolchain
+(https://v2.tauri.app/distribute/windows-installer/):
+
+```
+rustup target add x86_64-pc-windows-msvc
+cargo install --locked cargo-xwin
+pnpm install
+pnpm --filter @bitchord/app build
+tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+```
+
+Notes for reproducing on a normal machine:
+- The `tauri` CLI must run from the repository root (it looks for
+  `src-tauri/tauri.conf.json` in subfolders), e.g.
+  `cd <repo-root> && ./app/node_modules/.bin/tauri build …` or use
+  `pnpm --filter @bitchord/app exec tauri build` with the CLI's project
+  path pointed at the repo root.
+- The installer is **unsigned** (no certificate), so Windows SmartScreen may
+  show a warning on first run — choose "More info" → "Run anyway".
+- The installer bundles/boostraps WebView2 (`downloadBootstrapper`), so the
+  app itself needs no bundled browser runtime.
+
+## Artifacts
+
+- `BitChord_1.9.0_x64-setup.exe` — the NSIS setup installer (per-user or
+  per-machine, English, WebView2 bootstrapper).
+- `BitChord-portable.exe` — the same release binary without an installer,
+  for portable/green use.
+
+---
+
+# Round 2 — the sign-in fixes (v1.9.1)
+
+The build now works, but three independent bugs made sign-in impossible and
+one made a robots.txt window appear at startup. All four were reproduced from
+first principles against the Tauri 2.12.5 sources before fixing.
+
+## 1. The white sign-in window that never loads and cannot be closed
+
+**Symptom:** clicking the sidebar "Sign In" pill opened a blank window, the
+whole app froze, and only Task Manager ended it.
+
+**Cause:** `open_external` and `open_signin` were *synchronous* Tauri commands
+that called `WebviewWindowBuilder::build()`. Sync commands execute on the main
+thread — which is the event loop — and building a webview window there
+deadlocks the Windows WebView2 initialization. This is a documented known
+issue (the `WebviewWindowBuilder` docs: "On Windows, this function deadlocks
+when used in a synchronous command or event handlers"; tauri#13092).
+
+**Fix:** both commands are now `async fn`. Async commands run off the main
+thread, which is the documented-safe pattern for window creation.
+
+## 2. Sign-in could never complete, even with a loaded window
+
+**Cause:** the agent window runs on remote origins (accounts.google.com,
+music.youtube.com, …). In Tauri 2, **every IPC call from a remote URL is
+rejected by the ACL unless the app defines its own permission manifest and a
+capability with `remote` URLs grants those commands** (the check fires when
+`!is_local`, per `webview/mod.rs`). The app defined no permissions, so the
+agent's `agent_report` invoke — the one carrying the session cookies — was
+silently denied. Application commands only work by default from *local*
+windows, which is why everything else seemed fine.
+
+**Fix:** `build.rs` now registers the eight desktop commands with
+`tauri_build::AppManifest::new().commands([…])`, which autogenerates
+`allow-<command>` permissions, and both capabilities (`main`, `agent`) grant
+them. The `agent` capability's `remote.urls` also gained the origins the
+Google sign-in flow hops through (accounts.youtube.com, consent.google.com,
+myaccount.google.com, www.google.com) so the report works from wherever the
+redirect lands.
+
+## 3. The robots.txt "console" window at startup
+
+**Symptom:** ~8 s after launch, a window opened showing
+`# robots.txt file for YouTube Music …`.
+
+**Cause:** two stacked mistakes, both verified in source:
+
+* The shell opened a *hidden* agent window (`agent-quiet`) on
+  `https://music.youtube.com/robots.txt` every 15 minutes to refresh YouTube's
+  rotating cookies.
+* The window-state plugin's `restore_state()` initializes
+  `should_show = true` and **shows any window it has no saved state for** —
+  every fresh install's first run — even a window created with
+  `visible(false)`. So the "hidden" robots.txt window appeared on screen.
+
+**Fix:** the hidden-window refresh is gone entirely — it was redundant: the
+core's cookie jar is the `cookie_provider` for every YouTube request, so
+YouTube's own `Set-Cookie` responses keep it current; after sign-in the jar is
+re-serialized into the persisted dump (`YtService::cookie_dump`). The
+window-state plugin also denylists the agent window, so it is never tracked,
+restored or saved.
+
+## 4. Google would refuse the sign-in anyway ("This browser or app may not be secure")
+
+**Cause:** Google blocks sign-in from embedded engines (WebView2, WKWebView,
+WebKitGTK) — a long-standing policy (WebView2Feedback#1578/#1584). A white
+sign-in page would have been the next report.
+
+**Fix:** the agent window now claims a plain Chrome 138 user agent
+(`agent.rs::chrome_user_agent`), and a new `shim/chrome_spoof.js` papers over
+the JS fingerprints Google checks (`window.chrome`,
+`navigator.userAgentData`, `navigator.plugins`, `navigator.webdriver=false`).
+Both scripts run as initialization scripts *and* are re-evaluated on every
+page load (`on_page_load` → `Started`), because the OAuth flow hops origins
+and each document is a fresh JS world.
+
+## Smaller changes in this round
+
+* `shim/agent.js` derives the service from `location.hostname` at report time
+  instead of a baked-in kind, so one agent window can move between Google,
+  Spotify and Discord targets (the shell reuses it via `navigate()` instead of
+  closing and rebuilding, which raced).
+* The YouTube/Spotify/Discord HTTP clients claim Chrome 138, matching the
+  agent window.
+* `ci.yml`: repaired the corrupted `branches:` value (`ain, master]` →
+  `[main, master]`); the workflow would not have parsed on GitHub.
+* Version bumped to 1.9.1 so the fixed build is recognizable in
+  Add/Remove Programs and About.
+* The `tokio` dependency left the shell crate with the timer gone.
+
+---
+
+# Round 3 — the session wasn't accepted (v1.9.2)
+
+The sign-in window now opens and Google accepts the sign-in, but the app still
+answered "account_menu: YouTube answered as if signed out (the session wasn't
+accepted)". Reproduced from the cookie-handling code path end to end; two
+runtime bugs and one build blocker this time.
+
+## 1. YouTube rejected the session: `document.cookie` cannot see HttpOnly cookies
+
+**Symptom:** sign-in completes inside the agent window, but every
+`account/account_menu` call comes back with `logged_in: 0`.
+
+**Cause:** the agent shim reported the page's `document.cookie`. That only
+ever exposes JS-readable cookies — `SAPISID` among them, which is why the
+signature could be built and `browser_signed_in` was true. But YouTube
+*identifies* the session by cookies JavaScript cannot read:
+`__Secure-1PSID`, `__Secure-3PSID`, the rotating `__Secure-1PSIDTS` /
+`__Secure-3PSIDTS` pair, `SID`, `HSID`, `SSID`, `LOGIN_INFO` — all HttpOnly.
+A jar without them is the signed-out jar no matter how correct the
+SAPISIDHASH header is (this is also why the browser extension worked: the
+browser attached its *full* cookie jar to every request, HttpOnly included;
+the port has to reproduce that jar itself). The old `set_cookies` also
+force-assigned every cookie to `.youtube.com`, losing the `.google.com` half
+of the session (`SID`/`HSID`/`SSID`/`SAPISID` live there).
+
+**Fix:** the agent window's cookies are now captured *natively*, from the
+webview's own cookie store, where HttpOnly cookies live:
+
+* `src-tauri/src/agent.rs` runs a single background capture thread
+  (`cookies_for_url`, Tauri 2's API — "returns all cookies … including
+  HTTP-only and secure cookies") polling every 1.5 s while the agent window
+  exists. It reads **both** domains the session spans —
+  `https://music.youtube.com/` and `https://accounts.google.com/` — and
+  reports through the same `handle_report` path the shim uses. It never
+  touches the main thread (same deadlock rules as window building).
+* `bitchord-core`'s `YtService::set_cookies` now parses one full
+  `name=value; Domain=…; Path=…; Secure; HttpOnly` line per cookie, keeps
+  each cookie's real domain (whitelisted to the `youtube.com` /
+  `google.com` suffixes the session spans, RFC 6265 domain-match honoured —
+  Google-domain cookies are added through the Google URL, the jar rejects
+  the rest), and `YtService::cookie_dump` persists the same multi-line shape
+  so both halves survive a restart. The old one-line `document.cookie`
+  reports still parse (every pair becomes a `.youtube.com` cookie), so the
+  shim's report remains a working fallback for engines without a native
+  cookie API.
+* `shim/agent.js` is unchanged; its reports are simply no longer the only
+  source.
+
+## 2. The window closed before the session existed, and re-verified the same report every 2 s
+
+**Cause:** `handle_report` closed the agent window on the *first* report
+containing `SAPISID` — which can appear on accounts.google.com while the
+redirect chain is still running, i.e. before YouTube has set the
+`.youtube.com` session cookies. Every identical report also re-ran the full
+account read (10 `account_menu` calls + a homepage fetch) — the error text
+the UI showed was produced repeatedly by that loop.
+
+**Fix:** `handle_report` now dedups reports by fingerprint (sorted
+`name=value` pairs, attributes stripped — identical across both dump
+shapes), and the window closes only when the core *verified* a session
+(`auth_state().signed_in`) that differs from the one the window was opened
+with (`AgentState`'s per-open baseline, refreshed by every `open_signin`).
+Mid-flow reports leave the window up; a user reopening sign-in to switch
+accounts doesn't get the window yanked away. The same guards apply to the
+Spotify `sp_dc` and Discord token paths (which also stopped repeating the
+Discord `users/@me` lookup per poll).
+
+## 3. Build blocker found by the cross-check: the capabilities named permissions that don't exist
+
+**Symptom:** `tauri build` panics in `build.rs` with `invalid plugin or
+permission identifier 'allow-bridge_call'` (this is one of the issues the
+local build had needed hand-fixing before).
+
+**Cause:** the eight desktop commands were registered via
+`tauri_build::AppManifest::new().commands([…])`, which autogenerates
+hyphenated permissions (`allow-bridge-call`) under
+`permissions/autogenerated/` — but the `main` and `agent` capabilities
+referenced *underscored* names (`allow-bridge_call`). Underscores are not
+valid in ACL identifiers at all (lowercase ASCII and hyphens only), so the
+capability parse fails and tauri-build refuses the whole manifest. The
+mismatched references were doubly broken: invalid by schema *and* pointing
+at a permission that didn't exist.
+
+**Fix:** the documented application-permissions route replaces the
+autogeneration, so the names live in one visible place:
+
+* `src-tauri/permissions/desktop-commands.toml` defines eight hyphenated
+  permissions (`allow-bridge-call`, …) whose `commands.allow` lists carry
+  the real command names;
+* `build.rs` is back to plain `tauri_build::build()` and the stale
+  `permissions/autogenerated/` directory is deleted from the tree — the
+  permissions no longer depend on build-time autogeneration;
+* the `main` and `agent` capabilities reference the hyphenated identifiers.
+  Nothing about the ACL's reach changed — the agent capability still grants
+  the commands to the remote service origins, which is what makes
+  `agent_report` work from the sign-in page.
+
+## Verification
+
+* `cargo test` (core): 10/10 — three new tests cover the dump round-trip
+  (both domains + HttpOnly flags survive), foreign-domain refusal, the
+  legacy `document.cookie` shape, and dump → jar → dump stability.
+* `cargo xwin check --target x86_64-pc-windows-msvc` (the shell, cross-
+  checked against the real Windows target): clean.
+* `pnpm -r typecheck && pnpm -r test`: 159/159 — the frontend is untouched.
+
+Version 1.9.2.
+
+---
+
+# Round 4 — the v1.9.2 build verification and the installer
+
+The v1.9.2 source tree (rounds 1–3 applied) was re-verified end to end and
+the Windows installer was produced from it. **No source file needed another
+fix** — every check below passed against the tree as uploaded:
+
+* `pnpm --filter @bitchord/app build` (tsc + vite): clean, 2.2 s.
+* `pnpm -r typecheck`: clean.
+* `cargo test` (core): 10/10.
+* `cargo xwin check --target x86_64-pc-windows-msvc` (shell): clean —
+  only the documented dead-code warnings for the Linux-only media
+  functions, which Windows never calls (WebView2 has its own media
+  session).
+* `cargo xwin build --release --target x86_64-pc-windows-msvc
+  --features tauri/custom-protocol`: produced `bitchord-desktop.exe`
+  (PE32+ x86-64).
+* `tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc
+  --bundles nsis`: produced the installer.
+
+One packaging-time note, not a code change: the tauri CLI's tray-icon
+probe needs an appindicator library on the *build host* even when the
+target is Windows. Pointing `PKG_CONFIG_PATH` at the user-space
+ayatana-appindicator files (and `TAURI_LINUX_AYATANA_APPINDICATOR=1`)
+satisfies it; the Windows binary doesn't link them.
+
+## Artifacts (this round)
+
+* `BitChord_1.9.2_x64-setup.exe` — the NSIS setup installer (28.6 MB,
+  per-user or per-machine, English, WebView2 bootstrapper), verified as a
+  Nullsoft self-extracting PE carrying the BitChord 1.9.2 version info.
+* `BitChord-portable.exe` — the same release binary without an installer.
+* `bitchord-desktop-v1.9.2-fixed-src.tar.gz` — this source tree, file set
+  identical to the uploaded archive.
+
+The installer is unsigned: Windows SmartScreen may show a warning on first
+run — choose "More info" → "Run anyway".
+
+---
+
+# Round 5 — every page failed with "Failed to fetch" (v1.9.3)
+
+Sign-in now works, but every page except Settings died with
+"Couldn't load this page — Failed to fetch", and "Try Again" did not help.
+
+## Cause: the page's own fetches had nobody to carry them
+
+The web app fetches YouTube **from the page itself** — YouTube.js posts to
+`music.youtube.com/youtubei/…` and `www.youtube.com/youtubei/…`, reads
+`www.youtube.com/sw.js_data` to build a session, pulls the player script from
+`www.youtube.com/s/player/…`, and streams audio/video from `googlevideo.com`.
+On the site this worked only because the **browser extension's
+declarativeNetRequest rules** (`web/extension/lib/rules.ts::youtubeRules`)
+did two things a page cannot do:
+
+1. **Dressed the requests in YouTube's headers** — `Origin`, `Referer` and
+   `X-Origin` (Impersonate as the YouTube Music / YouTube web clients;
+   googlevideo as the YouTube web client, and VISIONOS direct URLs with no
+   Origin/Referer at all — a YouTube web Origin on them is refused 403
+   mid-track);
+2. **Added `Access-Control-Allow-Origin` to the responses** — youtubei
+   answers CORS with *nothing at all* (every capture in
+   `web/fixtures/index.json` records `acao: none`), so a bare page fetch is
+   killed by the browser's CORS check before YouTube even answers.
+
+The desktop webview has no extension and no DNR. Both halves of that
+contract were missing, so every page's data request died as
+`TypeError: Failed to fetch` — Home, Search, Explore, Library, playlists,
+artists, everything except Settings (which is local). It also turned out the
+second half masks the first: even without CORS, youtubei refuses an
+anonymous cross-origin request outright — measured live:
+
+* the same POST **without** the impersonation headers → **HTTP 403**;
+* with `Origin`/`Referer`/`X-Origin` of the Music origin → **HTTP 200** with
+  the home-feed JSON.
+
+## Fix: a page-network layer, the DNR rules reimplemented in Rust
+
+The page's matched fetches now go to the Rust core, which sends them under
+the exact rule set — same headers, and CORS never applies inside Rust:
+
+* `src-tauri/core/src/http.rs` — `page_request_headers` mirrors
+  `youtubeRules` one for one (InnerTube as each host's own web client;
+  `sw.js_data`/`iframe_api`/`s/player/` untouched; googlevideo with
+  Origin+Referer only; `c=VISIONOS` URLs with neither; `/api/jnn/`
+  deliberately *not* served, like in the rules, because BotGuard's Create
+  allows any origin and refuses a rewritten one), and `page_fetch` executes
+  them on a cookie-free client (the page's YouTube requests are anonymous,
+  `credentials: 'omit'`), Chrome 138, 60 s deadline (120 s for media).
+* `src-tauri/shim/desktop.js` — new **section 4, "The page's network"**:
+  `window.fetch` is wrapped at document start. A URL matching the rules is
+  forwarded to the new `page_fetch` command and the answer is rebuilt into a
+  real `Response` (content-type preserved, `content-encoding`/
+  `content-length` dropped — reqwest already decoded the body; aborts
+  surface as a proper `AbortError` DOMException; string bodies stay text,
+  ArrayBuffer/TypedArray/Blob bodies ride as base64 — Shaka's protobuf and
+  UMP traffic included). Everything else fetches natively first, exactly as
+  on the site.
+* **CORS fallback.** The Listen Together server answers *no* CORS headers on
+  any response (measured: no `Access-Control-Allow-Origin` on any status;
+  the site reached it same-origin through its own domain). A cross-origin
+  https fetch that failed natively as a `TypeError` is retried once through
+  the core with `fallback: true` — no impersonation, the page's own headers,
+  https only. Same for lyric providers if a host drops its ACAO overnight:
+  the direct route now degrades to the core before the `lyrics.fetch`
+  extension route is even asked.
+* `src-tauri/src/commands.rs` + `lib.rs` — the `page_fetch` command;
+  `permissions/desktop-commands.toml` gains `allow-page-fetch`, and the
+  `main` capability grants it.
+
+The frontend is untouched — byte for byte the web build.
+
+## Verification
+
+* `cargo test` (core): 11/11 — the new test pins the rule table: both
+  youtubei hosts impersonated as themselves, the bootstrap/player-script
+  URLs passing untouched, googlevideo without X-Origin, VISIONOS with no
+  Origin/Referer, jnn and foreign hosts refused, plain http refused.
+* `cargo xwin check --target x86_64-pc-windows-msvc` (the shell): clean —
+  only the same four documented dead-code warnings for the Linux-only media
+  functions.
+* `pnpm -r typecheck && pnpm -r test`: 159/159; `pnpm --filter @bitchord/app
+  build`: clean.
+* The shim's fetch layer was exercised against a mocked IPC in eight
+  scenarios (rule interception, Response rebuild with transport headers
+  dropped, UMP base64 round-trip and a streamable body, jnn passing through,
+  same-origin untouched, the CORS fallback with `fallback: true` reaching
+  the core, mid-flight aborts, `Request`-object bodies, ArrayBuffer bodies).
+* Live end-to-end: the exact request the core now sends — anonymous
+  WEB_REMIX `browse` with the rule headers — returns 200 with the home feed
+  (and 403 without them); `www.youtube.com/sw.js_data` returns 200.
+
+Version 1.9.3.
+
+--------------------------------------------------------------------------------
+
+## v1.9.4 — performance pass, sidebar trim, new icons
+
+Feedback: "everything works perfectly, the only problem is the optimization."
+Home idle was fine (1–2% CPU); playing burned 32–41% CPU with RAM climbing
+(400 MB+ in three minutes), full-screen-with-lyrics ran 42–56% (peaks 78%) and
+the lyrics side panel pushed the homepage to ~70% CPU / 600 MB — while toggling
+the lyrics panel off dropped the CPU to ~17%. The difference between those
+states is per-frame work, and that is what this pass removes.
+
+### What was costing the frames
+
+* The lyric clock wrote `el.currentTime` into the am-lyrics element **every
+  animation frame**, and am-lyrics does real work on every write (per-word
+  style updates, wipe-animation seeks, the predictive scroll): ~50% of the
+  whole app while lyrics were open.
+* The seek bars (the LCD's line and the full-screen scrubber — two instances
+  in full screen) also ran 60 writes a second, each repainting the bar and the
+  times; the original loop also had a latent double-schedule: a `seeked` event
+  during playback started a second, parallel loop, and every seek added
+  another.
+* The full-screen mesh gradient rendered at full pixel density, 30 times a
+  second, with nine Gaussian blobs per fragment — most of the player's GPU
+  cost at full-screen sizes.
+* All of it kept running when the window was hidden (where rAF still fires on
+  some engines), and the churn — arrays and strings per frame across all three
+  loops — is what kept the heap climbing toward its ~650 MB plateau.
+
+### Changes (`app/src`)
+
+* `shell/LyricsPanel.tsx` — the clock still advances at full rate, but lands
+  on the element at most **30 writes a second**, and instantly on any jump
+  (word boundary, seek, hold). While the window is hidden the clock holds and
+  writes nothing; it picks back up on show.
+* `shell/useScrubber.ts` — steady playback is drawn **10 times a second**;
+  dragging, the Automix pulse and the blend covers keep the frame rate, since
+  those move fast enough to show. Identical time text is skipped (Blink would
+  otherwise invalidate the span each frame). The loop is now single-scheduler
+  (one pending frame at a time — the seek double-loop is gone) and stops
+  entirely while the window is hidden.
+* `shell/MeshBackdrop.tsx` — the WebGL mesh renders at **half resolution**
+  (soft blobs; the browser's upscale is invisible, the fragment work drops 4×)
+  and draws nothing while the window is hidden.
+* `shell/Sidebar.tsx` — the "BitChord Extension" row and the "Get the Android
+  app" link are gone (both desktop-only noise); the bottom row is the account
+  button and the settings gear.
+
+### Icons
+
+`src-tauri/icons/` now carries the icon set the extension toolbar uses
+(`web/extension/public/icon/{16,32,48,96,128}.png` — the same mark on the red
+gradient): the 32 px and 128 px files are those exact pixels, the 256 px and
+512 px (`icon.png`) come from the same design at `ic_launcher-playstore.png`
+(512, corner colours identical), and `icon.ico` carries 16/24/32/48 (the
+extension set) plus 64/128/256 (from the 512 master); `icon.icns` embeds the
+standard 32–1024 variants. File names are unchanged, so `tauri.conf.json` and
+the tray (which uses `default_window_icon`) needed no edits.
+
+### am-lyrics itself
+
+Untouched. The throttled clock keeps the word-by-word wipe exactly as it was —
+thirty updates a second is past what a moving wipe can show — so there was no
+need to port another lyrics frontend.
+
+### Verification
+
+* `pnpm -r typecheck`: clean. `pnpm -r test`: 159/159. `pnpm --filter
+  @bitchord/app build`: clean.
+* No Rust changes; the core and shell are byte-identical to 1.9.3.
+
+Version 1.9.4.
+
+--------------------------------------------------------------------------------
+
+## v1.9.5 — close goes to the tray, the icon forced red, memory trims
+
+Feedback on 1.9.4: CPU down to ~30 % and RAM plateauing near 500 MB ("obviously
+better but not good enough"), the close button **ended the app** instead of
+minimizing to the tray, and the icon it had been updated to read as **blue**.
+
+### 1. The close button quit the app
+
+The tray-and-close code was in every build (`on_window_event` hides the main
+window when `close_to_tray` is on, and the store default is `true`), so the
+report pointed at the one writer that could turn it off for good: the tray's
+own **Quit** item called `set_close_to_tray(false)` *and persisted it*. One
+click on "Quit BitChord" — months of testing make that a certainty — wrote
+`closeToTray: false` into `state.json`, and from then on every close button
+quit the app, with no UI anywhere to turn it back on. A hidden trap, and the
+report is exactly what it springs.
+
+Fixed by removing the trap rather than re-defaulting it:
+
+* The main window's `CloseRequested` now *unconditionally* hides to the tray;
+  quitting lives in the tray menu alone. A music player's close button keeping
+  the music is the behaviour the report asks for, and there is no flag left
+  that an old build could have poisoned.
+* The tray's Quit no longer writes anything: `app.exit(0)` and done.
+* The `set_close_to_tray` command, its permission (`allow-close-to-tray`), the
+  `close_to_tray` store field and the `AppState` flag are gone. A leftover
+  `closeToTray` key in an existing `state.json` is ignored (the store never
+  used `deny_unknown_fields`).
+
+**Second bug this uncovered before it bit:** `tauri-plugin-window-state`
+saves window state on exit **including visibility**, and restores with
+`should_show = state.visible`. A session ended from the tray — main window
+hidden — would save `visible: false`, and the *next launch* would restore a
+main window that never shows: the app would appear to not open, leaving only
+the tray icon. The plugin now runs with `StateFlags::all() & !VISIBLE`, so
+position, size and maximization survive but visibility is never tracked; the
+window is always created visible.
+
+### 2. The icon looked blue
+
+Nothing in the icon set ever was blue — the shipped files were the red mark
+(measured), and so were the upstream ones. A blue icon on Windows is the
+system's generic/Tauri default, which is what the taskbar falls back to when
+the icon chain (exe resource → window class → icon cache) hands it nothing
+usable — a stale icon cache or a rebuild that didn't re-embed resources both
+do it. Two changes make the red mark deterministic instead of assumed:
+
+* The window icon is now **set at runtime**, on the builder:
+  `WebviewWindowBuilder::icon(Image::from_bytes(include_bytes!("../icons/128x128.png")))`.
+  The taskbar takes the window's icon (`WM_SETICON`) first; from this build it
+  comes from the app binary itself, not from what the exe's resources or the
+  icon cache happen to hold.
+* The tray icon is set the same way from `icons/32x32.png` (falling back to
+  `default_window_icon`), instead of only the default.
+* The whole set was rebuilt from the exact upstream files
+  (`web/extension/public/icon/{16,32,48,96,128}.png`): `32x32.png` and
+  `128x128.png` are those bytes verbatim, `128x128@2x.png` (256) and the large
+  ICO/ICNS frames come from the 512 master (verified the same artwork, mean
+  per-pixel delta 0.73/255), `icon.ico` carries BMP frames 16/24/32/48 —
+  16, 32 and 48 from the upstream pixels — plus PNG frames 64/128/256, and
+  `icon.icns` embeds 16–512.
+
+If Windows still shows an old or generic icon on the shortcut or in Explorer
+after installing: that is the icon cache, not the app — `ie4uinit.exe -show`,
+or reinstall once more after a reboot. The window and tray icons come from
+the runtime now and are immune.
+
+### 3. Memory: what else was held
+
+`Shaka` was configured to keep **120 s of audio ahead and 300 s behind** the
+playhead — the whole played song retained, several MB per track, re-armed on
+every song. It now keeps 60 s ahead and 30 s behind (five times the 0.01 s
+rebuffering goal; seeking further back re-fetches, as every player does).
+The rest of the 1.9.4 pass stands: the renderer's plateau outside these
+buffers is Chromium itself (V8 + MSE + image caches), which is the same order
+of memory a browser tab of the site uses.
+
+### Verification
+
+* `pnpm -r typecheck`: clean. `pnpm -r test`: 159/159. `pnpm --filter
+  @bitchord/app build`: clean.
+* `cargo test` (core): 11/11. `cargo check` (shell): clean — the four
+  documented dead-code warnings for the Linux-only media functions remain.
+* Icons verified by pixel sampling: every small frame is the upstream bytes,
+  the ICO parses with its 7 frames, the ICNS with 6 sizes, all red-gradient.
+
+Version 1.9.5.
+
+---
+
+# Round — v1.9.6-dynamic-island build & verification (source stays 1.9.5)
+
+The dynamic-island round (see `PORT-NOTES.md`) arrived as
+`bitchord-desktop-v1.9.6-dynamic-island-src (1).tar.gz` and **built clean on
+the first pass** — every check in the build sequence passed with **no change
+to any source file**. The island feature (window, commands, permissions,
+capabilities, `island.html`) is fully self-consistent. Note the version fields
+(`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `Cargo.lock`) still read
+**1.9.5**; per the no-speculative-changes rule the artifacts keep 1.9.5 even
+though the tarball name says 1.9.6.
+
+## What was verified this round
+
+* `pnpm -r typecheck`: clean (app + shared). `pnpm -r test`: 159/159.
+* `pnpm --filter @bitchord/app build` (tsc + Vite production): clean; `dist/`
+  carries `index.html`, `island.html` and the onnx/worker assets.
+* `cargo test -p bitchord-core`: 11/11.
+* `cargo xwin check` + full release build for `x86_64-pc-windows-msvc`: clean
+  (3 dead-code warnings, all in Linux-only code paths, pre-existing).
+* NSIS bundling: `BitChord_1.9.5_x64-setup.exe` (NSIS 3.11, Unicode, LZMA),
+  verified with 7-Zip: payload = `bitchord-desktop.exe` (PE32+ x64 GUI,
+  FileVersion 1.9.5) + the NSIS plugin set; header/data sizes match the file
+  size exactly. Unsigned, WebView2 via `downloadBootstrapper`.
+* `cargo check --target aarch64-apple-darwin`: clean — the whole macOS ARM64
+  tree (shell, core, objc2/souvlaki/tao/wry paths, island cfg blocks)
+  compiles. This is a type/semantic check only: linking, `.app` bundling,
+  codesigning and DMG creation need a macOS host, and were **not** performed
+  or claimed.
+
+## Source changes (preservation audit: 0 files removed)
+
+* `src-tauri/gen/schemas/windows-schema.json` — regenerated by `tauri-build`.
+  The copy shipped in the tarball predates the island permissions; the
+  refreshed schema now describes `allow-island-action`, `allow-island-resize`
+  and `allow-island-overlay`. Build metadata only, no behaviour change.
+* `src-tauri/gen/schemas/macOS-schema.json` — added by `tauri-build` when the
+  Apple Silicon target was checked (the macOS counterpart of the same
+  auto-generated schema). Additive build metadata.
+* This file — this section.
+
+Totals against the uploaded archive: **283 original files → 284, 0 removed,
+2 modified** (`windows-schema.json` regeneration + this documentation),
+**1 added** (`macOS-schema.json`).
+
+## Build environment notes (reproducibility, not source fixes)
+
+These were environment-level obstacles found while building on a Linux host;
+none of them touched the app's source, and all are already reflected in the
+delivered binaries:
+
+1. **`stdalign.h` missing from the xwin SDK cache** — `cargo-xwin`'s splatted
+   MSVC CRT include tree ships `stdbool.h`/`stdint.h`/`stdatomic.h` but omits
+   `stdalign.h`, so `ring` 0.17's C sources (`OPENSSL_STATIC_ASSERT` users)
+   failed to compile for the Windows target. The standard C11 header was added
+   to the local xwin cache (`~/.cache/cargo-xwin/xwin/crt/include/`). Nothing
+   in the repo is affected; a full MSVC installation has this header.
+2. **tauri-cli 2.12.4 appindicator panic** — on a Linux host the CLI probes
+   GTK appindicator libraries unconditionally when the `tray-icon` feature is
+   on, even for an NSIS/Windows bundle, and panics
+   (`Can't detect any appindicator library`) when they are absent. A `pkg-config`
+   shim answered only those two probes during bundling; the Windows binary
+   never links them.
+3. **NSIS on Linux** — the bundler does not download the NSIS toolkit on
+   non-Windows hosts; NSIS 3.11 (`apt`-equivalent debs, user-space) plus a
+   thin `makensis` wrapper that points `NSISDIR`/`NSISCONFDIR` at the
+   user-space tree supplied it.
+4. **macOS C build scripts on Linux** — `objc2-exception-helper` and `ring`
+   compile C/Objective-C for the target during `cargo check`. zig cc
+   (0.17.1) served as the `aarch64-apple-darwin` C compiler via small wrapper
+   scripts (dropping `-arch`/`--target`/`-mmacosx-version-min` and letting zig
+   set `--target=aarch64-macos.11.0`). Check-only: no macOS object code was
+   linked or shipped.
+
+## Artifacts (this round)
+
+* `BitChord_1.9.5_x64-setup.exe` — Windows x64 NSIS setup installer
+  (unsigned; installs per-user or per-machine; bootstraps WebView2).
+* `bitchord-desktop-v1.9.5-fixed-src.tar.gz` — the source tree as audited
+  above.
+* No macOS DMG: the build host is Linux; a native Apple Silicon `.app`/DMG
+  requires macOS (Xcode CLT, Apple SDK, `hdiutil`, codesign) and was
+  explicitly **not** cross-faked. See the round report for what *was*
+  verified for `aarch64-apple-darwin`.
+
+# Round 6 — the Dynamic Island UX fixes (v1.9.5, dynamic-island tree)
+
+Three user-visible defects in the island and one settings-placement change,
+reported against the running app:
+
+1. **The progress time desynced when switching songs** — the mini pill (and
+   MPRIS / Now Playing) kept counting down the previous track's remaining
+   time over the new track's title (e.g. the app at 0:28 / −3:18 while the
+   pill read −2:28). Root cause: the desktop shim throttles
+   `setPositionState` to one update per 900 ms, and the page only pushes a
+   position state on `durationchange` / `ratechange` / `seeked` — never on
+   `timeupdate` — so the one update a new track ever sends could be the one
+   that got swallowed. The snapshot then rode the old track's timeline until
+   the user happened to seek. Fixed in three layers:
+   * `src-tauri/shim/desktop.js` — the throttle now always lets through an
+     update whose `duration` differs from the last one sent (a track switch)
+     or whose position drifted more than 1.25 s from the projected line (a
+     seek that would otherwise be swallowed); a metadata change re-arms the
+     throttle so the new track's first position update is never the dropped
+     one.
+   * `app/src/state/player.ts` — `updatePositionState()` now also runs on
+     `timeupdate`, so the shell receives a steady (~1 Hz after the throttle)
+     trickle of truth and any residual drift self-corrects within a second.
+   * `src-tauri/src/media.rs` — a metadata update that actually changes the
+     track (title or artwork differ) zeroes `position_sec`, so the switch
+     reads as the new song starting from 0:00 instead of carrying the old
+     position across the metadata gap.
+2. **The expanded/mini morph looked buggy and choppy** — three contributors,
+   all fixed:
+   * `app/src/island/main.ts` — the expand used to flip the CSS class the
+     same tick it asked the shell for a bigger window, so the growing card
+     clipped at the pill's 216 px for the first frames (a visible stutter),
+     and the late class flip raced the animation. Now the shell resolves
+     `island_resize` first, two painted frames pass, and only then does the
+     morph start; a token guards the flip against a collapse that arrives
+     mid-expand. Bonus fix: collapsing from *full* straight to *hidden*
+     (pause while expanded) never scheduled the window shrink, so after a
+     resume the pill sat in a 432×188 window that ate clicks around it —
+     the shrink now follows any departure from `full`.
+   * `src-tauri/src/island.rs` — `apply_size` runs the size write and the
+     re-centre inside one `run_on_main_thread` task; issued as two separate
+     main-thread tasks, the window painted an intermediate frame at the new
+     size and old position, and the pill visibly jumped sideways on every
+     expand and collapse.
+   * `app/src/island/island.css` — the two faces crossfade as a morph now:
+     the outgoing face fades fast (0.16 s, settles back to 0.94 scale), the
+     arriving one waits for the box (0.08 s) and eases up with it; delays
+     apply only on arrival, so leaving is instant. Reduced-motion kills the
+     delays too.
+3. **The island toggle was only in the tray** — removed the tray checkbox
+   entirely and moved the switch to the settings page:
+   * `src-tauri/core/src/types.rs` — the `island` capability joins `ping`'s
+     list (a browser extension never reports it, so the web build is
+     unaffected).
+   * `src-tauri/core/src/bridge.rs` — two new bridge methods,
+     `island.state` and `island.setEnabled`, reading/writing the same
+     `island_enabled` store key (still `None` = on).
+   * `src-tauri/src/commands.rs` — an ok'd `island.setEnabled` now applies
+     the preference in the shell (`island::apply_enabled`: create or destroy
+     the overlay window) before the response returns, the same shape as
+     `spotify.signIn` opening its agent window.
+   * `src-tauri/src/island.rs` — `apply_enabled` replaces the old
+     `set_enabled`/`toggle` pair; `init` uses it too.
+   * `src-tauri/src/tray.rs` — the checkable Dynamic Island item,
+     `TrayIslandItem` and its event arm are gone; the menu is Open /
+     transport / Launch at login / Quit again.
+   * `shared/src/bridge/protocol.ts` — `'island'` capability plus the two
+     typed methods.
+   * `app/src/extension/useIsland.ts` (new) — the query/mutation pair over
+     the bridge, optimistic on the toggle.
+   * `app/src/pages/SettingsPage.tsx` — a **Desktop** section (rendered only
+     where the shell reports the capability) with the Dynamic Island switch.
+4. **The "BitChord Extension" row left Settings** — it existed for testing
+   the extension bridge; the `/extension` page itself is kept and routed as
+   before, only the settings row is gone.
+
+## Verification this round
+
+* `pnpm -r typecheck`: clean. `pnpm -r test`: 159/159.
+* `pnpm --filter @bitchord/app build` (tsc + Vite production): clean.
+* `cargo check -p bitchord-core`: clean. `cargo test -p bitchord-core`:
+  11/11. (The Tauri shell itself was not compiled here: the check host has
+  no root, and WebKitGTK/GDK development libraries could not be installed;
+  the shell's changes were verified against the vendored `tauri` 2.12.5
+  source for the APIs used — `AppHandle::run_on_main_thread`, `set_size`,
+  `LogicalSize` — and by review.)
+* `node --check src-tauri/shim/desktop.js`: clean.

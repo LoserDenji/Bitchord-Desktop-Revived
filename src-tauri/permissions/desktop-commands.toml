@@ -1,0 +1,70 @@
+# Application permissions for the eight desktop commands.
+#
+# Tauri's ACL permission identifiers may only contain lowercase ASCII and
+# hyphens — command names with underscores (`bridge_call`, …) cannot be
+# turned into `allow-<command>` permissions automatically, which is what
+# made `tauri_build::AppManifest::new().commands([…])` panic with
+# "invalid plugin or permission identifier 'allow-bridge_call'". The
+# documented application-permissions route is these TOML files instead:
+# the *identifier* is hyphenated, the `commands.allow` list carries the
+# real Rust command names, and capabilities reference the identifiers.
+#
+# They exist for the agent window above all: Tauri rejects every IPC call
+# from a remote URL unless a capability with `remote` URLs grants it, and
+# the sign-in window lives on the real service origins (the sign-in page
+# is exactly where the session report `agent_report` comes from).
+
+[[permission]]
+identifier = "allow-bridge-call"
+description = "Lets the page talk to the desktop bridge (the port of the extension's message channel)."
+commands.allow = ["bridge_call"]
+
+[[permission]]
+identifier = "allow-page-fetch"
+description = "Lets the page's own fetches reach YouTube through the core with the extension's DNR-rule headers — and, as a fallback after a CORS refusal, any https host that answers no CORS at all."
+commands.allow = ["page_fetch"]
+
+[[permission]]
+identifier = "allow-desktop-info"
+description = "Lets the page read the desktop platform name and app version."
+commands.allow = ["desktop_info"]
+
+[[permission]]
+identifier = "allow-open-external"
+description = "Lets the page open a link — inside the app for the sign-in services, in the system browser otherwise."
+commands.allow = ["open_external"]
+
+[[permission]]
+identifier = "allow-open-signin"
+description = "Lets the page open the sign-in agent window for a service."
+commands.allow = ["open_signin"]
+
+[[permission]]
+identifier = "allow-agent-report"
+description = "Lets the agent window report the session it holds (cookies or Discord token) to the core."
+commands.allow = ["agent_report"]
+
+[[permission]]
+identifier = "allow-media-update"
+description = "Lets the page mirror playback state into the OS media session."
+commands.allow = ["media_update"]
+
+[[permission]]
+identifier = "allow-launch-at-login"
+description = "Lets the settings page toggle launch-at-login."
+commands.allow = ["set_launch_at_login"]
+
+[[permission]]
+identifier = "allow-island-action"
+description = "Lets the Dynamic Island press the shell's transport buttons (the same eval path the tray uses) and ask the main window to open."
+commands.allow = ["island_action"]
+
+[[permission]]
+identifier = "allow-island-resize"
+description = "Lets the Dynamic Island grow or shrink its OS window around the animated card, staying top-centre."
+commands.allow = ["island_resize"]
+
+[[permission]]
+identifier = "allow-island-overlay"
+description = "Lets the Dynamic Island hand its hidden rectangle back to the desktop while nothing is showing."
+commands.allow = ["island_overlay"]

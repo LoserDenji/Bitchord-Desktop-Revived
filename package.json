@@ -1,0 +1,18 @@
+{
+  "name": "bitchord-desktop",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @bitchord/app dev",
+    "build": "pnpm --filter @bitchord/app build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "tauri": "pnpm --filter @bitchord/app exec tauri",
+    "tauri:dev": "pnpm --filter @bitchord/app dev & sleep 3 && pnpm --filter @bitchord/app exec tauri dev",
+    "app:build": "pnpm --filter @bitchord/app build && pnpm --filter @bitchord/app exec tauri build"
+  }
+}

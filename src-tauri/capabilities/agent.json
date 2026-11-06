@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/acl/capability",
+  "identifier": "agent",
+  "description": "The sign-in agent window on the real service origins; it reports the session back to the core. The allow-* permissions are the app's own commands (see permissions/desktop-commands.toml) \u2014 remote origins are denied everything unless this capability grants them.",
+  "windows": [
+    "agent"
+  ],
+  "remote": {
+    "urls": [
+      "https://music.youtube.com/*",
+      "https://www.youtube.com/*",
+      "https://youtube.com/*",
+      "https://accounts.google.com/*",
+      "https://accounts.youtube.com/*",
+      "https://consent.google.com/*",
+      "https://myaccount.google.com/*",
+      "https://www.google.com/*",
+      "https://open.spotify.com/*",
+      "https://accounts.spotify.com/*",
+      "https://www.spotify.com/*",
+      "https://discord.com/*",
+      "https://canary.discord.com/*",
+      "https://ptb.discord.com/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "allow-bridge-call",
+    "allow-desktop-info",
+    "allow-open-external",
+    "allow-open-signin",
+    "allow-agent-report",
+    "allow-media-update",
+    "allow-launch-at-login"
+  ]
+}

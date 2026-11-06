@@ -1,0 +1,447 @@
+/*
+ * The Dynamic Island's card, in BitChord's materials.
+ *
+ * Every value here is a token from the web app's `styles/tokens.css` (the
+ * dark scheme) or a recipe from `global.css` — the island floats over the
+ * desktop, where nothing of the app is behind it, so it takes the on-dark
+ * colours permanently (the rule the full-screen player already follows,
+ * `[data-full-screen]`) and the player pill's glass recipe (`glass-pill`):
+ *
+ *   fill      #26262899   --glassMaterialBackground, dark
+ *   blur      saturate(2.2) blur(16px)   --glassMaterialBackdropFilter
+ *   stroke    #ffffff @ .25              --glassMaterialInnerStroke(+Alpha), dark
+ *   shadow    #00000033                  --glassMaterialShadowColor, dark
+ *   primary   #ffffffeb                  --systemPrimary-onDark
+ *   secondary #ffffffa3                  --systemSecondary-onDark
+ *   tertiary  #ffffff66                  --systemTertiary-onDark
+ *   quaternary#ffffff1a                  --systemQuaternary-onDark
+ *   key       #fa586a                    --keyColor, dark
+ *   joe       #323232                    --genericJoeColor (artwork placeholder)
+ *   type      600 13px/16px body-emphasized · 500 12px/15px callout-medium ·
+ *             600 11px/13px the LCD scrubber's times, all tabular-nums
+ *   ease      cubic-bezier(0.215, 0.61, 0.355, 1)  --ease-out-panel
+ *   radius    1000px mini (--radius-pill) · 40px expanded (the reference
+ *             island's own `.expanded` value) · artwork 5px small / 6px LCD tile
+ */
+
+:root {
+  --font: 'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  --glass-fill: #26262899;
+  --glass-blur: saturate(2.2) blur(16px);
+  --glass-stroke: rgba(255, 255, 255, 0.25);
+  --glass-shadow: rgba(0, 0, 0, 0.35);
+
+  --primary: #ffffffeb;
+  --secondary: #ffffffa3;
+  --tertiary: #ffffff66;
+  --quaternary: #ffffff1a;
+  --fill: #ffffffa3;
+  --key: #fa586a;
+  --joe: #323232;
+  --hover: rgba(255, 255, 255, 0.08);
+
+  --ease-panel: cubic-bezier(0.215, 0.61, 0.355, 1);
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    /* The increased-contrast rule tokens.css applies to the glass: opaque,
+       no blur. */
+    --glass-fill: #0e0e0e;
+    --glass-blur: none;
+    --glass-stroke: rgba(255, 255, 255, 0.4);
+    --glass-shadow: rgba(0, 0, 0, 0.6);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+/* ---- The card ---------------------------------------------------------- */
+
+.island {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 1000px; /* --radius-pill */
+  width: 216px;
+  height: 44px;
+  color: var(--primary);
+  cursor: pointer;
+  transition:
+    width 0.42s var(--ease-spring),
+    height 0.42s var(--ease-spring),
+    border-radius 0.42s var(--ease-spring),
+    transform 0.42s var(--ease-spring),
+    opacity 0.3s var(--ease-panel);
+  will-change: width, height, transform, opacity;
+}
+
+/* The player pill's glass, as `glass-pill` draws it: the fill and shadow on a
+   ::before so the blur stays behind the content, the 0.5px inner stroke on an
+   ::after in four inset shadows. */
+.island::before,
+.island::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.island::before {
+  z-index: -1;
+  background-color: var(--glass-fill);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: 0 10px 40px var(--glass-shadow);
+}
+
+.island::after {
+  box-shadow:
+    inset 0.5px 0.5px 0 var(--glass-stroke),
+    inset 0.5px -0.5px 0 var(--glass-stroke),
+    inset -0.5px 0.5px 0 var(--glass-stroke),
+    inset -0.5px -0.5px 0 var(--glass-stroke);
+  opacity: 0.5; /* half of the token alpha reads right over a wallpaper */
+}
+
+/* ---- States ------------------------------------------------------------ */
+
+.island.hidden {
+  opacity: 0;
+  transform: translateY(-16px) scale(0.92);
+  pointer-events: none;
+}
+
+.island.mini {
+  width: 216px;
+  height: 44px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.island.full {
+  width: 432px;
+  height: 188px;
+  /* The reference island's expanded radius (dynamic-island.css, `.island.expanded`).
+     The pill's own 1000px would put a 94px curve through the artwork's corner
+     at 22/20px insets; 40px is what the reference expands to, and the morph
+     above carries the corners there as the card grows. */
+  border-radius: 40px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  cursor: default;
+}
+
+/* The two faces crossfade while the box morphs — a card changing shape, not
+   two slides swapping: the face in view goes out fast (and settles back a
+   touch), the arriving face waits for the box to be most of the way there,
+   then eases up to size with it. The delays live on the arriving state only:
+   the destination rule carries the transition, so leaving is instant. */
+.mini,
+.full {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.94);
+  transition:
+    opacity 0.16s var(--ease-panel),
+    transform 0.42s var(--ease-spring);
+}
+
+.island.mini .mini {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+  transition-delay: 0.08s, 0.04s;
+}
+
+.island.full .full {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+  transition-delay: 0.08s, 0.04s;
+}
+
+/* ---- Artwork ----------------------------------------------------------- */
+
+.art {
+  position: relative;
+  display: block;
+  flex: none;
+  overflow: hidden;
+  border-radius: 5px; /* --radius-artwork-small */
+  background: var(--joe);
+}
+
+.art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.2s ease-in;
+}
+
+.art img.loaded {
+  opacity: 1;
+}
+
+.art .logo {
+  position: absolute;
+  inset: 30%;
+  width: 40%;
+  height: 40%;
+  color: var(--secondary);
+  opacity: 0;
+  transition: opacity 0.2s ease-in;
+}
+
+/* No artwork (or not yet): the LCD's empty state, the mark at rest. */
+.art.bare .logo {
+  opacity: 1;
+}
+
+.mini .art {
+  width: 28px;
+  height: 28px;
+  margin-left: 8px;
+}
+
+.full .art {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px; /* the LCD tile's radius */
+  padding: 0;
+  border: none;
+  cursor: pointer;
+}
+
+/* The pill's own affordance: the artwork raises the app, as the LCD's opens
+   the full-screen player. Hover dims the artwork and lights the mark, the
+   way the LCD's tile lights its expand glyph. */
+.full .art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transition: opacity 0.2s ease-in;
+}
+
+.full .art:hover::after {
+  opacity: 1;
+}
+
+.full .art:hover .logo {
+  color: #ffffffeb;
+  opacity: 1;
+}
+
+.full .art:hover img {
+  opacity: 0;
+}
+
+/* ---- Mini -------------------------------------------------------------- */
+
+.mini {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 14px;
+}
+
+.mini-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 600 13px/16px var(--font); /* type-body-emphasized */
+}
+
+.mini-remaining {
+  flex: none;
+  font: 500 11px/13px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--tertiary);
+}
+
+/* ---- Full: the LCD line ------------------------------------------------- */
+
+.full {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 22px 16px;
+}
+
+.now {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+}
+
+.meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 600 13px/16px var(--font); /* type-body-emphasized */
+}
+
+.artist {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 500 12px/15px var(--font); /* type-callout-medium */
+  color: var(--secondary);
+}
+
+/* ---- Full: the seek line ------------------------------------------------ */
+
+/* The LCD's line, given its own row: 2px at rest, 4px under the pointer, the
+   times riding the row's ends. Pressing or dragging seeks on release, like
+   useScrubber. */
+.scrub {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 22px;
+  margin-top: 10px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.time {
+  flex: none;
+  min-width: 34px;
+  font: 600 11px/13px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--secondary);
+}
+
+.time.remaining {
+  text-align: right;
+}
+
+.rail {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background:
+    linear-gradient(var(--quaternary), var(--quaternary)) center / 100% 2px no-repeat;
+}
+
+.rail::before {
+  /* A forgiving hit area, taller than the line. */
+  content: '';
+  position: absolute;
+  inset: -8px 0;
+}
+
+.scrub:hover .rail,
+.scrub.dragging .rail {
+  background-size: 100% 4px;
+}
+
+.fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--fill);
+  transform: scaleX(var(--progress, 0));
+  transform-origin: left center;
+}
+
+/* ---- Full: the transport ------------------------------------------------ */
+
+.transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  margin-top: auto;
+  padding-bottom: 2px;
+}
+
+.control {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px; /* the pill's `control` style */
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  transition:
+    background-color 0.15s var(--ease-panel),
+    transform 0.1s ease;
+}
+
+.control:hover {
+  background: var(--hover);
+}
+
+.control:active {
+  transform: scale(0.92);
+}
+
+/* The play/pause pair, drawn by the snapshot like the pill's own button. */
+.icon-play {
+  display: none;
+}
+
+.play.paused .icon-play {
+  display: block;
+}
+
+.play.paused .icon-pause {
+  display: none;
+}
+
+/* ---- Reduced motion ------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .island,
+  .mini,
+  .full,
+  .art img,
+  .art .logo,
+  .control {
+    transition-duration: 0.01s !important;
+    transition-delay: 0s !important;
+  }
+}

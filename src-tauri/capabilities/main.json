@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/acl/capability",
+  "identifier": "main",
+  "description": "The main BitChord window: the app's own bridge and media commands",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-bridge-call",
+    "allow-page-fetch",
+    "allow-desktop-info",
+    "allow-open-external",
+    "allow-open-signin",
+    "allow-agent-report",
+    "allow-media-update",
+    "allow-launch-at-login"
+  ]
+}

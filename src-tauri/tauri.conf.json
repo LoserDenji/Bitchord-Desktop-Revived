@@ -1,0 +1,73 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BitChord",
+  "version": "1.9.5",
+  "identifier": "in.kushagrasingh.bitchord.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @bitchord/app dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm --filter @bitchord/app build",
+    "frontendDist": "../app/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null,
+      "capabilities": [
+        "main",
+        "agent",
+        "island"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi",
+      "dmg",
+      "deb",
+      "appimage",
+      "rpm"
+    ],
+    "publisher": "Kushagra Singh",
+    "copyright": "GPL-3.0",
+    "category": "Music",
+    "shortDescription": "Aesthetic YouTube Music client",
+    "longDescription": "BitChord is a modern YouTube Music client with clean aesthetics inspired by Apple Music. Search, browse and play anything on YouTube Music, with gapless crossfade, AutoMix, word-synced lyrics, Listen Together, Spotify integration, Discord Rich Presence and a frosted-glass UI \u2014 now as a native desktop app with a Rust core.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "linux": {},
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "languages": [
+          "English"
+        ],
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "bitchord"
+        ]
+      }
+    }
+  }
+}

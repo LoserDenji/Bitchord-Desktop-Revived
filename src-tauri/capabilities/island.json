@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/acl/capability",
+  "identifier": "island",
+  "description": "The Dynamic Island overlay: a first-party page (island.html in the app build) that shows the now-playing card. It presses only the shell's transport actions and manages its own window geometry — nothing else, which is why this list is so short. State flows in through eval (__IslandSync), needing no permission at all.",
+  "windows": [
+    "island"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-island-action",
+    "allow-island-resize",
+    "allow-island-overlay"
+  ]
+}

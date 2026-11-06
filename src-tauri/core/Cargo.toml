@@ -1,0 +1,24 @@
+[package]
+name = "bitchord-core"
+version = "1.9.3"
+edition = "2021"
+license = "GPL-3.0"
+description = "BitChord desktop core: the native port of the web extension's services (YouTube auth, Spotify, Discord, lyrics)"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "gzip", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cookie = { version = "0.18", features = ["percent-encode"] }
+sha1 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+regex = "1"
+fancy-regex = "0.14"
+rand = "0.8"
+thiserror = "2"
+log = "0.4"
+url = "2"

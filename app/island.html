@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The island floats over whatever the desktop is doing, so it always
+         takes the app's on-dark colours (the full-screen player's rule). -->
+    <meta name="color-scheme" content="dark" />
+    <title>BitChord Dynamic Island</title>
+    <!-- DM Sans is the app's typeface (web/docs/apple-music-dom.md, "Font");
+         the same request as index.html, so the two load identically. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..800&display=swap"
+    />
+    <link rel="stylesheet" href="/src/island/island.css" />
+  </head>
+  <body>
+    <!-- The two states of the card. The OS window around this page grows and
+         shrinks with it (island.rs::apply_size) — a transparent window still
+         eats clicks over its invisible areas, so it hugs the pill at all times. -->
+    <div id="island" class="island hidden">
+      <!-- Mini: artwork, name, remaining — the pill that survives a glance. -->
+      <div class="mini">
+        <span class="art" id="mini-art">
+          <img alt="" draggable="false" />
+          <svg class="logo" viewBox="0 0 730 484" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              fill="currentColor"
+              d="M6.73729 316.937C20.201 294.159 49.6986 286.649 72.4033 300.174H72.4277C237.603 398.282 510.121 407.302 667.823 359.439C693.147 351.759 719.927 366.055 727.602 391.378C735.276 416.715 720.992 443.477 695.649 451.176C514.618 506.132 213.674 495.514 23.5058 382.622C0.678772 369.103 -6.78757 339.685 6.73729 316.937ZM77.8135 154.865C89.38 136.046 113.982 130.11 132.77 141.676C270.528 226.369 480.519 250.891 643.46 201.43C664.592 195.047 686.911 206.957 693.324 228.052C699.689 249.184 687.774 271.46 666.679 277.886C480.555 334.36 249.169 307.004 90.9707 209.79C72.1827 198.224 66.247 173.628 77.8135 154.865ZM140.542 15.3012C149.722 0.246392 169.428 -4.52761 184.482 4.71335C304.811 78.2128 456.29 94.8593 634.684 54.101C651.874 50.1843 669.01 60.9551 672.927 78.1518C676.862 95.3486 666.134 112.484 648.9 116.401C453.677 161.021 286.219 141.799 151.129 59.2417C136.074 50.0006 131.301 30.3561 140.542 15.3012Z"
+            />
+          </svg>
+        </span>
+        <span class="mini-title" id="mini-title"></span>
+        <span class="mini-remaining" id="mini-remaining"></span>
+      </div>
+
+      <!-- Full: the LCD line, the seek line, the transport. The icons are the
+           player pill's own MusicKit glyphs (app/src/components/icons/Transport.tsx). -->
+      <div class="full">
+        <div class="now">
+          <button class="art" id="full-art" aria-label="Open BitChord" title="Open BitChord">
+            <img alt="" draggable="false" />
+            <svg class="logo" viewBox="0 0 730 484" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path
+                fill="currentColor"
+                d="M6.73729 316.937C20.201 294.159 49.6986 286.649 72.4033 300.174H72.4277C237.603 398.282 510.121 407.302 667.823 359.439C693.147 351.759 719.927 366.055 727.602 391.378C735.276 416.715 720.992 443.477 695.649 451.176C514.618 506.132 213.674 495.514 23.5058 382.622C0.678772 369.103 -6.78757 339.685 6.73729 316.937ZM77.8135 154.865C89.38 136.046 113.982 130.11 132.77 141.676C270.528 226.369 480.519 250.891 643.46 201.43C664.592 195.047 686.911 206.957 693.324 228.052C699.689 249.184 687.774 271.46 666.679 277.886C480.555 334.36 249.169 307.004 90.9707 209.79C72.1827 198.224 66.247 173.628 77.8135 154.865ZM140.542 15.3012C149.722 0.246392 169.428 -4.52761 184.482 4.71335C304.811 78.2128 456.29 94.8593 634.684 54.101C651.874 50.1843 669.01 60.9551 672.927 78.1518C676.862 95.3486 666.134 112.484 648.9 116.401C453.677 161.021 286.219 141.799 151.129 59.2417C136.074 50.0006 131.301 30.3561 140.542 15.3012Z"
+              />
+            </svg>
+          </button>
+          <span class="meta">
+            <span class="title" id="full-title"></span>
+            <span class="artist" id="full-artist"></span>
+          </span>
+        </div>
+
+        <div class="scrub" id="scrub" data-scrubber>
+          <span class="time elapsed" id="time-elapsed">0:00</span>
+          <div class="rail">
+            <div class="fill" id="scrub-fill"></div>
+          </div>
+          <span class="time remaining" id="time-remaining">0:00</span>
+        </div>
+
+        <div class="transport">
+          <button class="control" id="btn-previous" aria-label="Previous">
+            <svg width="26" height="26" viewBox="2 0 28 28" fill="currentColor" aria-hidden="true" style="transform: scaleX(-1)">
+              <path d="M18.14 20.68c.365 0 .672-.107 1.038-.323l8.508-4.997c.623-.365.938-.814.938-1.37 0-.564-.307-.988-.938-1.361l-8.508-4.997c-.366-.216-.68-.324-1.046-.324-.73 0-1.337.556-1.337 1.569v4.773c-.108-.399-.406-.73-.904-1.021L7.382 7.632c-.357-.216-.672-.324-1.037-.324-.73 0-1.345.556-1.345 1.569v10.235c0 1.013.614 1.569 1.345 1.569.365 0 .68-.108 1.037-.324l8.509-4.997c.49-.29.796-.631.904-1.038v4.79c0 1.013.615 1.569 1.345 1.569z" />
+            </svg>
+          </button>
+          <button class="control play" id="btn-play" aria-label="Pause">
+            <svg class="icon-pause" width="28" height="28" viewBox="2 0 28 28" fill="currentColor" aria-hidden="true">
+              <path d="M13.293 22.772c.955 0 1.436-.481 1.436-1.436V6.677c0-.98-.481-1.427-1.436-1.427h-2.457c-.954 0-1.436.473-1.436 1.427v14.66c-.008.954.473 1.435 1.436 1.435h2.457zm7.87 0c.954 0 1.427-.481 1.427-1.436V6.677c0-.98-.473-1.427-1.428-1.427h-2.465c-.955 0-1.428.473-1.428 1.427v14.66c0 .954.473 1.435 1.428 1.435h2.465z" />
+            </svg>
+            <svg class="icon-play" width="28" height="28" viewBox="2 0 28 28" fill="currentColor" aria-hidden="true">
+              <path d="M10.345 23.287c.415 0 .763-.15 1.22-.407l12.742-7.404c.838-.481 1.178-.855 1.178-1.46 0-.599-.34-.972-1.178-1.462L11.565 5.158c-.457-.265-.805-.407-1.22-.407-.789 0-1.345.606-1.345 1.57V21.71c0 .971.556 1.577 1.345 1.577z" />
+            </svg>
+          </button>
+          <button class="control" id="btn-next" aria-label="Next">
+            <svg width="26" height="26" viewBox="2 0 28 28" fill="currentColor" aria-hidden="true">
+              <path d="M18.14 20.68c.365 0 .672-.107 1.038-.323l8.508-4.997c.623-.365.938-.814.938-1.37 0-.564-.307-.988-.938-1.361l-8.508-4.997c-.366-.216-.68-.324-1.046-.324-.73 0-1.337.556-1.337 1.569v4.773c-.108-.399-.406-.73-.904-1.021L7.382 7.632c-.357-.216-.672-.324-1.037-.324-.73 0-1.345.556-1.345 1.569v10.235c0 1.013.614 1.569 1.345 1.569.365 0 .68-.108 1.037-.324l8.509-4.997c.49-.29.796-.631.904-1.038v4.79c0 1.013.615 1.569 1.345 1.569z" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/island/main.ts"></script>
+  </body>
+</html>
