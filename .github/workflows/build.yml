@@ -69,8 +69,10 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
+      # Run the CLI from the repo root (not the app/ workspace) so Tauri can
+      # find src-tauri/tauri.conf.json.
       - name: Build app
-        run: pnpm --filter @bitchord/app exec tauri build ${{ matrix.args }}
+        run: node app/node_modules/@tauri-apps/cli/tauri.js build ${{ matrix.args }}
 
       - name: Upload bundles
         uses: actions/upload-artifact@v4
