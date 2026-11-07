@@ -9,6 +9,7 @@
     "core:default",
     "allow-island-action",
     "allow-island-resize",
-    "allow-island-overlay"
+    "allow-island-overlay",
+    "allow-island-focus-state"
   ]
 }

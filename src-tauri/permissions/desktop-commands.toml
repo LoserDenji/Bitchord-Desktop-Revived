@@ -68,3 +68,28 @@ commands.allow = ["island_resize"]
 identifier = "allow-island-overlay"
 description = "Lets the Dynamic Island hand its hidden rectangle back to the desktop while nothing is showing."
 commands.allow = ["island_overlay"]
+
+[[permission]]
+identifier = "allow-island-focus-state"
+description = "Lets the Dynamic Island ask once at load whether the main window is focused, so a card born into an unfocused app knows it may show before the next focus event arrives."
+commands.allow = ["island_focus_state"]
+
+[[permission]]
+identifier = "allow-window-minimize"
+description = "Lets the page's transparent top bar minimize the frameless main window."
+commands.allow = ["window_minimize"]
+
+[[permission]]
+identifier = "allow-window-toggle-maximize"
+description = "Lets the page's transparent top bar maximize or restore the frameless main window (double-click on the bar presses the same command)."
+commands.allow = ["window_toggle_maximize"]
+
+[[permission]]
+identifier = "allow-window-hide"
+description = "Lets the page's transparent top bar close the app into the tray — the same hide the native close button always did, with the music playing on."
+commands.allow = ["window_hide"]
+
+[[permission]]
+identifier = "allow-window-start-drag"
+description = "Lets the page's transparent top bar drag the frameless main window from empty top-of-window space, the way the native caption used to."
+commands.allow = ["window_start_drag"]

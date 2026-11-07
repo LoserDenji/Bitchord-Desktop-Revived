@@ -25,6 +25,14 @@ url = "2"
 log = "0.4"
 bitchord-core = { path = "core" }
 
+# The Dynamic Island's resize is one atomic SetWindowPos — sizing and centring
+# in the same WM_WINDOWPOSCHANGED — because a plain set_size anchors the
+# top-left corner on Windows and the pill read the move home as a two-step
+# jump (the "centre-left, then centre" morph). Same 0.62 the Tauri/tao tree
+# already pins in Cargo.lock, so this adds features, not a second copy.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [workspace]
 members = ["core"]
 resolver = "2"

@@ -153,6 +153,36 @@ body {
   cursor: default;
 }
 
+/* ---- The spawn ---------------------------------------------------------- */
+
+/* Coming out of 'hidden', the card pops in: a fast grow from roughly half
+   size with the last quarter settling — the phone island's arrival, drawn
+   entirely inside the card's own box (no frame of it ever leaves the 216px
+   window that hugs the pill, so nothing is clipped). The keyframes own
+   opacity and transform for their run, over the state transitions above, and
+   the class leaves with the animation (island main.ts, animationend). */
+@keyframes island-spawn {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.55);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  76% {
+    transform: translateY(0) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.island.spawn {
+  animation: island-spawn 0.55s var(--ease-spring) both;
+}
+
 /* The two faces crossfade while the box morphs — a card changing shape, not
    two slides swapping: the face in view goes out fast (and settles back a
    touch), the arriving face waits for the box to be most of the way there,
@@ -443,5 +473,7 @@ body {
   .control {
     transition-duration: 0.01s !important;
     transition-delay: 0s !important;
+    animation-duration: 0.01s !important;
+    animation-delay: 0s !important;
   }
 }

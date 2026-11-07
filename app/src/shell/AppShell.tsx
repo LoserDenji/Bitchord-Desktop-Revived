@@ -16,6 +16,7 @@ import { MobileTopBar } from './MobileTopBar';
 import { PlayerBar } from './PlayerBar';
 import { SidePanel } from './SidePanel';
 import { Sidebar } from './Sidebar';
+import { WindowControls } from './WindowControls';
 
 const mobile = isMobileBrowser();
 
@@ -90,6 +91,9 @@ export function AppShell() {
         <PlayerBar />
         <SidePanel />
       </div>
+      {/* The frameless window's transparent top bar (Windows/Linux desktop):
+          window buttons and the drag zone, over whatever the app shows. */}
+      {!mobile && <WindowControls />}
       {banner}
       {fullScreen && (
         <Suspense fallback={null}>

@@ -3,17 +3,25 @@
  *
  * State flows in one way: the shell evals `window.__IslandSync(<snapshot>)`
  * on every media update (island.rs::sync — the same snapshot the tray and
- * MPRIS read). Presses flow out through three commands, mirroring the tray:
- * `island_action` for transport (it presses the page's own media-session
- * handlers — the island never talks to the app page directly), `island_resize`
- * to grow/shrink the OS window around the animated card, `island_overlay` to
- * hand the hidden rectangle back to the desktop.
+ * MPRIS read), and the shell evals `window.__IslandFocus(<bool>)` whenever
+ * the main window's focus changes, with one boot-time ask (`island_focus_state`)
+ * that covers an island born into an already-unfocused app. Presses flow out
+ * through three commands, mirroring the tray: `island_action` for transport
+ * (it presses the page's own media-session handlers — the island never talks
+ * to the app page directly), `island_resize` to grow/shrink the OS window
+ * around the animated card, `island_overlay` to hand the hidden rectangle
+ * back to the desktop.
  *
- * Behaviour is Airbeats' island (d0x-dev/Airbeats-Desktop): a new track
- * expands the card for a few seconds, a click expands it again, and pause
- * takes the pill away entirely. The drawing follows the app's own scrubber
- * (`useScrubber`): a `--progress` transform on the fill, seek on release,
- * steady playback drawn ten times a second, drags at the frame rate.
+ * Behaviour: the island is BitChord's glance, not its second player. It exists
+ * only while the main window is *not* focused (with focus it would repeat what
+ * the app's own screen already says), folds away while nothing is playing, and
+ * a new track never expands it — the card grows only under the user's own
+ * click, then collapses after a few seconds. A right-click dismisses it for
+ * this stretch of playback; it comes back only after the user has returned to
+ * BitChord and left it again, never on a song change. The drawing follows the
+ * app's own scrubber (`useScrubber`): a `--progress` transform on the fill,
+ * seek on release, steady playback drawn ten times a second, drags at the
+ * frame rate.
  */
 
 import { sizedArtwork } from '@/lib/artwork';
@@ -34,6 +42,7 @@ type Host = { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<u
 declare global {
   interface Window {
     __IslandSync: (snapshot: Snapshot) => void;
+    __IslandFocus: (focused: boolean) => void;
   }
 }
 
@@ -94,6 +103,15 @@ let lastDraw = -Infinity;
 /** Stamps each expand request; a collapsed (or re-hidden) card leaves the
  * late-arriving window-grow with nothing to animate. */
 let expandToken = 0;
+/** Whether BitChord owns the focus. The shell evals every change; the one
+ * boot-time query covers an island that loads while the app is already in the
+ * background. Optimistically focused: until the answer lands, the card stays
+ * away — a wrong guess would flash the island over the app's own screen. */
+let appFocused = true;
+/** A right-click dismissal lasts until the user has been back in BitChord
+ * (which clears it, see __IslandFocus) and left again. Song changes, play and
+ * pause must not undo it. */
+let dismissed = false;
 
 function fmt(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
@@ -150,6 +168,21 @@ function setClasses(next: typeof mode): void {
   island.classList.toggle('full', next === 'full');
 }
 
+/** The spawn: the card pops in from nothing — a quick grow with a settle at
+ * the end, all inside the pill's own box so the OS window (which hugs the
+ * card) never clips it. Applied whenever the card comes out of 'hidden'; the
+ * class removes itself on animationend, and a mode change first tears any
+ * running spawn down so a fresh one starts from its own first frame. */
+function playSpawn(): void {
+  island.classList.remove('spawn');
+  void island.offsetWidth; // flush, so removing and adding restarts the animation
+  island.classList.add('spawn');
+}
+
+island.addEventListener('animationend', () => {
+  island.classList.remove('spawn');
+});
+
 /** Two painted frames. The shell resolves `island_resize` when the main
  * thread has the geometry task; by the compositor's next paint that task has
  * run, so the morph never starts inside a window still clipping it. (In a
@@ -177,15 +210,20 @@ function applyMode(next: typeof mode): void {
       pendingShrink = null;
     }
     const token = ++expandToken;
+    const spawning = previous === 'hidden';
     void invokeAsync('island_resize', { expanded: true })
       .then(() => nextPaint())
       .then(() => {
         if (expandToken !== token || mode !== 'full') return;
         setClasses('full');
+        if (spawning) playSpawn();
       });
   } else {
     ++expandToken;
     setClasses(next);
+    // Out of nothing: the pill pops in (see playSpawn). Between the two
+    // visible states the card simply morphs — no spawn there.
+    if (previous === 'hidden') playSpawn();
     if (previous === 'full') {
       if (pendingShrink !== null) clearTimeout(pendingShrink);
       pendingShrink = window.setTimeout(() => {
@@ -251,29 +289,56 @@ function renderPlayback(s: Snapshot): void {
   playButton.setAttribute('aria-label', playing ? 'Pause' : 'Play');
 }
 
+/** The one policy for what the island shows, applied on every input — a media
+ * sync, a focus change, the boot-time focus answer. Paused wins first (a
+ * silent pill is nothing), then BitChord's own focus (the page already shows
+ * everything the card would say), then a dismissal. Only when music is
+ * playing, BitChord is in the background and the user hasn't sent the island
+ * away does the pill exist; coming out of 'hidden' it spawns.
+ * Song changes are *not* an input: they refresh what the card shows, never
+ * whether it shows. */
+function reconcile(): void {
+  if (!snap || snap.state !== 'playing') {
+    cancelCollapse();
+    applyMode('hidden');
+    return;
+  }
+  if (appFocused || dismissed) {
+    cancelCollapse();
+    applyMode('hidden');
+    return;
+  }
+  if (mode === 'hidden') applyMode('mini');
+}
+
 window.__IslandSync = (raw: Snapshot) => {
-  const previous = snap;
   snap = raw;
   anchor = performance.now();
 
-  const trackChanged = renderMetadata(raw);
+  renderMetadata(raw);
   renderPlayback(raw);
-
-  if (raw.state === 'playing') {
-    // Hide on pause, return on play — the pill only exists while music does.
-    if (mode === 'hidden') applyMode('mini');
-    // Airbeats' flourish: a new track introduces itself, then folds away.
-    if (trackChanged && previous !== null && previous.state === 'playing' && mode === 'mini') {
-      expand();
-    }
-  } else if (raw.state === 'paused' || raw.state === 'stopped') {
-    cancelCollapse();
-    applyMode('hidden');
-  }
+  reconcile();
 
   lastDraw = -Infinity;
   schedule();
 };
+
+/** The shell's focus push (island.rs::notify_main_focus), and the same place
+ * a dismissal is cleared: being back in BitChord re-arms the island, so it
+ * returns only when the user leaves the app again — never on a song switch. */
+window.__IslandFocus = (focused: boolean) => {
+  appFocused = focused;
+  if (focused) dismissed = false;
+  reconcile();
+};
+
+// The boot-time ask, so an island created while BitChord is already in the
+// background (the settings toggle, or a session restored to the tray) knows
+// it may show before the next Focused event crosses the shell.
+void invokeAsync('island_focus_state').then((focused) => {
+  appFocused = focused !== false;
+  reconcile();
+});
 
 // ---- The presses -----------------------------------------------------------
 
@@ -283,6 +348,18 @@ island.addEventListener('click', (event) => {
   if (mode !== 'mini') return;
   if ((event.target as HTMLElement | null)?.closest('button')) return;
   expand();
+});
+
+// A right-click sends the island away for this stretch of listening — not a
+// collapse to mini, a dismissal. It returns only through reconcile's rules:
+// the user has to have been back in BitChord (which clears `dismissed` in
+// __IslandFocus) and left the app again. Nothing else — not a song change,
+// not play or pause — revives it.
+island.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  dismissed = true;
+  cancelCollapse();
+  applyMode('hidden');
 });
 
 document.getElementById('btn-previous')!.addEventListener('click', () => {

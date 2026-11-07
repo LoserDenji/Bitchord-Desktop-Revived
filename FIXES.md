@@ -752,3 +752,138 @@ reported against the running app:
   source for the APIs used — `AppHandle::run_on_main_thread`, `set_size`,
   `LogicalSize` — and by review.)
 * `node --check src-tauri/shim/desktop.js`: clean.
+
+# Round 7 — the island's manners, the transparent top bar, and the light lyric clock (v1.9.5)
+
+## 1. The Dynamic Island now belongs to the glance away, not to the app
+
+The card used to float whenever music played, including over BitChord's own
+screen — where it repeated what the page already says and sat in the way of
+the window's top. The shell now tracks the main window's focus and the island
+re-decides what to show on every input:
+
+* `src-tauri/src/island.rs` — a `MAIN_FOCUSED` atomic plus
+  `notify_main_focus`, which stores the flag and evals
+  `window.__IslandFocus(<bool>)` into the island page, and `main_focused`
+  for the page's one boot-time ask. The flag starts *false*, so a session
+  that began hidden to the tray may show the card at once; a normal launch
+  corrects it with the window's first `Focused(true)`.
+* `src-tauri/src/lib.rs` — the `on_window_event` hook forwards the main
+  window's `Focused` events. Hiding the window to the tray fires the same
+  event, which is what keeps the card up over the desktop after a
+  close-to-tray.
+* `src-tauri/src/commands.rs` — `island_focus_state` answers the page's
+  single query (`allow-island-focus-state` in `permissions/` +
+  `capabilities/island.json`), covering an island created while BitChord is
+  already in the background.
+* `app/src/island/main.ts` — one `reconcile()` policy decides the mode from
+  three inputs, in order: paused (nothing), BitChord focused (nothing), a
+  right-click dismissal (nothing). Music playing + app in the background +
+  no dismissal is the only state where the pill exists. A dismissal is
+  cleared *only* by the app regaining focus, so the island returns exactly
+  when the user has been back in BitChord and left it again — never on a
+  song change.
+
+## 2. The spawn, the two-step morph, and the auto-expand
+
+* **Spawn-in** (`island.css` + `main.ts`): coming out of `hidden` the card
+  now pops — `island-spawn`, 0.55 s spring: 0 → 55% a grow from 0.55 scale
+  with the opacity arriving, the last quarter a settle dip to 0.97 and back.
+  Every frame stays inside the card's own box, so the OS window that hugs
+  the pill never clips it; the class removes itself on `animationend`.
+* **The centre-left-then-centre morph**: on Windows, `set_size` anchors the
+  top-left corner (SWP_NOMOVE), so the collapse's shrink parked the 216px
+  pill left of centre for a frame before `recenter` walked it home — the
+  reported "goes to the centre left and then the centre". `apply_geometry`
+  (island.rs) now issues *one* atomic `SetWindowPos` carrying position and
+  size together — a single WM_WINDOWPOSCHANGED has no between for a frame
+  to land in. New `[target.'cfg(windows)'.dependencies] windows = "0.62"`
+  (same 0.62.2 the tao/tauri tree already pins; features only).
+* **No auto-expand on a song change**: the `expand()` on `trackChanged` is
+  gone from `__IslandSync`; a new track refreshes what the card shows,
+  never whether it shows. The user's own click on the pill still expands
+  it, with the same five-second auto-collapse as before.
+
+## 3. The transparent top bar (Windows/Linux; macOS untouched)
+
+The native frame is gone from the main window — `decorations(false)` for
+`#[cfg(not(target_os = "macos"))]` in lib.rs — so no title, no icon and no
+caption buttons interrupt the app's own background, and a tinted artist,
+album or playlist page colours the top of the window like it colours the
+rest. What the frame did, the page now does:
+
+* `app/src/shell/WindowControls.tsx` (new) — a transparent top strip: the
+  three window buttons top right in the app's own tokens (hover quinary;
+  close hovers the system red), a window-level mousedown within the bar's
+  40px that drags the window (`window_start_drag`) *unless* it landed on
+  content (buttons, links, fields keep their clicks), and a double-click
+  there that toggles maximize. The strip itself paints nothing and lets
+  every pointer event through (`pointer-events: none`), so page content
+  scrolled under it stays clickable.
+* `app/src/shell/useWindowChrome.ts` (new) — one ask to `desktop_info`
+  decides whether this window ships the bar: desktop Windows/Linux only.
+  macOS keeps its traffic lights over the glass; a plain browser has
+  neither window nor shell, so nothing renders there.
+* `src-tauri/src/commands.rs` — `window_minimize`, `window_toggle_maximize`
+  (the maximize branch lives in Rust, keeping `is_maximized` out of the
+  ACL), `window_hide` (the tray close the native button always did) and
+  `window_start_drag`, all async like every other window-touching command.
+  Registered in lib.rs, granted in `permissions/desktop-commands.toml` +
+  `capabilities/main.json`.
+* `app/src/shell/Sidebar.tsx` — the "BitChord" wordmark and logo left the
+  window's top; the spacer keeps the traffic lights (macOS) and the drag
+  zone their room.
+* `app/src/shell/AppShell.tsx` — the bar mounts once, outside the scrolling
+  page (skipped on phone browsers, which have `MobileTopBar`).
+* `app/src/shell/FullScreenPlayer.tsx` — the player's own top-right corner
+  chrome (browser full screen, video quality) steps aside by 132px where
+  the window buttons live, so the two never overlap.
+
+## 4. The lyric clock stopped polling
+
+The lyrics view wrote the media time onto am-lyrics thirty times a second,
+and every write swept every word, syllable and character of the active
+lines (class checks, wipe seeks, the predictive scroll) — measured from the
+user's side as nearly double the system resources while a panel was open,
+on top of the paint the animation itself costs. But am-lyrics animates
+itself: every wipe, rise and blur is a CSS/WAAPI animation that advances on
+its own clock once started, so a write is only needed when something new
+begins.
+
+* `app/src/shell/LyricsPanel.tsx` — `collectEvents` reads the same TTML
+  am-lyrics loads into a sorted set of instants (line starts/ends, every
+  word and syllable edge, background vocals), and the clock writes only
+  there: exactly at each boundary (forced — a boundary is a class flip),
+  at the leads am-lyrics itself looks ahead from (2000ms, the next line's
+  unblur; 500/400ms, wipe prep, predictive scroll, gap collapse), and a
+  500ms heartbeat bounded to a 1s sleep cap between far-apart events.
+  Seeks and pauses write at once, as before. Renders dropped from ~30
+  sweeps/s to a handful, and a boundary write now lands to the frame —
+  closer than the polled cadence's 33ms ever was. Same element, same TTML,
+  same CSS: the look is am-lyrics', unchanged; nothing runs while the
+  window is hidden or the song is paused. A TTML that refuses to parse
+  falls back to the old fixed cadence rather than risking the sync.
+
+## Verification this round
+
+* `pnpm -r typecheck`: clean. `pnpm -r test`: 159/159.
+  `pnpm --filter @bitchord/app build` (tsc + Vite production): clean.
+* `cargo xwin check --target x86_64-pc-windows-msvc` (cargo-xwin, as in
+  Round 4): clean — the whole shell compiles for Windows, including the
+  atomic `SetWindowPos`, the `hwnd()` path and the new commands. The Linux
+  target still cannot be compiled on this host (no root, no WebKitGTK dev
+  packages); the non-Windows `apply_geometry` is the pre-existing
+  `set_size` + `recenter` pair, unchanged.
+* Browser-driven behaviour matrix over the built `island.html` (headless,
+  with the sync/focus evals driven by hand): initial load stays hidden;
+  playing + unfocused spawns (`mini spawn`, opacity and scale animated,
+  class cleared on `animationend`); right-click dismisses; a song change
+  while dismissed stays hidden; focus regained clears the dismissal without
+  showing the card; focus lost again spawns; pause hides; resume spawns;
+  click expands to the 432×188 card. The main shell was loaded headless
+  with the shell stubbed: the strip renders (Minimize / Maximize / Close,
+  z-index above the full-screen player, below the menus), a mousedown on a
+  button presses no drag, a mousedown on empty top space presses
+  `window_start_drag`, one below the bar does nothing, and a double-click
+  presses `window_toggle_maximize`; in a plain browser the strip renders
+  nothing and the sidebar's top carries no wordmark.

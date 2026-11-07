@@ -7,6 +7,8 @@ import { getBridge } from '@/extension/bridge';
 import { Menu, MenuHeader, MenuItem, MenuSeparator } from '@/components/Menu';
 import { LyricClock } from '@/lyrics/clock';
 import { onUngrantedChange, ungrantedOrigins } from '@/lyrics/http';
+import { endMs } from '@/lyrics/model';
+import { parseTtml } from '@/lyrics/parse';
 import type { SourceState } from '@/lyrics/repository';
 import { enabledSources } from '@/lyrics/settings';
 import { sourceById, type LyricsSourceId } from '@/lyrics/sources';
@@ -93,14 +95,74 @@ const FULL_SIZE =
  * dates readings by sample time" lesson. No React state per frame: the time is
  * written straight onto the element.
  *
- * The writes are throttled: am-lyrics works on every one of them (per-word
- * styles, wipe animation seeks, the predictive scroll), and sixty a second made
- * it the most expensive thing on screen while playing. Thirty reads exactly the
- * same — a wipe advances a fraction of a percent a frame either way — so the
- * clock advances at full rate and lands on the element at most thirty times a
- * second, at once on any jump. Nothing is written while the window is hidden.
+ * The writes are *scheduled*, not polled. am-lyrics animates itself — every
+ * wipe, rise and blur is a CSS/WAAPI animation that advances on its own clock
+ * once started — so a clock write is only needed at the moments something new
+ * begins: a word or line boundary (class flips, wipe seeks), the leads before
+ * one (pre-wipes, the predictive scroll, the next line's two-second unblur),
+ * and immediately after any seek or pause. Writing on a fixed 30-per-second
+ * cadence made the panel the most expensive thing on screen: sixty sweeps of
+ * every word, syllable and character a second that mostly decided "nothing
+ * changed", on top of the paint the animation itself costs. The scheduled
+ * clock lands a write exactly where a change begins (a boundary write is
+ * exact to the frame — closer than the polled cadence's 33ms ever was), and
+ * between events it sleeps. Nothing is written while the window is hidden or
+ * the song is paused.
  */
-const CLOCK_WRITE_MIN_MS = 1000 / 30;
+const CLOCK_WRITE_MIN_MS = 1000 / 30; // still the floor between unforced writes
+
+/** How far ahead of a boundary a write must land, from am-lyrics' own
+ * constants: the next line starts unblurring 2000ms early, and the wipe
+ * preparation, the predictive scroll and the instrumental gap's collapse all
+ * look ahead at most 500ms (a second lead 100ms later covers the scroll
+ * targets whose own lookahead is under 500). */
+const EVENT_LEADS_MS = [2000, 500, 400] as const;
+
+/** When no event is within a second, a write every 500ms keeps drift
+ * correction and any missed edge honest without measuring as work. */
+const CLOCK_HEARTBEAT_MS = 500;
+
+/** The same as a ceiling: nothing between events is worth sleeping past a
+ * second for — the heartbeats bound any surprise to half a second. */
+const CLOCK_SLEEP_CAP_MS = 1000;
+
+/** Every instant the lyrics change state, read from the same TTML am-lyrics
+ * loads: line starts and ends, every word and syllable edge, background
+ * vocals included. Returns null when the TTML says nothing (or refuses to
+ * parse) and the clock falls back to the polled cadence — a slow provider's
+ * odd shape must never cost the sync itself. */
+function collectEvents(ttml: string): number[] | null {
+  let lines: ReturnType<typeof parseTtml>;
+  try {
+    lines = parseTtml(ttml);
+  } catch {
+    return null;
+  }
+  if (lines.length === 0) return null;
+  const times = new Set<number>();
+  const add = (ms: number) => {
+    if (Number.isFinite(ms) && ms >= 0) times.add(Math.round(ms));
+  };
+  const addLine = (line: ReturnType<typeof parseTtml>[number]) => {
+    add(line.timeMs);
+    if (line.sungUntilMs !== null) add(line.sungUntilMs);
+    add(endMs(line));
+    for (const word of line.words) {
+      add(word.startMs);
+      add(word.endMs);
+      for (const syllable of word.syllables) {
+        add(syllable.startMs);
+        add(syllable.endMs);
+      }
+    }
+  };
+  for (const line of lines) {
+    addLine(line);
+    if (line.background) addLine(line.background);
+  }
+  if (times.size === 0) return null;
+  return [...times].sort((a, b) => a - b);
+}
 
 function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
   const host = useRef<HTMLDivElement>(null);
@@ -198,27 +260,78 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
     }
     const clock = new LyricClock(audio.currentTime * 1000);
     let discontinuity = 0;
-    let frame = 0;
-    const tick = () => {
+    let timer = 0;
+    const events = collectEvents(ttml);
+
+    const writeNow = (force: boolean) => {
       const now = performance.now();
-      // The reading and its stamp are taken together.
-      write(clock.frame(now, Math.trunc(audio.currentTime * 1000), now, discontinuity), now);
-      frame = requestAnimationFrame(tick);
+      write(clock.frame(now, Math.trunc(audio.currentTime * 1000), now, discontinuity), now, force);
+    };
+
+    /**
+     * When the next write is due. An event boundary is written exactly (and
+     * forced past the cadence floor — a boundary write is the moment a class
+     * flips, so it may not wait); before it, the leads give am-lyrics its
+     * own look-aheads; past the last event, and between far-apart ones, a
+     * heartbeat keeps the clock honest. With no usable event map at all, the
+     * old polled cadence runs unchanged.
+     */
+    const nextWrite = (now: number): { at: number; boundary: boolean } => {
+      if (!events) return { at: now + CLOCK_WRITE_MIN_MS, boundary: false };
+      let low = 0;
+      let high = events.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (events[middle]! <= now) low = middle + 1;
+        else high = middle;
+      }
+      if (low >= events.length) return { at: now + CLOCK_HEARTBEAT_MS, boundary: false };
+      const event = events[low]!;
+      for (const lead of EVENT_LEADS_MS) {
+        const at = event - lead;
+        if (at > now) return { at: Math.min(at, now + CLOCK_SLEEP_CAP_MS), boundary: false };
+      }
+      return { at: event, boundary: true };
+    };
+
+    const schedule = () => {
+      const now = performance.now();
+      const { at, boundary } = nextWrite(now);
+      timer = window.setTimeout(
+        () => {
+          writeNow(boundary);
+          schedule();
+        },
+        Math.max(0, at - now),
+      );
     };
     const hold = () => {
-      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      const now = performance.now();
       const ms = audio.currentTime * 1000;
-      clock.hold(ms, performance.now());
-      write(ms, performance.now(), true);
+      clock.hold(ms, now);
+      write(ms, now, true);
     };
     const resume = () => {
-      cancelAnimationFrame(frame);
+      clearTimeout(timer);
       clock.restart();
-      frame = requestAnimationFrame(tick);
+      // The first frame after a run begins anchors the clock; write it at
+      // once, then fall back into the event schedule.
+      writeNow(false);
+      schedule();
     };
     const onSeeking = () => {
       discontinuity++;
-      if (audio.paused) hold();
+      // A seek must land now: the event schedule may be asleep for seconds
+      // around here, and the jumpPending reading decides whether the words
+      // glide or snap.
+      clearTimeout(timer);
+      if (audio.paused) {
+        hold();
+        return;
+      }
+      writeNow(false);
+      schedule();
     };
     const onVisibility = () => {
       // rAF stops with the window hidden on some engines and not others; stop
@@ -234,7 +347,7 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
     if (audio.paused) hold();
     else resume();
     return () => {
-      cancelAnimationFrame(frame);
+      clearTimeout(timer);
       audio.removeEventListener('seeking', onSeeking);
       audio.removeEventListener('seeked', onSeeking);
       audio.removeEventListener('pause', hold);

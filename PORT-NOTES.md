@@ -126,3 +126,45 @@ pause-hide, resume, artwork fallback, time interpolation.
 One note for Linux packagers: transparency needs a compositor (every mainstream
 desktop has one); without one the pill's glass renders opaque, which is the
 degraded look, not a broken one.
+
+## The island after the focus round (v1.9.5)
+
+The island is no longer "up whenever music plays". It is BitChord's glance
+*away* from the app: the shell mirrors the main window's focus into the
+island page (`Focused` events → `__IslandFocus`, one `island_focus_state`
+query at load), and a single `reconcile()` in `island/main.ts` decides the
+mode from exactly three inputs — playback (paused wins: nothing), the app's
+focus (frontmost: nothing), and a right-click dismissal (lasts until the
+user has been back in BitChord and left again). Music playing + app in the
+background is the only state where the card exists. A song change refreshes
+the card's contents and never its visibility — the auto-expand of the
+Airbeats port is gone — and the only way to grow it is the user's own
+click, with the same five-second auto-collapse.
+
+Arrivals from `hidden` spawn: `island-spawn` pops the card from 0.55 scale
+with a settle dip, all inside the card's own box (the OS window that hugs
+the pill never clips a frame of it). And the grow/shrink of the OS window
+itself is now one atomic `SetWindowPos` on Windows — a plain `set_size`
+anchors the top-left corner, and the pill used to read the re-centre as a
+second step ("centre left, then centre"). macOS/Linux keep the two-call
+path inside one main-thread task.
+
+The top bar of the main window is the app's own page now: frameless on
+Windows/Linux (`decorations(false)`; macOS keeps the overlay traffic
+lights), with `shell/WindowControls.tsx` drawing the transparent strip —
+window buttons top right, drag on empty top-of-window space, double-click
+to maximize — and the sidebar carrying no wordmark. The bar paints nothing
+and blocks nothing; it is a hint to the eye, not a surface.
+
+## The lyric clock
+
+`shell/LyricsPanel.tsx` no longer polls am-lyrics thirty times a second.
+The TTML the panel already holds is parsed into a sorted set of instants —
+line starts and ends, every word and syllable edge, background vocals — and
+the clock writes only there: exactly at each boundary, at the leads
+am-lyrics looks ahead from (2000 / 500 / 400 ms), and a bounded heartbeat
+in between. Every visual is still am-lyrics' own (wipes, rises, blur and
+scroll are self-running CSS/WAAPI animations), so the look is untouched;
+what changed is that the main thread stops sweeping every word sixty times
+a second for "nothing changed". Seeks and pauses still land at once, and a
+TTML that will not parse falls back to the old cadence.

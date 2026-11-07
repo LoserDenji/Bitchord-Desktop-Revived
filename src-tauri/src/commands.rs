@@ -196,6 +196,63 @@ pub async fn island_action(action: String, arg: Option<f64>, app: AppHandle) -> 
     Ok(())
 }
 
+/// The island asks once at load what the shell last saw, so a card born into
+/// an already-unfocused app (settings toggled while the app is in the
+/// background) knows it may show before the next Focused event arrives.
+#[tauri::command]
+pub fn island_focus_state() -> bool {
+    island::main_focused()
+}
+
+/// The frameless main window's own top bar. Three buttons and a drag zone
+/// replace the native decorations the shell no longer draws (lib.rs), so the
+/// page's background shows through the top of the app on every page. Each
+/// command is async for the same reason every other window-touching command
+/// here is: the off-main-thread path is the documented-safe one on Windows.
+#[tauri::command]
+pub async fn window_minimize(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.minimize();
+    }
+    Ok(())
+}
+
+/// One button, both states: a maximized window restores, the rest maximizes.
+/// Branching here keeps `is_maximized` out of the ACL entirely.
+#[tauri::command]
+pub async fn window_toggle_maximize(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_maximized().unwrap_or(false) {
+            let _ = window.unmaximize();
+        } else {
+            let _ = window.maximize();
+        }
+    }
+    Ok(())
+}
+
+/// The top bar's close is the native close: BitChord goes to the tray and the
+/// music keeps playing (the CloseRequested handler in lib.rs hides, never
+/// exits), so the button hides the window outright.
+#[tauri::command]
+pub async fn window_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    Ok(())
+}
+
+/// Dragging the transparent top bar. The page presses this from a plain
+/// mousedown on empty top-of-window space — the same gesture the native
+/// frame's caption handled, decided in the page where the content lives.
+#[tauri::command]
+pub async fn window_start_drag(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.start_dragging();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn island_resize(expanded: bool, app: AppHandle) -> Result<(), String> {
     island::apply_size(&app, expanded);

@@ -63,8 +63,13 @@ pub fn run() {
             commands::media_update,
             commands::set_launch_at_login,
             commands::island_action,
+            commands::island_focus_state,
             commands::island_resize,
             commands::island_overlay,
+            commands::window_minimize,
+            commands::window_toggle_maximize,
+            commands::window_hide,
+            commands::window_start_drag,
         ])
         .setup(|app| {
             let data_dir = app
@@ -77,6 +82,13 @@ pub fn run() {
 
             // The main window, with the desktop shim injected before the app's
             // own scripts: the web frontend never learns it isn't in a browser.
+            // Windows and Linux ship frameless: the page's own transparent top
+            // bar (shell/WindowControls.tsx) draws the drag zone and the three
+            // window buttons over whatever the app is showing, so the bar
+            // merges with the page the way the sidebar and the player pill
+            // already do — and a tinted artist or album page colours the top
+            // of the window like it colours the rest. macOS keeps the native
+            // traffic lights over the glass (TitleBarStyle::Overlay).
             #[allow(unused_mut)]
             let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("/".into()))
                 .title("BitChord")
@@ -93,6 +105,12 @@ pub fn run() {
             {
                 // Traffic lights over the glass sidebar, Apple Music style.
                 builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // The native frame (its title, its icon and its caption
+                // buttons) is gone; the page supplies the bar.
+                builder = builder.decorations(false);
             }
             builder.build()?;
 
@@ -145,6 +163,16 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The island mirrors the main window's focus: it shows while the
+            // user is elsewhere and folds away while BitChord is frontmost
+            // (island.rs::notify_main_focus). Hiding the window to the tray
+            // fires the same event, so a closed-to-tray session keeps the
+            // card up while the music plays.
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if window.label() == "main" {
+                    island::notify_main_focus(window.app_handle(), *focused);
+                }
+            }
             // Closing the window keeps the music: BitChord goes to the tray,
             // like every desktop player. Quit lives in the tray menu. This is
             // unconditional — the flag it once read could only ever have been

@@ -14,6 +14,10 @@
     "allow-open-signin",
     "allow-agent-report",
     "allow-media-update",
-    "allow-launch-at-login"
+    "allow-launch-at-login",
+    "allow-window-minimize",
+    "allow-window-toggle-maximize",
+    "allow-window-hide",
+    "allow-window-start-drag"
   ]
 }

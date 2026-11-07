@@ -21,12 +21,41 @@
 //! always hug the visible pill. The window-state plugin must never track this
 //! window (see the denylist in lib.rs) — its place is computed, not restored.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::AppState;
 use crate::media::MediaSnapshot;
 
 const ISLAND_SHIM: &str = include_str!("../shim/island.js");
+
+/// Whether the main window currently owns the focus. The pill only exists for
+/// a glance away from BitChord — while the app is frontmost the page is the
+/// now-playing card, and an island over it would repeat what it already says
+/// (and sit in the way of the page's own top). The flag starts false: a
+/// session that began with the window hidden to the tray has never been
+/// focused, so the island may show as soon as something is playing; a normal
+/// launch corrects it with the window's first Focused(true) event.
+static MAIN_FOCUSED: AtomicBool = AtomicBool::new(false);
+
+/// The main window's focus changed (lib.rs's window-event hook). The flag is
+/// the shell's own answer for the island's boot-time query
+/// (`island_focus_state` — the page asks once, before its first sync), and
+/// every change is pushed into the island page, which re-decides what to show.
+/// Regaining focus also clears a right-click dismissal: the island comes back
+/// only after the user has been back in the app and left it again.
+pub fn notify_main_focus(app: &AppHandle, focused: bool) {
+    MAIN_FOCUSED.store(focused, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("island") {
+        let _ = window.eval(&format!("window.__IslandFocus && window.__IslandFocus({focused})"));
+    }
+}
+
+/// What the shell last saw, for the island's one boot-time ask.
+pub fn main_focused() -> bool {
+    MAIN_FOCUSED.load(Ordering::SeqCst)
+}
 
 /// Logical sizes of the two states, matching `island.css`. The mini pill is a
 /// whisker wider than the artwork + title need, so the title gets room to
@@ -141,10 +170,60 @@ pub fn apply_size(app: &AppHandle, expanded: bool) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("island") {
-            let _ = window.set_size(LogicalSize::new(width, height));
-            recenter(&window, width);
+            apply_geometry(&window, width, height);
         }
     });
+}
+
+/// The geometry half of [apply_size], for one logical size, already on the
+/// main thread.
+///
+/// The size and the centring must land in the *same* presented frame, or the
+/// morph reads in two steps. On Windows a plain `set_size` keeps the top-left
+/// corner anchored (SWP_NOMOVE), so shrinking the 432px window to 216px parked
+/// the pill left of centre for a frame before `recenter` walked it home — the
+/// "centre-left, then centre" two-step. One atomic `SetWindowPos` that carries
+/// position and size together cannot have a frame between them, because there
+/// is no *between*: it is a single WM_WINDOWPOSCHANGED.
+#[cfg(target_os = "windows")]
+fn apply_geometry(window: &tauri::WebviewWindow, width: f64, height: f64) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER};
+
+    let monitor = window.current_monitor().ok().flatten();
+    let Some(monitor) = monitor else {
+        let _ = window.set_size(LogicalSize::new(width, height));
+        recenter(window, width);
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let x = (monitor.position().x as f64 + ((monitor.size().width as f64 - width * scale) / 2.0).round()) as i32;
+    let y = (monitor.position().y as f64 + (TOP_INSET * scale).round()) as i32;
+    let w = (width * scale).round() as i32;
+    let h = (height * scale).round() as i32;
+    match window.hwnd() {
+        Ok(hwnd) => unsafe {
+            // Position and size in one WM_WINDOWPOSCHANGED — no intermediate
+            // frame exists to paint. Z order stays (always-on-top), no focus
+            // is stolen: the island is a glance, never an activation.
+            let _ = SetWindowPos(hwnd, Some(HWND::default()), x, y, w, h, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+        },
+        // No raw handle (should not happen): the old two-step path is better
+        // than no resize at all.
+        Err(_) => {
+            let _ = window.set_size(LogicalSize::new(width, height));
+            recenter(window, width);
+        }
+    }
+}
+
+/// macOS and Linux have no atomic move+resize through Tauri's API; the two
+/// calls run back to back on the main thread, which is one frame apart at
+/// worst and has not shown a seam there.
+#[cfg(not(target_os = "windows"))]
+fn apply_geometry(window: &tauri::WebviewWindow, width: f64, height: f64) {
+    let _ = window.set_size(LogicalSize::new(width, height));
+    recenter(window, width);
 }
 
 /// While hidden the pill must not block what is under it — a transparent
