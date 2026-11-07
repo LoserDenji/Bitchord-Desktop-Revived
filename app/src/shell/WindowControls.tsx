@@ -1,5 +1,6 @@
 import { Minus, Square, X } from 'lucide-react';
 import { useEffect } from 'react';
+import { useUi } from '@/state/ui';
 import { useWindowChrome } from './useWindowChrome';
 
 /**
@@ -22,6 +23,11 @@ import { useWindowChrome } from './useWindowChrome';
  * pointer event through (`pointer-events: none`), so page content scrolled
  * under it stays clickable and only the buttons receive clicks. The drag
  * zone is a window-level listener, not an element, for the same reason.
+ *
+ * In the full-screen player the bar is gone entirely — buttons and drag
+ * zone: that view is the app's own full-bleed stage with its own corner
+ * chrome and its own way out, and a second row of window buttons floating
+ * over it has nothing to do. It returns when the player closes.
  *
  * macOS renders nothing — the system's own traffic lights sit over the glass
  * — and in a plain browser there is neither window nor shell, so nothing.
@@ -47,9 +53,13 @@ function press(cmd: string): void {
 
 export function WindowControls() {
   const present = useWindowChrome();
+  // The full-screen player is the one view that owns the whole window: while
+  // it is up, the bar stands down (buttons and drag gestures alike).
+  const fullScreen = useUi((s) => s.fullScreen);
+  const active = present && !fullScreen;
 
   useEffect(() => {
-    if (!present) return;
+    if (!active) return;
     const onBar = (event: { clientY: number; button: number; target: EventTarget | null }) => {
       if (event.button !== 0 || event.clientY > BAR_HEIGHT) return false;
       const target = event.target;
@@ -67,9 +77,9 @@ export function WindowControls() {
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('dblclick', onDoubleClick);
     };
-  }, [present]);
+  }, [active]);
 
-  if (!present) return null;
+  if (!active) return null;
 
   return (
     <div className="pointer-events-none fixed inset-x-0 top-0 z-[calc(var(--z-contextual-menus)-1)] flex justify-end">

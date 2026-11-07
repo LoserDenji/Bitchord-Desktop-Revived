@@ -887,3 +887,109 @@ begins.
   `window_start_drag`, one below the bar does nothing, and a double-click
   presses `window_toggle_maximize`; in a plain browser the strip renders
   nothing and the sidebar's top carries no wordmark.
+
+---
+
+# Round 8 — the bar that came back, the buttons in full screen, the wordmark's home, and the scrollbar (v1.9.5)
+
+The screenshot told the whole story: the native title bar sat above the
+frameless build's own button strip (two rows of window controls), the
+sidebar's BitChord wordmark was gone, and a classic Windows scrollbar ran
+down the window's right edge. Four fixes, one root cause.
+
+## 1. The native title bar was never really gone — the state file kept bringing it back
+
+**Symptom:** the window still had its native caption row ("BitChord", icon,
+minimize/maximize/close) above the page's own button strip — two rows of
+window controls.
+
+**Cause:** `lib.rs` builds the main window with `decorations(false)`, but the
+window-state plugin restores state on `on_window_ready` — which fires
+*inside* `builder.build()`, after the frame was already removed. Round 7
+excluded only the `VISIBLE` flag; `DECORATIONS` was still in
+`StateFlags::all()`, so the plugin read the state file the old, decorated
+build had written (`"decorations": true`) and called `set_decorations(true)`
+over the frameless window. Upgrades from any pre-7 build drew the native bar
+back on first launch.
+
+The re-decoration also explains the scrollbar: the webview was sized for a
+frameless window, and the caption appearing over it disturbed the layout —
+content that fit no longer did, and WebView2's classic bar (arrows, track,
+~17px) appeared at the right edge.
+
+**Fix, two layers:**
+
+* `src-tauri/src/lib.rs` — the plugin's flags now exclude `DECORATIONS` as
+  they excluded `VISIBLE`:
+
+  ```rust
+  .with_state_flags(StateFlags::all()
+      & !StateFlags::VISIBLE
+      & !StateFlags::DECORATIONS)
+  ```
+
+  The frameless design is not a per-session preference to remember; the
+  plugin neither restores nor saves it.
+* Belt and braces: after `builder.build()` the setup re-asserts
+  `main.set_decorations(false)` (non-macOS). The plugin's restore has
+  already had its say by then, so even a stale state file loses.
+
+## 2. The wordmark lives in the sidebar, where it always did
+
+Round 7 over-reached: it removed the logo from the sidebar's top (leaving an
+empty spacer), when the request was about the window bar's title. The
+original block is back verbatim in `app/src/shell/Sidebar.tsx` — the
+`LogoMark` glyph and the "BitChord" wordmark, linking home, `h-18` tall as
+before, which still keeps the macOS traffic lights their air. The window's
+top edge stays brandless; the app's navigation carries the brand.
+
+## 3. No window buttons in full screen — at all
+
+The full-screen player is the app's own full-bleed stage with its own corner
+chrome and its own way out; a second row of window buttons floating over it
+has nothing to do there.
+
+* `app/src/shell/WindowControls.tsx` — the bar reads the UI store's
+  `fullScreen` flag and stands down entirely: no buttons, and the
+  window-level drag/double-click listeners are unbound too (a mousedown in
+  the player's top area must never start a window drag). It returns the
+  moment the player closes.
+* `app/src/shell/FullScreenPlayer.tsx` — Round 7's workaround is gone: the
+  player's own top-right chrome (enter/exit full screen, video quality) no
+  longer steps aside by 132px for buttons that are no longer there. It sits
+  at `right-5`, exactly where it always did.
+
+## 4. The scrollbar is the app's own now
+
+Beyond the re-decoration that introduced it, the classic Windows scrollbar
+would have come back with any page taller than the window. It is retired:
+
+* `app/src/styles/global.css` — `#scrollable-page` (the app's main scroller)
+  and `html` get a thin, rounded thumb in the app's own materials
+  (`--systemTertiary`, hover `--systemSecondary`) over a transparent track,
+  8px, no arrow buttons, present only when there is something to scroll.
+  Both the standard properties (`scrollbar-width: thin`,
+  `scrollbar-color`) and the WebKit aliases are set, so older WebView2s get
+  the same treatment. The sidebar and the shelves hide their scrollbars
+  outright; this is the middle ground for the one view where mouse users
+  still need the affordance.
+
+## Verification this round
+
+* `pnpm -r typecheck`: clean. `pnpm -r test`: 159/159.
+  `pnpm --filter @bitchord/app build` (tsc + Vite production): clean.
+* `cargo xwin check --target x86_64-pc-windows-msvc` (cargo-xwin + LLVM
+  clang-cl/llvm-rc): clean — the flag exclusion, the re-assertion and the
+  whole shell compile for Windows.
+* Browser-driven behaviour matrix over the dev shell (headless, Tauri stub
+  injected before the module graph): the sidebar renders the wordmark and
+  the logo mark; Minimize/Maximize/Close render exactly once; a press on
+  Minimize invokes `window_minimize` and is not a drag; a mousedown on
+  empty top space presses `window_start_drag`; a double-click there presses
+  `window_toggle_maximize`; `#scrollable-page` computes `scrollbar-width:
+  thin`; with the full-screen player up (a track seeded into the player
+  store) the three buttons are gone, the only Close is the player's own at
+  the top-left, the enter-full-screen button's right edge is 20px from the
+  window's (right-5, no offset), and empty top space presses nothing;
+  closing the player brings the buttons back. 14/14.
+

@@ -1,5 +1,6 @@
 import { ListMusic, Settings } from 'lucide-react';
 import { PrefetchLink, PrefetchNavLink } from '@/components/PrefetchLink';
+import { LogoMark } from '@/components/icons/LogoMark';
 import {
   AlbumsIcon,
   AllPlaylistsIcon,
@@ -145,11 +146,18 @@ export function Sidebar() {
         data-open={drawerOpen}
         aria-label="Main"
       >
-        {/* The height the wordmark used to occupy: it keeps the macOS traffic
-            lights their air and the window's drag zone its room. The brand
-            itself moved out of the window's top — the frameless top bar is
-            the app's own page now, not a place for a logo. */}
-        <div className="mt-2 ml-2 h-18 shrink-0" aria-hidden="true" />
+        {/* The wordmark keeps its place at the top of the sidebar — it is the
+            app's brand in the app's own navigation, not a window-bar title.
+            (It's the frameless window's top edge that stays brandless: the
+            transparent top bar carries only the window buttons.) The block's
+            height also keeps the macOS traffic lights their air. */}
+        <div className="mt-2 ml-2 flex h-18 items-center px-5">
+          <PrefetchLink to="/home" className="inline-flex items-center gap-2 rounded-[6px]" aria-label="BitChord, Home" onClick={close}>
+            {/* White on dark, as Apple's own wordmark; it follows the label colour so it stays visible in light. */}
+            <LogoMark size={22} className="text-primary" />
+            <span className="type-[700_19px/24px] tracking-[-0.01em]">BitChord</span>
+          </PrefetchLink>
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto pr-3 pl-5 [scrollbar-width:none]">
           <NavList items={PRIMARY} onNavigate={close} />
           {signedIn && <LibraryNav onNavigate={close} />}

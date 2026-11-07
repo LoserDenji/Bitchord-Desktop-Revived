@@ -33,7 +33,6 @@ import { MixWindowHighlight, NerdStats } from './NerdStats';
 import { useScrubber } from './useScrubber';
 import { VideoQuality } from './VideoQuality';
 import { fadeForVolume, VolumeControl } from './VolumeControl';
-import { useWindowChrome } from './useWindowChrome';
 
 function useBrowserFullScreen(): boolean {
   return useSyncExternalStore(
@@ -160,11 +159,6 @@ export function FullScreenPlayer() {
   const [volumeOpen, setVolumeOpen] = useState(false);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const browserFullScreen = useBrowserFullScreen();
-  // The frameless window's own buttons live in the top-right corner (Windows
-  // and Linux); the player's corner chrome steps aside for them there.
-  const windowChrome = useWindowChrome();
-  const chromeRight = windowChrome ? 'right-[152px]' : 'right-5';
-  const qualityRight = windowChrome ? 'right-[192px]' : document.fullscreenEnabled ? 'right-15' : 'right-5';
   const close = useRef<HTMLButtonElement>(null);
   // Whether this player put the page in the browser's full screen, so closing it leaves it again.
   const enteredBrowserFullScreen = useRef(false);
@@ -262,10 +256,12 @@ export function FullScreenPlayer() {
         <X size={20} />
       </button>
       {/* The music video's quality, just inside the full-screen button. */}
-      {video && <VideoQuality className={`absolute top-[18px] z-1${hidden} ${qualityRight}`} />}
+      {video && (
+        <VideoQuality className={`absolute top-[18px] z-1${hidden}${document.fullscreenEnabled ? ' right-15' : ' right-5'}`} />
+      )}
       {document.fullscreenEnabled && (
         <button
-          className={`${corner} top-4 ${chromeRight}`}
+          className={`${corner} top-4 right-5`}
           aria-label={browserFullScreen ? 'Exit full screen' : 'Enter full screen'}
           onClick={toggleBrowserFullScreen}
         >

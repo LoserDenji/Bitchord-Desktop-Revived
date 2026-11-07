@@ -331,6 +331,47 @@
     height: 100%;
   }
 
+  /* The page's scrollbar, not the OS's. The classic Windows bar (arrow
+     buttons, track, ~17px of chrome) belongs to documents, not to an
+     Apple-Music-styled app — and it is exactly what shows up when a page
+     outgrows its window. From here on the main scroller (#scrollable-page)
+     and the document itself get the app's own materials instead: a thin,
+     rounded thumb over a transparent track, no arrows, appearing only when
+     there is something to scroll. (The sidebar and the shelves hide their
+     scrollbars outright; this is the middle ground for the one view where
+     mouse users still need the affordance.) */
+  #scrollable-page,
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: var(--systemTertiary) transparent;
+  }
+  #scrollable-page::-webkit-scrollbar,
+  html::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  #scrollable-page::-webkit-scrollbar-track,
+  #scrollable-page::-webkit-scrollbar-corner,
+  html::-webkit-scrollbar-track,
+  html::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  #scrollable-page::-webkit-scrollbar-thumb,
+  html::-webkit-scrollbar-thumb {
+    border-radius: 4px;
+    background-color: var(--systemTertiary);
+  }
+  #scrollable-page::-webkit-scrollbar-thumb:hover,
+  html::-webkit-scrollbar-thumb:hover {
+    background-color: var(--systemSecondary);
+  }
+  #scrollable-page::-webkit-scrollbar-button,
+  html::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
   h1,
   h2,
   h3,

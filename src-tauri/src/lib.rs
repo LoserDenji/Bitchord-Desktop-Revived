@@ -40,11 +40,21 @@ pub fn run() {
         // ended from the tray (main window hidden) must not come back as a
         // saved `visible: false` — the next launch would restore a window
         // that never shows, leaving only the tray icon.
+        //
+        // DECORATIONS is excluded for the same class of reason: the plugin
+        // restores on `on_window_ready`, *after* the window was built
+        // frameless below, and the state file an older, decorated build
+        // wrote says `decorations: true` — so an upgrade would redraw the
+        // native title bar over the frameless window (double caption
+        // buttons, a webview mis-sized for the caption it never planned
+        // for). The main window is frameless by design; that is not a
+        // per-session preference to remember.
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_denylist(&["agent", "island"])
                 .with_state_flags(tauri_plugin_window_state::StateFlags::all()
-                    & !tauri_plugin_window_state::StateFlags::VISIBLE)
+                    & !tauri_plugin_window_state::StateFlags::VISIBLE
+                    & !tauri_plugin_window_state::StateFlags::DECORATIONS)
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(
@@ -112,7 +122,15 @@ pub fn run() {
                 // buttons) is gone; the page supplies the bar.
                 builder = builder.decorations(false);
             }
-            builder.build()?;
+            let main = builder.build()?;
+            // Belt and braces for the frame above: the plugin's restore hook
+            // ran inside build(), so any state file it read has already had
+            // its say — this re-asserts the frameless design after it. A
+            // decorated main window here would mean two caption rows (the
+            // page draws its own) and a webview sized for a frameless
+            // window, so it is worth pinning in code, not just in flags.
+            #[cfg(not(target_os = "macos"))]
+            main.set_decorations(false)?;
 
             tray::build(app.handle())?;
 
