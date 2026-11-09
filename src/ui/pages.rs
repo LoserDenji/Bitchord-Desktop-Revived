@@ -124,6 +124,7 @@ impl Rows {
             pick: false,
             selected: None,
             remove: None,
+            hide_duration_hover: false,
         }
     }
 }

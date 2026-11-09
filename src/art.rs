@@ -46,7 +46,9 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn box_blur(src: &[[f32; 3]], n: usize, r: usize) -> Vec<[f32; 3]> {
+/// Two box-blur passes (one horizontal, one vertical), which together read as a
+/// Gaussian; the now-playing ambience borrows it too.
+pub(crate) fn box_blur(src: &[[f32; 3]], n: usize, r: usize) -> Vec<[f32; 3]> {
     let pass = |src: &[[f32; 3]], horizontal: bool| -> Vec<[f32; 3]> {
         let mut out = vec![[0.0; 3]; src.len()];
         for y in 0..n {

@@ -1307,7 +1307,9 @@ impl eframe::App for App {
             if q > 0.01 {
                 egui::Panel::right("queue").resizable(false)
                     .exact_size(340.0 * q)
-                    .frame(egui::Frame::new().fill(theme::panel(0.42)).inner_margin(egui::Margin::symmetric(14, 16)))
+                    // Only the scroll bar's strip stays off the window's edge (and the
+                    // resize border): the bar hugs the edge there, clear of the rows.
+                    .frame(egui::Frame::new().fill(theme::panel(0.42)).inner_margin(egui::Margin { left: 14, right: titlebar::edge_inset() as i8, top: 16, bottom: 16 }))
                     .show_separator_line(false)
                     .show(ui, |ui| shell::queue_drawer(self, ui));
             }

@@ -1079,50 +1079,62 @@ pub fn queue_drawer(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Up next").font(theme::bold(20.0)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Left of the window buttons, which sit over the drawer's top right.
-            ui.add_space(super::titlebar::right_gap(ui.ctx(), ui.max_rect(), 0.0));
+            // Left of the window buttons, which sit over the drawer's top right; the
+            // drawer's frame keeps off the window's edge only what its scroll bar needs,
+            // so the row inset in queue_list gives this header its breathing room back.
+            ui.add_space(super::titlebar::right_gap(ui.ctx(), ui.max_rect(), 14.0));
             if icon_button(ui, icon::X, 16.0, "Close queue", false).clicked() {
                 app.queue_open = false;
             }
         });
     });
     ui.add_space(8.0);
-    queue_list(app, ui, "drawer");
+    queue_list(app, ui, "drawer", 14.0);
 }
 
 /// Current track plus everything after it. Shared by the drawer and now playing.
-pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str) {
+/// `bar_inset`: the strip at the right that stays clear of the rows, where the panel's
+/// scroll bar hugs the edge — so it never crosses the remove ✕ or the ⋯ menu, and a
+/// scrub down it doesn't light the rows' ✕ buttons up as it passes.
+pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
     let rows = super::pages::Rows::new(app, ui.input(|i| i.time));
     egui::ScrollArea::vertical().id_salt(("queue", salt)).auto_shrink(false).show(ui, |ui| {
-        if app.queue.tracks.is_empty() {
-            ui.label(egui::RichText::new("Nothing queued yet").color(theme::text_dim()));
-            return;
-        }
-        let start = app.queue.index.unwrap_or(0);
-        ui.checkbox(&mut app.autoplay, egui::RichText::new("Autoplay similar songs").color(theme::text_dim())).on_hover_cursor(egui::CursorIcon::PointingHand);
-        ui.add_space(6.0);
-        let (queue, liked, acts, has_current, by) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &app.jam.by);
-        widgets::visible_rows(ui, queue.len() - start, |ui, k| {
-            let i = start + k;
-            let t = &queue[i];
-            // The first row is the current song.
-            let current = k == 0 && has_current;
-            let o = widgets::RowOpts { current, added_by: by.get(&t.id).cloned(), ..rows.opts(liked, t, None, false) };
-            let resp = widgets::track_row(ui, t, &o, acts);
-            if resp.clicked() {
-                // The playing row pauses/resumes instead of doing nothing.
-                acts.push(if current { Action::TogglePlay } else { Action::QueueJump(i) });
+        // The rows keep off the panel's edge by `bar_inset`, where the scroll bar hugs
+        // the edge: it never crosses the remove ✕ or the ⋯ menu, and a scrub down it
+        // doesn't light the rows' ✕ buttons up as it passes.
+        let width = ui.max_rect().width() - bar_inset;
+        ui.allocate_ui(vec2(width, 0.0), |ui| {
+            if app.queue.tracks.is_empty() {
+                ui.label(egui::RichText::new("Nothing queued yet").color(theme::text_dim()));
+                return;
             }
-            if !current && ui.rect_contains_pointer(Rect::from_min_max(resp.rect.min, pos2(resp.rect.right() + 42.0, resp.rect.bottom()))) {
-                // Remove button over the duration column.
-                let x = Rect::from_center_size(resp.rect.right_center() - vec2(26.0, 0.0), Vec2::splat(28.0));
-                let xr = named(ui.interact(x, resp.id.with("rm"), Sense::click()), "Remove from queue").on_hover_cursor(egui::CursorIcon::PointingHand);
-                ui.painter().circle_filled(x.center(), 14.0, theme::panel(0.6));
-                icon_at(ui, x.center(), icon::X, 14.0, theme::text());
-                if xr.clicked() {
-                    acts.push(Action::QueueRemove(i));
+            let start = app.queue.index.unwrap_or(0);
+            ui.checkbox(&mut app.autoplay, egui::RichText::new("Autoplay similar songs").color(theme::text_dim())).on_hover_cursor(egui::CursorIcon::PointingHand);
+            ui.add_space(6.0);
+            let (queue, liked, acts, has_current, by) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &app.jam.by);
+            widgets::visible_rows(ui, queue.len() - start, |ui, k| {
+                let i = start + k;
+                let t = &queue[i];
+                // The first row is the current song.
+                let current = k == 0 && has_current;
+                let o = widgets::RowOpts { current, added_by: by.get(&t.id).cloned(), hide_duration_hover: !current, ..rows.opts(liked, t, None, false) };
+                let resp = widgets::track_row(ui, t, &o, acts);
+                if resp.clicked() {
+                    // The playing row pauses/resumes instead of doing nothing.
+                    acts.push(if current { Action::TogglePlay } else { Action::QueueJump(i) });
                 }
-            }
+                if !current && ui.rect_contains_pointer(Rect::from_min_max(resp.rect.min, pos2(resp.rect.right() + 42.0, resp.rect.bottom()))) {
+                    // The remove ✕, in the length's place — the length makes way for it
+                    // while the row is hovered (RowOpts::hide_duration_hover).
+                    let x = Rect::from_center_size(resp.rect.right_center() - vec2(26.0, 0.0), Vec2::splat(28.0));
+                    let xr = named(ui.interact(x, resp.id.with("rm"), Sense::click()), "Remove from queue").on_hover_cursor(egui::CursorIcon::PointingHand);
+                    ui.painter().circle_filled(x.center(), 14.0, theme::panel(0.6));
+                    icon_at(ui, x.center(), icon::X, 14.0, theme::text());
+                    if xr.clicked() {
+                        acts.push(Action::QueueRemove(i));
+                    }
+                }
+            });
         });
     });
 }

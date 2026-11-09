@@ -443,9 +443,10 @@ type SongCell = Arc<tokio::sync::OnceCell<Option<Track>>>;
 const PLAY_SONG_WAIT: std::time::Duration = std::time::Duration::from_millis(2500);
 /// A prefetch has until the song before it ends.
 const PREFETCH_SONG_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
-/// How long playback waits for the hi-res sources before falling back to YouTube. A cold
-/// addon mints a lossless URL in a few seconds, and every source is asked at once.
-const HIRES_WAIT: std::time::Duration = std::time::Duration::from_secs(12);
+/// How long playback waits for the hi-res sources before falling back to YouTube. Every
+/// source is asked at once and a miss is quick (the addon answers its search fast); this
+/// bounds the ones that are slow, not the ones that don't have the track.
+const HIRES_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Clone)]
 pub struct Backend {
@@ -1412,10 +1413,21 @@ impl Backend {
         let opus = if best { stream::Format::Aac } else { stream::Format::Opus };
         match self.resolve_from(Source::VisionOs, video_id, opus, None).await {
             Ok(s) => Ok((Source::VisionOs, s)),
-            // Age-restricted or Premium-only: only signed-in web players get it.
-            Err(e) if needs_account(&e) => {
-                log::info!("{video_id} needs a signed-in player ({e:#})");
-                let session = self.api.account().ok_or_else(|| anyhow::anyhow!("sign in to play this song"))?;
+            // Age-restricted or Premium-only songs need the signed-in players; any other
+            // failure gets the same cascade, so one player's answer failing doesn't skip
+            // a song another can still serve. (The addons were asked before this: their
+            // miss fell through to here.)
+            Err(e) => {
+                let restricted = needs_account(&e);
+                if restricted {
+                    log::info!("{video_id} needs a signed-in player ({e:#})");
+                } else {
+                    log::info!("{video_id}: the public player failed ({e:#}); trying the signed-in players");
+                }
+                let Some(session) = self.api.account() else {
+                    // Nothing signed in to fall back on: the public player's answer stands.
+                    return Err(if restricted { anyhow::anyhow!("sign in to play this song") } else { e });
+                };
                 if self.is_premium(&session).await {
                     match self.resolve_from(Source::WebMusic, video_id, stream::Format::Aac, None).await {
                         Ok(s) => return Ok((Source::WebMusic, s)),
@@ -1424,7 +1436,6 @@ impl Backend {
                 }
                 Ok((Source::YtDlp, self.resolve_from(Source::YtDlp, video_id, stream::Format::Aac, None).await?))
             }
-            Err(e) => Err(e),
         }
     }
 
