@@ -65,10 +65,19 @@
 
 Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest).
 
-- **Windows** — download the Windows release asset, extract/install it, and run `bitchord.exe`.
-- **macOS / Linux** — use the platform release assets when available.
+- **Windows** — download the Windows release asset (`-windows-x64-setup.exe` or `-windows-x64-portable.zip`), extract/install it, and run `bitchord.exe`.
 
-If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
+  If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
+  
+- **macOS** — download the appropriate asset based on your Mac architecture (`-macos-arm64.dmg` / `.zip` for Apple Silicon or `-macos-x64.dmg` / `.zip` for Intel).
+  
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/8d1dba0a-c2f7-45e4-991d-602cc7095af8" width="100%" controls>
+  </video>
+  <p><em>macOS installation walkthrough</em></p>
+</div>
+
+- **Linux** — download the Linux release archive (`-linux-x86_64.tar.gz`) or directly download respective package for your distro
 
 ## Building from source
 
