@@ -20,7 +20,7 @@
 
 > BitChord is an independent, unofficial client. It is not affiliated with, endorsed by, or connected to YouTube, Google, or Apple.
 
-## Screenshots (thx [axy]([github.com/](https://github.com/unwrten)))
+## Screenshots (thx [unwrten]([github.com/](https://github.com/unwrten)))
 
 <table>
   <tr>
