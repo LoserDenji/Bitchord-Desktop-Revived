@@ -20,19 +20,19 @@
 
 > BitChord is an independent, unofficial client. It is not affiliated with, endorsed by, or connected to YouTube, Google, or Apple.
 
-## Screenshots
+## Screenshots (thx [axy]([github.com/](https://github.com/unwrten)))
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/readme/screenshot-1.png" alt="Full player with artwork, lyrics and controls"></td>
-    <td width="50%"><img src="docs/readme/screenshot-2.png" alt="Browse view with shelves and playback controls"></td>
+    <td width="50%"><img src="https://media.discordapp.net/attachments/1565450418471833781/1569335154311299234/Screenshot_2026-11-09_at_18.27.30.png?ex=6af314c1&is=6af1c341&hm=47c091f0af19b109cf5dbff12791239ac4b349ae8be2526a57b980e018e89db2&=&format=webp&quality=lossless" alt="Full player with artwork, lyrics and controls"></td>
+    <td width="50%"><img src="https://media.discordapp.net/attachments/1565450418471833781/1569333526027964567/Screenshot_2026-11-09_at_18.19.42.png?ex=6af3133d&is=6af1c1bd&hm=bdce548debc924703a7aaeca72edd0a43176d67c3c80bf491eb0965f01aee4f1&=&format=webp&quality=lossless" alt="Browse view with shelves and playback controls"></td>
   </tr>
   <tr>
     <td align="center"><b>Player</b> — artwork, lyrics, queue and playback in one view</td>
     <td align="center"><b>Browse</b> — your music, shelves and navigation</td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/readme/screenshot-3.png" alt="BitChord interface and playback" width="100%"></td>
+    <td colspan="2"><img src="https://media.discordapp.net/attachments/1565450418471833781/1569333525344288789/Screenshot_2026-11-09_at_18.19.28.png?ex=6af3133d&is=6af1c1bd&hm=47904130526ca95c2669dbf415fb0addf5cf389f2de85ec659ea20b1709afd15&=&format=webp&quality=lossless" alt="BitChord interface and playback" width="100%"></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><b>Desktop experience</b> — native UI, fast playback, and quality controls</td>
