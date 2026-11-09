@@ -116,6 +116,7 @@ BitChord is licensed under [GPL-3.0](LICENSE).
 
 ## Acknowledgements
 
+- [jackychan4891](https://github.com/jackychan4891/BitChord-PC-Continued) for original app
 - [egui](https://github.com/emilk/egui) for the interface.
 - [rodio](https://github.com/RustAudio/rodio) and Symphonia for audio playback and decoding.
 - Lyrics, metadata, playback, and integrations depend on the upstream libraries and third-party services used by this project.
