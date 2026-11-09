@@ -4,15 +4,14 @@
   <p>Built with egui and rodio. No Electron, no embedded browser player, and light on memory while playing.</p>
 
   <p>
-    <a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/github/v/release/jackychan4891/BitChord-PC-Continued?style=flat-square&color=a855f7&labelColor=0d1117" alt="Latest release"></a>
-    <a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases"><img src="https://img.shields.io/github/downloads/jackychan4891/BitChord-PC-Continued/total?style=flat-square&color=a855f7&labelColor=0d1117" alt="Downloads"></a>
+    <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/github/v/release/LoserDenji/Bitchord-Desktop-Revived?style=flat-square&color=a855f7&labelColor=0d1117" alt="Latest release"></a>
+    <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases"><img src="https://img.shields.io/github/downloads/LoserDenji/Bitchord-Desktop-Revived/total?style=flat-square&color=a855f7&labelColor=0d1117" alt="Downloads"></a>
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-333?style=flat-square&labelColor=0d1117" alt="Platforms">
-    <a href="LICENSE"><img src="https://img.shields.io/github/license/jackychan4891/BitChord-PC-Continued?style=flat-square&color=333&labelColor=0d1117" alt="License: GPL-3.0"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/LoserDenji/Bitchord-Desktop-Revived?style=flat-square&color=333&labelColor=0d1117" alt="License: GPL-3.0"></a>
   </p>
 
   <p>
-    <a href="https://discord.gg/cWQSGjpXM">Discord</a> ·
-    <a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest">Download</a> ·
+    <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest">Download</a> ·
     <a href="#features">Features</a> ·
     <a href="#installation">Installation</a> ·
     <a href="#building-from-source">Build from source</a>
@@ -64,7 +63,7 @@
 
 ## Installation
 
-Download the latest build from [Releases](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest).
+Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest).
 
 - **Windows** — download the Windows release asset, extract/install it, and run `bitchord.exe`.
 - **macOS / Linux** — use the platform release assets when available.
@@ -76,7 +75,7 @@ If Windows SmartScreen appears for an unsigned build, choose **More info → Run
 You need the [Rust toolchain](https://rustup.rs/).
 
 ```sh
-git clone https://github.com/jackychan4891/BitChord-PC-Continued.git
+git clone https://github.com/LoserDenji/Bitchord-Desktop-Revived.git
 cd BitChord-PC-Continued
 cargo build --release
 ```
