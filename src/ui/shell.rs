@@ -164,16 +164,20 @@ pub fn sidebar_collapse(app: &App, ctx: &egui::Context) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// The small chevron pair that walks the page history, on the logo's line at the rail's
-/// top right.
-fn history_button(ui: &mut Ui, glyph: char, name: &str) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
-    let resp = named(resp, name).on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand);
-    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
+/// One of the two chevrons that walk the page history, drawn into `rect` on the logo's
+/// line: right-aligned there when the sidebar is expanded, centred in the rail when it
+/// has collapsed (the logo has faded out by then). `enabled` dims a chevron whose
+/// direction has no pages to go to.
+fn history_button(ui: &mut Ui, rect: Rect, glyph: char, name: &str, enabled: bool) -> bool {
+    let resp = ui.interact(rect, egui::Id::new("sidebar-history").with(name), Sense::click());
+    let resp = named(resp, name);
+    let resp = if enabled { resp.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
+    let h = if enabled { theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15) } else { 0.0 };
     if h > 0.0 {
         ui.painter().circle_filled(rect.center(), 11.0, theme::glass(0.10 * h));
     }
-    icon_at(ui, rect.center(), glyph, 16.0, theme::lerp_color(theme::text_dim(), theme::text(), h));
+    let ink = if enabled { theme::lerp_color(theme::text_dim(), theme::text(), h) } else { theme::with_alpha(theme::text_dim(), 0.45) };
+    icon_at(ui, rect.center(), glyph, 16.0, ink);
     resp.clicked()
 }
 
@@ -185,10 +189,18 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
     let collapsed = app.sidebar_collapsed;
     // Labels fade out over the first two thirds of collapsing (and back in late).
     let a = ((1.0 - t) * 1.5 - 0.5).clamp(0.0, 1.0);
-    // Content width when expanded: text keeps its truncation while the panel narrows.
-    let full_w = ui.available_width() + (SIDEBAR_W - RAIL_W) * t;
+    // Content width now, and when expanded: text keeps its truncation while the panel narrows.
+    let w = ui.available_width();
+    let full_w = w + (SIDEBAR_W - RAIL_W) * t;
 
-    // Logo, with the page history right-aligned on the same line.
+    // Logo, with the page history on its line. The chevron pair is placed by hand rather
+    // than laid out after the logo, so it can end up centred in the rail: it hugs the
+    // content's right edge when expanded (as flow layout gave it) and slides left as the
+    // panel narrows, landing in the middle of the collapsed rail, where the logo has
+    // faded out to make room. Laid out after the logo instead, both chevrons would end
+    // up past the rail's edge, the forward one entirely outside it.
+    let row_top = ui.cursor().top();
+    let row_left = ui.cursor().left();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.add_space(8.0);
@@ -199,16 +211,23 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
         if resp.clicked() && !collapsed {
             app.actions.push(Action::Go(Page::Home));
         }
-        // Drifts to the rail's edge as it collapses.
-        ui.add_space(((ui.available_width() - 48.0) * (1.0 - t)).max(0.0));
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if history_button(ui, icon::CHEVRON_LEFT, "Back") {
-            app.nav_back();
-        }
-        if history_button(ui, icon::CHEVRON_RIGHT, "Forward") {
-            app.nav_forward();
-        }
     });
+    // Two 22 pt chevrons and the 4 pt gap between them.
+    const PAIR_W: f32 = 48.0;
+    let right_x = full_w - PAIR_W;
+    let centre_x = ((w - PAIR_W) / 2.0).max(0.0);
+    let pair_x = right_x + (centre_x - right_x) * t;
+    let pair_y = row_top + 5.0;
+    let back_r = Rect::from_min_size(pos2(row_left + pair_x, pair_y), Vec2::splat(22.0));
+    let fwd_r = Rect::from_min_size(pos2(back_r.right() + 4.0, pair_y), Vec2::splat(22.0));
+    // Back also closes the now-playing overlay, so it's live whenever that is open.
+    let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
+    if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
+        app.nav_back();
+    }
+    if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
+        app.nav_forward();
+    }
     ui.add_space(14.0);
 
     let mut go_to: Option<Page> = None;
