@@ -516,6 +516,14 @@ pub struct App {
     app_icon: &'static str,
     /// The tray icon, while the window is hidden.
     tray: Option<crate::tray::Tray>,
+    /// When the tray icon was last registered, while hidden (Windows re-registers it).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    tray_registered_at: Option<std::time::Instant>,
+    /// Frames left to keep re-asserting a show (some shells drop the first one).
+    show_asserts: u8,
+    /// When this copy started, so a close that arrives moments later can be told
+    /// apart from a user's click on ×.
+    started_at: std::time::Instant,
     /// Closing for real (Quit from the tray, restart to update): don't hide.
     exiting: bool,
     /// Minimized, or hidden in the tray: the window's geometry isn't worth saving.
@@ -561,6 +569,7 @@ impl App {
         ch: Channels,
         media: Option<Media>,
         bg: Option<Background>,
+        no_tray: bool,
         storage: Option<&dyn eframe::Storage>,
     ) -> Self {
         let get = |k: &str| storage.and_then(|s| s.get_string(k));
@@ -667,10 +676,13 @@ impl App {
             output_device: get("output_device").filter(|d| !d.is_empty()).map(|id| (id, get("output_device_name").unwrap_or_default())),
             output_devices: Vec::new(),
             updater: None,
-            close_to_tray: get("close_to_tray").is_some_and(|v| v == "1"),
+            close_to_tray: !no_tray && get("close_to_tray").is_some_and(|v| v == "1"),
             wgpu_renderer,
             app_icon,
             tray: None,
+            tray_registered_at: None,
+            show_asserts: 0,
+            started_at: std::time::Instant::now(),
             exiting: false,
             window_hidden: false,
             good_window: get("window"),
@@ -1191,6 +1203,12 @@ impl eframe::App for App {
             // In the tray or minimized: nothing to draw, only the player bookkeeping.
             if playing || self.buffering {
                 ctx.request_repaint_after(Duration::from_millis(250));
+            } else {
+                // Fully idle and hidden, nothing else schedules a repaint: keep a
+                // slow heartbeat going anyway, so a show request (from the tray, or
+                // a later launch) is always picked up within seconds, even if its
+                // wake-up was lost.
+                ctx.request_repaint_after(Duration::from_secs(2));
             }
         } else if self.np_open && playing && !self.mini.busy() {
             ctx.request_repaint_after(Duration::from_millis(33));

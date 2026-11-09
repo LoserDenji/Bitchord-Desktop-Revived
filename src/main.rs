@@ -20,6 +20,7 @@ mod jam;
 mod innertube;
 mod jsc;
 mod lastfm;
+mod logging;
 mod login;
 mod lyrics;
 mod media;
@@ -57,22 +58,29 @@ fn main() -> eframe::Result {
     if let (Some(flag), Some(dir)) = (args.next(), args.next()) {
         // The parent hands its proxy setting down through the environment.
         proxy::init(std::path::Path::new(""));
+        // Children are separate processes: their warnings and panics land in their
+        // own log, not the main one (which the parent holds open).
         if flag == login::FLAG {
+            logging::init_child(&data_dir(), "login");
             login::child_main(login::Site::Google, dir.into());
             return Ok(());
         }
         if flag == login::SPOTIFY_FLAG {
+            logging::init_child(&data_dir(), "spotify");
             login::child_main(login::Site::Spotify, dir.into());
             return Ok(());
         }
         if flag == turnstile::FLAG {
+            logging::init_child(&data_dir(), "turnstile");
             turnstile::child_main(dir.into());
             return Ok(());
         }
     }
     // A jam link (`ytm-rs://jam/CODE` or the https share link): hand it to the running
     // instance if there is one, else join once this one is up. Before `init_logging`,
-    // which would truncate the running instance's log file.
+    // which would truncate the running instance's log file. A plain launch (or the
+    // explicit `--show`) hands the window request over the same way.
+    let mut show_requested = false;
     if let Some(code) = deeplink::from_args() {
         if deeplink::forward_to_running(&code) {
             return Ok(());
@@ -80,8 +88,13 @@ fn main() -> eframe::Result {
         deeplink::push(code);
     } else if deeplink::forward_show() {
         return Ok(());
+    } else {
+        show_requested = std::env::args_os().skip(1).any(|a| a == deeplink::SHOW_FLAG);
     }
-    init_logging();
+    logging::init(&data_dir());
+    if show_requested {
+        log::info!("--show: no running copy to hand the window to; starting");
+    }
     update::clean_portable();
     stream::init_dev_hooks();
     proxy::init(&data_dir());
@@ -208,6 +221,9 @@ fn main() -> eframe::Result {
                 ui::Channels { resp_rx, audio_rx, media_rx },
                 media,
                 bg,
+                // `--no-tray`: a session with "Close to tray" off, so × quits for real
+                // (for when the tray icon can't be trusted).
+                std::env::args_os().skip(1).any(|a| a == deeplink::NO_TRAY_FLAG),
                 cc.storage,
             )))
         }),
@@ -233,30 +249,6 @@ fn hwnd(cc: &eframe::CreationContext) -> Option<*mut std::ffi::c_void> {
 #[cfg(not(windows))]
 fn hwnd(_: &eframe::CreationContext) -> Option<*mut std::ffi::c_void> {
     None
-}
-
-/// Log to stderr in debug builds; release builds have no console, so log to a file
-/// next to the settings (overwritten each launch).
-fn init_logging() {
-    let mut builder = env_logger::Builder::from_env(
-        // A test build can be made more talkative: YTM_DEFAULT_LOG=warn,bitchord=debug cargo build.
-        env_logger::Env::default().default_filter_or(option_env!("YTM_DEFAULT_LOG").unwrap_or("warn,bitchord=info")),
-    );
-    // Dev hook: YTM_LOG=<path> logs there (test runs beside a running copy).
-    if let Some(path) = std::env::var_os("YTM_LOG") {
-        if let Ok(file) = std::fs::File::create(path) {
-            builder.target(env_logger::Target::Pipe(Box::new(file)));
-        }
-    } else if !cfg!(debug_assertions) {
-        let dir = data_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        // The last run's log too: reopening the app after a problem would otherwise wipe it.
-        let _ = std::fs::rename(dir.join("ytm-rs.log"), dir.join("ytm-rs.prev.log"));
-        if let Ok(file) = std::fs::File::create(dir.join("ytm-rs.log")) {
-            builder.target(env_logger::Target::Pipe(Box::new(file)));
-        }
-    }
-    builder.init();
 }
 
 /// Settings, caches and the sign-in: `data` beside the portable build's exe, else the

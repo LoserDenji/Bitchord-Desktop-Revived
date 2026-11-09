@@ -1565,7 +1565,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
 fn settings_window(app: &mut App, ui: &mut Ui) {
     section_label(ui, "Window", None);
     settings_card(ui, |ui| {
-        setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. Click the tray icon to bring it back, or right-click it to quit."), |ui| {
+        setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. Click the tray icon to bring it back, or right-click it to quit. If the icon never shows up, launching BitChord again brings the window back; --no-tray starts a session where × quits for real."), |ui| {
             toggle(ui, &mut app.close_to_tray, "Close to tray");
         });
         divider(ui);

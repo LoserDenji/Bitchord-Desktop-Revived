@@ -8,6 +8,12 @@
 //!
 //! On Linux the icon is a GTK one, and GTK runs its own loop on one thread for the
 //! life of the process (it can't be started twice); the icon is made and dropped there.
+//!
+//! Note that on Windows the shell can accept the icon (so `Tray::new` succeeds) and
+//! then never draw it — taskbar replacements and a busy notification-area cache can
+//! both do that. Callers therefore re-create the icon every so often while hidden
+//! (see `ui::integrations::tray_window`), and recovery never depends on the icon
+//! alone: launching the app again (or `--show`) shows the window regardless.
 
 use std::sync::{Mutex, Once};
 
@@ -66,13 +72,13 @@ impl Drop for Tray {
 
 fn build(png: image::RgbaImage) -> anyhow::Result<TrayIcon> {
     let menu = Menu::with_items(&[
-        &MenuItem::with_id("show", "Show YT Music", true, None),
+        &MenuItem::with_id("show", "Show BitChord", true, None),
         &MenuItem::with_id("quit", "Quit", true, None),
     ])?;
     let (w, h) = png.dimensions();
     Ok(TrayIconBuilder::new()
         .with_icon(tray_icon::Icon::from_rgba(png.into_raw(), w, h)?)
-        .with_tooltip("YT Music")
+        .with_tooltip("BitChord")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build()?)

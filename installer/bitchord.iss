@@ -2,11 +2,15 @@
 ; Build: cargo build --release, then
 ;   iscc installer\bitchord.iss
 ; Output: installer\Output\bitchord-setup-<version>.exe
+; The version comes from Cargo.toml by default; the release workflow stamps its own:
+;   iscc /DAppVersion="2.0.1" installer\bitchord.iss
 ; ARM64: cargo build --release --target aarch64-pc-windows-msvc, then
 ;   iscc /DArm64 installer\bitchord.iss  ->  bitchord-setup-<version>-arm64.exe
 
 #define AppName "BitChord"
-#define AppVersion "2.0.0"
+#ifndef AppVersion
+#define AppVersion "2.0.1"
+#endif
 #define AppExe "bitchord.exe"
 #ifdef Arm64
   #define Arch "arm64"

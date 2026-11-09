@@ -17,6 +17,13 @@ static SHOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(
 const SHOW_MSG: &str = "show";
 /// The updater's relaunch passes this: the old copy may still be exiting, so don't hand over to it.
 pub const RELAUNCH_FLAG: &str = "--relaunch";
+/// Ask a running copy to bring its window up: `--show`. A plain launch already does
+/// this, but the flag says so explicitly — and when nothing is running, the app just
+/// starts as usual with its window up. Recovery path for a window hidden behind a
+/// tray icon the shell never drew (taskbar replacements can do that).
+pub const SHOW_FLAG: &str = "--show";
+/// Run with "Close to tray" off for this session, so × quits for real: `--no-tray`.
+pub const NO_TRAY_FLAG: &str = "--no-tray";
 
 /// The room code in a launch argument, if it is a jam link:
 /// `ytm-rs://jam/CODE[/]` (any case) or the https share link with `?c=CODE`.
@@ -76,10 +83,10 @@ pub fn take_show() -> bool {
     SHOW.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A plain launch while another copy runs: bring that one's window up instead, so only
-/// one copy uses (and refreshes) the Google session. Two copies refreshing it apart
-/// leave one with old cookies, which Google treats as stolen and signs out. True if
-/// a running copy took it.
+/// A plain launch (or `--show`) while another copy runs: bring that one's window up
+/// instead, so only one copy uses (and refreshes) the Google session. Two copies
+/// refreshing it apart leave one with old cookies, which Google treats as stolen and
+/// signs out. True if a running copy took it.
 pub fn forward_show() -> bool {
     if std::env::args_os().any(|a| a == RELAUNCH_FLAG) {
         return false;

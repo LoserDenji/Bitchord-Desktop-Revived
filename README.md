@@ -85,6 +85,21 @@ The built app will be in `target/release/`.
 
 Platform builds may require native dependencies (audio/system libraries and toolchain components used by sign-in or platform integrations). Check the repository’s platform docs and release workflow for the exact prerequisites.
 
+## Logs
+
+The app writes `bitchord.log` beside its settings, keeping the previous run as `bitchord.prev.log` — attach both (secrets removed) to a bug report. Panics, warnings and errors are captured in it on Windows, macOS and Linux. Find it at:
+
+- **Windows** — `%APPDATA%\ytm-rs\data\bitchord.log` (portable builds: a `data` folder next to the exe)
+- **macOS** — `~/Library/Application Support/ytm-rs/data/bitchord.log`
+- **Linux** — `~/.local/share/ytm-rs/data/bitchord.log`
+
+The sign-in windows are separate processes and log to `bitchord-login.log`, `bitchord-spotify.log` and `bitchord-turnstile.log` in the same folder.
+
+Two launch flags help when the tray icon misbehaves (taskbar replacements can keep it from ever showing):
+
+- `bitchord --show` — bring a running copy's window back up (a plain launch does this too).
+- `bitchord --no-tray` — start a session where × quits for real instead of hiding to the tray.
+
 ## Notes
 
 - Audio and the main interface are native (Rust + egui + rodio). Sign-in and some web flows may open a system webview window.
