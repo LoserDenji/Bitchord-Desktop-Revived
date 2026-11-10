@@ -2,6 +2,7 @@
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
 
+use super::row_drag;
 use super::widgets::{self, icon_at, icon_button, named, paint_cover, text_at};
 use super::{Action, App, LibTab, NpTab, Page, Repeat, fmt_time, glyphs};
 use crate::model::Target;
@@ -36,12 +37,14 @@ fn gradient(painter: &egui::Painter, rect: Rect, c: [Color32; 4]) {
 /// playing uses.
 fn page_mode(look: &crate::preset::Preset) -> crate::preset::BgMode {
     use crate::preset::{BgMode, PageBg};
-    match look.app.page_bg {
+    let mode = match look.app.page_bg {
         PageBg::Same => look.background.mode,
         PageBg::Static => BgMode::CoverStatic,
         PageBg::Accent => BgMode::AccentGradient,
         PageBg::Solid => BgMode::Solid,
-    }
+    };
+    // The artwork mesh is a now-playing backdrop; pages fall back to its still blur.
+    if mode == BgMode::ArtworkMesh { BgMode::CoverStatic } else { mode }
 }
 
 /// Whether the pages' background moves while music plays (static themes need no frames).
@@ -1141,61 +1144,30 @@ pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
             let start = app.queue.index.unwrap_or(0);
             ui.checkbox(&mut app.autoplay, egui::RichText::new("Autoplay similar songs").color(theme::text_dim())).on_hover_cursor(egui::CursorIcon::PointingHand);
             ui.add_space(6.0);
-            let pitch = widgets::ROW_H + ui.spacing().item_spacing.y;
             let accent = app.accent_color();
-            // A held row is being dragged to a new place: where it started, and where
-            // the pointer has it now. Kept in ctx state, so it survives the row's own
-            // ids (the list is virtualized; a scrolled row hands its id to another).
-            let drag_id = egui::Id::unique(("queue-drag", salt));
-            let mut drag: Option<(usize, usize)> = ui.ctx().data(|d| d.get_temp(drag_id));
-            let pointer = ui.input(|i| i.pointer.interact_pos());
-            let (queue, liked, acts, has_current, by) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &app.jam.by);
-            // The bar marking where the dragged row will land, painted over the rows.
-            let mut drop_bar: Option<f32> = None;
+            let (queue, liked, acts, has_current, by, drag) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &app.jam.by, &mut app.row_drag);
+            // Songs to come can be dragged into another order; in a jam, by the host.
+            // Kept in app state, so it survives the rows' own ids (the list is
+            // virtualized; a scrolled row hands its id to another).
+            let (list, movable) = (egui::Id::unique(("queue", salt)), !app.jam.guest());
+            // Only the songs below the current one can be dragged to, so they're what
+            // it's measured from.
+            let top = ui.cursor().top();
             widgets::visible_rows(ui, queue.len() - start, |ui, k| {
                 let i = start + k;
                 let t = &queue[i];
                 // The first row is the current song.
                 let current = k == 0 && has_current;
-                let dragging = drag.is_some_and(|(from, _)| from == i);
-                let o = widgets::RowOpts { current, added_by: by.get(&t.id).cloned(), hide_duration_hover: !current, drag: true, ..rows.opts(liked, t, None, false) };
+                if movable && !current {
+                    row_drag::grip(ui, drag, list, i, t);
+                }
+                let o = widgets::RowOpts { current, added_by: by.get(&t.id).cloned(), hide_duration_hover: !current, ..rows.opts(liked, t, None, false) };
                 let resp = widgets::track_row(ui, t, &o, acts);
-                // Drag and drop: the row comes with the pointer, and a bar rides ahead
-                // of it to the slot it would land in. A plain click still plays/jumps —
-                // egui only calls it a drag once the pointer has travelled.
-                if resp.drag_started() {
-                    drag = Some((i, i));
-                    ui.ctx().request_repaint();
-                }
-                if let Some((from, to)) = &mut drag
-                    && *from == i
-                    && resp.dragged()
-                    && let Some(p) = pointer
-                {
-                    let moved = ((p.y - resp.rect.center().y) / pitch).round() as isize;
-                    *to = (i as isize + moved).clamp(start as isize, (queue.len() - 1) as isize) as usize;
-                    drop_bar = Some(resp.rect.top() + (*to as f32 - i as f32) * pitch);
-                }
-                if dragging {
-                    let r = resp.rect;
-                    let p = ui.painter();
-                    p.rect_filled(r, 8.0, theme::glass(0.16));
-                    p.rect_stroke(r, 8.0, egui::Stroke::new(1.0, theme::glass(0.14)), egui::StrokeKind::Inside);
-                }
-                if let Some((from, to)) = drag
-                    && from == i
-                    && resp.drag_stopped()
-                {
-                    if to != from {
-                        acts.push(Action::QueueMove(from, to));
-                    }
-                    drag = None;
-                }
                 if resp.clicked() {
                     // The playing row pauses/resumes instead of doing nothing.
                     acts.push(if current { Action::TogglePlay } else { Action::QueueJump(i) });
                 }
-                if !current && ui.rect_contains_pointer(Rect::from_min_max(resp.rect.min, pos2(resp.rect.right() + 42.0, resp.rect.bottom()))) {
+                if !current && drag.is_none() && ui.rect_contains_pointer(Rect::from_min_max(resp.rect.min, pos2(resp.rect.right() + 42.0, resp.rect.bottom()))) {
                     // The remove ✕, in the length's place — the length makes way for it
                     // while the row is hovered (RowOpts::hide_duration_hover).
                     let x = Rect::from_center_size(resp.rect.right_center() - vec2(26.0, 0.0), Vec2::splat(28.0));
@@ -1207,20 +1179,12 @@ pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
                     }
                 }
             });
-            // The drop bar rides over everything the rows painted.
-            if let Some(y) = drop_bar {
-                let clip = ui.clip_rect();
-                let y = y.clamp(clip.top(), clip.bottom() - 2.0);
-                let left = ui.max_rect().left() + 2.0;
-                let right = ui.max_rect().right() - 2.0;
-                let p = ui.painter();
-                p.rect_filled(Rect::from_min_max(pos2(left, y - 2.0), pos2(right, y + 2.0)), 2.0, theme::with_alpha(accent, 0.9));
-                p.circle_filled(pos2(left + 4.0, y), 3.5, accent);
-                p.circle_filled(pos2(right - 4.0, y), 3.5, accent);
-            }
-            ui.ctx().data_mut(|d| d.insert_temp(drag_id, drag));
-            if drag.is_some() {
-                ui.ctx().request_repaint();
+            let lowest = if has_current { start + 1 } else { start };
+            if let Some(d) = row_drag::feedback(ui, drag, list, row_drag::Rows { top, first: start, lowest, end: queue.len(), accent }) {
+                // A gap becomes the insert index `move_track` takes: past the song it
+                // follows once the dragged one is out of the way.
+                let to = if d.gap > d.from { d.gap - 1 } else { d.gap };
+                acts.push(Action::QueueMove(d.from, to));
             }
         });
     });

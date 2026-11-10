@@ -160,7 +160,9 @@ jobs:
         run: cargo build --release
 
       - name: AppImage, deb and rpm
-        run: linux/package.sh target/release/bitchord "${{ steps.version.outputs.value }}" dist
+        run: |
+          chmod +x linux/package.sh
+          linux/package.sh target/release/bitchord "${{ steps.version.outputs.value }}" dist
 
       - uses: actions/upload-artifact@v4
         with:

@@ -52,6 +52,10 @@ pub fn page(app: &mut App, ui: &mut Ui, now: f64) {
     let mut area = egui::ScrollArea::vertical().id_salt(("page", &page)).auto_shrink(false);
     // At the window's right edge: clear of where it resizes the window.
     ui.spacing_mut().scroll.bar_outer_margin += super::titlebar::edge_inset();
+    // And below the window buttons at the top right, which its strip would cross.
+    let outer = ui.max_rect();
+    let bar_top = super::titlebar::buttons_rect(ui.ctx()).map_or(0.0, |b| b.height());
+    area = area.scroll_bar_rect(Rect::from_min_max(pos2(outer.left(), outer.top() + bar_top), outer.max));
     // Dev hook: YTM_SCROLL=<px> pins the page scroll, for screenshots of lower sections.
     if let Some(y) = super::dev_var("YTM_SCROLL").and_then(|v| v.parse::<f32>().ok()) {
         area = area.vertical_scroll_offset(y);
@@ -126,7 +130,6 @@ impl Rows {
             selected: None,
             remove: None,
             hide_duration_hover: false,
-            drag: false,
         }
     }
 }
@@ -1242,7 +1245,7 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
         section_label(ui, "Network", None);
         settings_card(ui, |ui| network(app, ui));
         super::transfer::settings_section(app, ui);
-        settings_shortcuts(ui);
+        super::keybinds::settings_section(app, ui);
         return;
     }
     // While the box has words, only the sections they match stay up. A section matches
@@ -1295,7 +1298,7 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
         super::transfer::settings_section(app, ui);
     }
     if shown("Keyboard shortcuts") {
-        settings_shortcuts(ui);
+        super::keybinds::settings_section(app, ui);
     }
 }
 
@@ -1310,7 +1313,7 @@ const SETTINGS_SECTIONS: &[(&str, &[&str])] = &[
     ("Downloads", &["Download folder", "Change", "Open", "offline"]),
     ("Lyrics", &["Romanization", "Translation", "Translate into", "Text size", "Intensive glow", "Glow strength", "Timing offset", "Word-synced trim", "Line-synced trim", "Lyrics sources", "translate"]),
     ("Artist pages", &["Signature service", "signature"]),
-    ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Font", "Hidden playlists", "theme"]),
+    ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Now playing backdrop", "Artwork mesh", "ForkChord", "Font", "Hidden playlists", "theme"]),
     ("Window", &["Dynamic island", "Close to tray", "Collapse sidebar", "Draw with", "Restart to apply", "renderer", "OpenGL", "wgpu"]),
     ("Connections", &["Discord", "Last.fm", "scrobble", "rich presence"]),
     ("Network", &["Proxy", "System proxy", "Test connection", "Restart to apply", "socks"]),
@@ -1822,6 +1825,38 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.reactive_bg, "Pulse with the music");
         });
         divider(ui);
+        setting_row(ui, "Now playing backdrop", Some("What plays behind the full-screen player: the theme's own, or one of the alternatives without editing the theme. Artwork mesh is ForkChord's \u2014 the cover's colours as a still gradient under a full-cover blur."), |ui| {
+            use crate::preset::BgMode;
+            let label = |m: Option<BgMode>| match m {
+                None => "Theme default".to_owned(),
+                Some(m) => match m {
+                    BgMode::Kawarp => "Animated warp".to_owned(),
+                    BgMode::CoverStatic => "Blurred cover".to_owned(),
+                    BgMode::AccentGradient => "Flat accent".to_owned(),
+                    BgMode::Solid => "Solid colour".to_owned(),
+                    BgMode::CoverFullbleed => "Full-bleed cover".to_owned(),
+                    BgMode::ArtworkMesh => "Artwork mesh (ForkChord)".to_owned(),
+                },
+            };
+            let mut pick: Option<Option<BgMode>> = None;
+            let btn = dropdown_button(ui, label(app.np_bg), 220.0, "Now playing backdrop");
+            egui::Popup::menu(&btn).show(|ui| {
+                ui.set_width(220.0);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                ui.add_space(4.0);
+                for option in [None, Some(BgMode::Kawarp), Some(BgMode::CoverStatic), Some(BgMode::AccentGradient), Some(BgMode::Solid), Some(BgMode::CoverFullbleed), Some(BgMode::ArtworkMesh)] {
+                    if option_row(ui, &label(option), option == app.np_bg).clicked() {
+                        pick = Some(option);
+                        ui.close();
+                    }
+                }
+                ui.add_space(4.0);
+            });
+            if let Some(p) = pick {
+                app.np_bg = p;
+            }
+        });
+        divider(ui);
         setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this computer works, e.g. one made for your language."), |ui| {
             if let Some(name) = font_picker(ui) {
                 theme::set_font_choice(&name);
@@ -1921,40 +1956,6 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
     if discord_enabled != app.discord_enabled {
         app.set_discord_enabled(discord_enabled);
     }
-}
-
-/// Settings › Keyboard shortcuts.
-fn settings_shortcuts(ui: &mut Ui) {
-    section_label(ui, "Keyboard shortcuts", None);
-    settings_card(ui, |ui| {
-        let keys: &[(&str, &[&str])] = &[
-            ("Play / pause", &["Space"]),
-            ("Next / previous song", &["Ctrl", "→ / ←"]),
-            ("Volume up / down", &["Ctrl", "↑ / ↓"]),
-            ("Search", &["/"]),
-            ("Now playing", &["F"]),
-            ("Full-screen player", &["Shift", "F"]),
-            ("Lyrics", &["L"]),
-            ("Queue", &["Q"]),
-            ("Back / forward", &["Alt", "← / →"]),
-            ("Close now playing", &["Esc"]),
-        ];
-        for (i, (what, combo)) in keys.iter().enumerate() {
-            if i > 0 {
-                divider(ui);
-            }
-            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
-            ui.painter().text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, *what, theme::regular(14.0), theme::text());
-            let mut x = rect.right();
-            for (j, k) in combo.iter().enumerate().rev() {
-                x = keycap(ui, pos2(x, rect.center().y), k) - 6.0;
-                if j > 0 {
-                    let plus = ui.painter().text(pos2(x, rect.center().y), Align2::RIGHT_CENTER, "+", theme::regular(13.0), theme::text_dim());
-                    x = plus.left() - 6.0;
-                }
-            }
-        }
-    });
 }
 
 /// Settings › Network: the proxy everything goes through, a connection test, and a
@@ -2327,7 +2328,7 @@ fn seconds_slider(ui: &mut Ui, v: &mut u32, range: std::ops::RangeInclusive<u32>
 }
 
 /// Draw a key cap whose right edge is at `right`; returns its left edge.
-fn keycap(ui: &Ui, right: egui::Pos2, key: &str) -> f32 {
+pub(super) fn keycap(ui: &Ui, right: egui::Pos2, key: &str) -> f32 {
     let g = widgets::galley(ui, key, theme::semibold(12.5), theme::text(), 200.0);
     let size = vec2((g.size().x + 18.0).max(30.0), 26.0);
     let rect = Rect::from_min_size(pos2(right.x - size.x, right.y - size.y / 2.0), size);

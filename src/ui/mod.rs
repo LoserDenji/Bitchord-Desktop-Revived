@@ -13,8 +13,10 @@ mod integrations;
 mod island;
 mod jam;
 mod karaoke;
+mod keybinds;
 mod lists;
 mod lyric_prefs;
+mod mesh_bg;
 mod mini;
 mod notes;
 mod nowplaying;
@@ -22,6 +24,7 @@ mod pages;
 mod playback;
 mod queue;
 mod responses;
+mod row_drag;
 mod shell;
 mod titlebar;
 pub use titlebar::{custom as custom_titlebar, set_hwnd as set_titlebar_hwnd};
@@ -506,6 +509,13 @@ pub struct App {
     // now playing
     np_open: bool,
     np_tab: NpTab,
+    /// Settings › Appearance: the backdrop now playing uses, when it isn't the theme's
+    /// own (`None`): the ForkChord artwork mesh and friends, without editing a theme.
+    np_bg: Option<crate::preset::BgMode>,
+    /// A queue row being dragged to a new place (see `row_drag`).
+    row_drag: Option<row_drag::RowDrag>,
+    /// The keyboard shortcuts, and one being picked in Settings (see `keybinds`).
+    keybinds: keybinds::State,
     queue_open: bool,
     fullscreen: bool,
     /// The mini player: the window shrunk to a strip.
@@ -826,6 +836,9 @@ impl App {
             wheel_mods: egui::Modifiers::NONE,
             np_open: false,
             np_tab: if get("np_art").is_some_and(|v| v == "1") { NpTab::Art } else { NpTab::Lyrics },
+            np_bg: get("np_bg").and_then(|v| crate::preset::BgMode::from_name(&v)),
+            row_drag: None,
+            keybinds: keybinds::State::load(&get),
             queue_open: false,
             fullscreen: false,
             mini: mini::Mini::load(get),
@@ -1464,7 +1477,9 @@ impl eframe::App for App {
             }
             let main_right = ui.available_rect_before_wrap().right();
             egui::CentralPanel::default()
-                .frame(egui::Frame::new().inner_margin(egui::Margin { left: 28, right: 28, top: titlebar::top_margin(14, 42.0), bottom: 0 }))
+                // Nothing at the right: the pages' scroll bar hugs the window's edge (the
+                // page keeps its own gutter inside), like the base this fork came from.
+                .frame(egui::Frame::new().inner_margin(egui::Margin { left: 28, right: 0, top: titlebar::top_margin(14, 42.0), bottom: 0 }))
                 .show(ui, |ui| {
                     shell::top_bar(self, ui);
                     ui.add_space(2.0);
@@ -1634,6 +1649,8 @@ impl eframe::App for App {
             self.lyric_prefs.save(storage);
         }
         storage.set_string("np_art", b(self.np_tab == NpTab::Art));
+        storage.set_string("np_bg", self.np_bg.map(|m| m.name().to_owned()).unwrap_or_default());
+        self.keybinds.bindings.save(storage);
         // Background test runs leave the user's real "last song" alone unless asked.
         let test_run = std::env::var_os("YTM_BACKGROUND").is_some() && std::env::var_os("YTM_SAVE_SESSION").is_none();
         if let Some(s) = self.session_json().filter(|_| !test_run) {

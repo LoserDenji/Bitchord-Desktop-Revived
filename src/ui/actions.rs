@@ -7,7 +7,7 @@ use crate::model::{Target, Track};
 
 use super::lists::LIKED_MUSIC;
 use super::queue::QueueFill;
-use super::{Action, App, Dialog, LibTab, NpTab, Page, jam, transfer};
+use super::{Action, App, Dialog, LibTab, NpTab, Page, jam, keybinds, transfer};
 
 impl App {
     pub(super) fn apply(&mut self, a: Action) {
@@ -237,35 +237,31 @@ impl App {
     }
 
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
-        let typing = ctx.egui_wants_keyboard_input();
-        // In a text box, Ctrl+arrows move the cursor by words (and lines) instead; on a
-        // focused button or slider they still skip and change the volume.
-        let editing = ctx.text_edit_focused();
-        let i = ctx.input(|i| {
-            let k = |key| !typing && i.key_pressed(key);
-            let ctrl = |key| !editing && i.modifiers.ctrl && i.key_pressed(key);
-            (
-                k(egui::Key::Space),
-                i.pointer.button_pressed(egui::PointerButton::Extra1)
-                    || (i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)),
-                i.pointer.button_pressed(egui::PointerButton::Extra2)
-                    || (i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight)),
-                ctrl(egui::Key::ArrowRight),
-                ctrl(egui::Key::ArrowLeft),
-                k(egui::Key::L),
-                k(egui::Key::Q),
-                // F opens and closes the now playing view; Shift+F is the full screen.
-                !typing && i.key_pressed(egui::Key::F) && !i.modifiers.shift,
-                !typing && i.key_pressed(egui::Key::F) && i.modifiers.shift,
-                k(egui::Key::Slash),
-                i.key_pressed(egui::Key::Escape),
-                ctrl(egui::Key::ArrowUp),
-                ctrl(egui::Key::ArrowDown),
-                // Once per press: holding it doesn't flip back and forth.
-                i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::M, pressed: true, repeat: false, modifiers, .. } if modifiers.ctrl)),
-            )
-        });
-        let (space, back, fwd, next, prev, lyr, queue, np, full, search, esc, vol_up, vol_down, mini) = i;
+        // Picking a combination in Settings: the dialog takes every key, and the
+        // player's own leave it alone until it's done.
+        if self.keybinds.capture.is_some() {
+            keybinds::capture_dialog(self, ctx);
+            return;
+        }
+        let keys = &self.keybinds.bindings;
+        use keybinds::Cmd;
+        let (space, back, fwd, next, prev, lyr, queue, np, full, search, vol_up, vol_down, mini) = (
+            keys.matches(Cmd::TogglePlay, ctx),
+            keys.matches(Cmd::Back, ctx) || ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra1)),
+            keys.matches(Cmd::Forward, ctx) || ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra2)),
+            keys.matches(Cmd::Next, ctx),
+            keys.matches(Cmd::Prev, ctx),
+            keys.matches(Cmd::Lyrics, ctx),
+            keys.matches(Cmd::Queue, ctx),
+            keys.matches(Cmd::NowPlaying, ctx),
+            keys.matches(Cmd::FullScreen, ctx),
+            keys.matches(Cmd::Search, ctx),
+            keys.matches(Cmd::VolumeUp, ctx),
+            keys.matches(Cmd::VolumeDown, ctx),
+            // Once per press: holding it doesn't flip back and forth.
+            keys.matches_once(Cmd::MiniPlayer, ctx),
+        );
+        let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if mini {
             self.actions.push(Action::Mini(!self.mini.target()));
         }
@@ -326,7 +322,9 @@ impl App {
             self.search_refocus = true;
         }
         if esc {
-            if self.fullscreen {
+            // A drag being let go with Esc is just that: the drag ends, nothing closes.
+            if self.row_drag.take().is_some() {
+            } else if self.fullscreen {
                 self.set_fullscreen(ctx, false);
             } else {
                 self.np_open = false;

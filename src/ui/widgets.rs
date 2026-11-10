@@ -987,8 +987,6 @@ pub struct RowOpts {
     /// Queue rows: the length makes way for the remove ✕ while the row is hovered
     /// (the drawer and now playing draw it over the length's place).
     pub hide_duration_hover: bool,
-    /// The row gives itself to a drag, so a held row reorders the queue (clicks still play).
-    pub drag: bool,
 }
 
 /// A song row's height (the queue's drag maths borrows it too).
@@ -1019,9 +1017,9 @@ pub fn track_row(ui: &mut Ui, t: &Track, o: &RowOpts, acts: &mut Vec<Action>) ->
     // Picking: the cover (left 54 px) plays, the rest of the row picks.
     let hit_left = if o.pick && o.number.is_none() { rect.left() + 54.0 } else { rect.left() };
     let hit_rect = Rect::from_min_max(pos2(hit_left, rect.top()), pos2(rect.right() - 42.0, rect.bottom()));
-    let sense = if o.drag { Sense::click_and_drag() } else { Sense::click() };
-    let resp = named(ui.interact(hit_rect, base.id.with("play"), sense), &t.title).on_hover_cursor(egui::CursorIcon::PointingHand);
-    let h = theme::anim_bool(ui.ctx(), base.id.with("h"), base.contains_pointer(), 0.15);
+    let resp = named(ui.interact(hit_rect, base.id.with("play"), Sense::click()), &t.title).on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Not while something's being dragged over it: only the drop place should show.
+    let h = theme::anim_bool(ui.ctx(), base.id.with("h"), base.contains_pointer() && ui.ctx().dragged_id().is_none(), 0.15);
     if h > 0.0 || o.current {
         let a = if o.current { 0.07 + 0.05 * h } else { 0.07 * h };
         ui.painter().rect_filled(rect, 8.0, theme::glass(a));

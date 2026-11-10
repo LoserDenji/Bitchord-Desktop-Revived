@@ -26,6 +26,36 @@ pub enum BgMode {
     Solid,
     /// Now playing: the cover itself fills the screen behind a scrim.
     CoverFullbleed,
+    /// Now playing: the artwork's colours as a still mesh gradient under a full-cover
+    /// blur — the ForkChord player's backdrop (`mesh_bg.rs`).
+    ArtworkMesh,
+}
+
+impl BgMode {
+    /// The mode's snake_case name, as a theme file writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Kawarp => "kawarp",
+            Self::CoverStatic => "cover_static",
+            Self::AccentGradient => "accent_gradient",
+            Self::Solid => "solid",
+            Self::CoverFullbleed => "cover_fullbleed",
+            Self::ArtworkMesh => "artwork_mesh",
+        }
+    }
+
+    /// The mode a theme file names, or `None` for one this build doesn't know.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "kawarp" => Self::Kawarp,
+            "cover_static" => Self::CoverStatic,
+            "accent_gradient" => Self::AccentGradient,
+            "solid" => Self::Solid,
+            "cover_fullbleed" => Self::CoverFullbleed,
+            "artwork_mesh" => Self::ArtworkMesh,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Deserialize)]

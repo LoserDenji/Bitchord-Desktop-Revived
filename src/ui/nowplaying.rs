@@ -34,8 +34,9 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
                 super::titlebar::drag_area(ui, Rect::from_min_size(rect.min, vec2(rect.width(), super::titlebar::HEIGHT)), "now-playing");
             }
             let painter = ui.painter_at(rect);
-            let art = matches!(b.mode, BgMode::Kawarp | BgMode::CoverStatic);
-            if b.mode == BgMode::CoverFullbleed {
+            let mode = app.np_bg.unwrap_or(b.mode);
+            let art = matches!(mode, BgMode::Kawarp | BgMode::CoverStatic);
+            if mode == BgMode::CoverFullbleed {
                 // The cover itself fills the screen behind a scrim. With the lyrics-only
                 // layout on a wide window it fills the height on the left instead and
                 // fades out toward the lyrics (reCover).
@@ -52,6 +53,14 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
                         super::shell::hgradient(&painter, fade, Color32::TRANSPARENT, solid);
                     }
                 }
+            } else if mode == BgMode::ArtworkMesh {
+                // The ForkChord player's backdrop: the artwork's colours as a still mesh
+                // under a full-cover blur, scrims included (mesh_bg.rs). The theme's scrim
+                // knob scales its own; the shared one below stays out of its way.
+                painter.rect_filled(rect, 0.0, Color32::from_rgb(0x12, 0x12, 0x12));
+                if let Some(track) = app.shown() {
+                    super::mesh_bg::paint(ui, rect, &track.thumbs, (b.scrim / 0.3).max(0.0));
+                }
             } else if let Some(bg) = app.bg.as_ref().filter(|_| art) {
                 let blend = theme::ease_in_out(((now - app.art_changed) / 1.4) as f32);
                 let level = if app.reactive_bg && app.playing() { app.audio.status.level() * b.reactive } else { 0.0 };
@@ -61,19 +70,21 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
                     Params {
                         time: app.bg_time as f32,
                         blend,
-                        intensity: if b.mode == BgMode::CoverStatic { 0.0 } else { b.intensity },
+                        intensity: if mode == BgMode::CoverStatic { 0.0 } else { b.intensity },
                         saturation: b.saturation,
                         dim: b.np_dim,
                         scale: b.scale + level.min(0.5) * 0.12,
                     },
                 );
-            } else if b.mode == BgMode::Solid {
+            } else if mode == BgMode::Solid {
                 painter.rect_filled(rect, 0.0, look.solid());
             } else {
                 painter.rect_filled(rect, 0.0, theme::lerp_color(theme::bg(), app.accent_color(), 0.25));
             }
-            let k = b.scrim / 0.3;
-            super::shell::vgradient(ui.painter(), rect, theme::shade((0.18 * k).min(0.95)), theme::shade((0.42 * k).min(0.95)));
+            if mode != BgMode::ArtworkMesh {
+                let k = b.scrim / 0.3;
+                super::shell::vgradient(ui.painter(), rect, theme::shade((0.18 * k).min(0.95)), theme::shade((0.42 * k).min(0.95)));
+            }
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(32.0, 20.0))));
             body(app, &mut child, now);
         });
@@ -154,7 +165,9 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     let glide = p * p * (3.0 - 2.0 * p);
     let lyrics_only = narrow || cs.layout == Layout::LyricsOnly;
     // reCover: the backdrop cover sits on the left, so the lyrics take the right side.
-    let beside_cover = !narrow && cs.layout == Layout::LyricsOnly && look.background.mode == crate::preset::BgMode::CoverFullbleed;
+    // The backdrop override counts: the layout follows the mode actually showing.
+    let beside_cover = !narrow && cs.layout == Layout::LyricsOnly
+        && app.np_bg.unwrap_or(look.background.mode) == crate::preset::BgMode::CoverFullbleed;
     let centered = lyrics_only && !beside_cover;
     // Artwork alone: centered.
     let col_art = Rect::from_center_size(content.center(), vec2(content.width().min(content.height() * 0.9), content.height()));

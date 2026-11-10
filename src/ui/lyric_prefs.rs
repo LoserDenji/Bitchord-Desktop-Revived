@@ -91,8 +91,10 @@ impl Prefs {
             word_trim: num("lyric_trim_word"),
             line_trim: num("lyric_trim_line"),
             text_scale: get("lyric_scale").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(TEXT_SCALE.0, TEXT_SCALE.1),
-            glow_boost: get("lyric_glow").is_some_and(|v| v == "1"),
-            glow_strength: get("lyric_glow_strength").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.5).clamp(GLOW_STRENGTH.0, GLOW_STRENGTH.1),
+            // Intensive glow is on out of the box at 70%: new listeners get the am-lyrics
+            // look at once, and turning it off is one switch.
+            glow_boost: get("lyric_glow").map(|v| v == "1").unwrap_or(true),
+            glow_strength: get("lyric_glow_strength").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.7).clamp(GLOW_STRENGTH.0, GLOW_STRENGTH.1),
             song_offsets: get("lyric_song_offsets").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
             pins: get("lyric_pins")
                 .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
