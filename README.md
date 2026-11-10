@@ -69,7 +69,9 @@ Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord
 
   If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
   
-- **macOS** — download the appropriate asset based on your Mac architecture (`-macos-arm64.dmg` / `.zip` for Apple Silicon or `-macos-x64.dmg` / `.zip` for Intel).
+- **macOS** — download `BitChord-<version>-macos-universal.dmg` (one build for both Apple Silicon and Intel), open it and drag BitChord into Applications.
+
+  The build is unsigned, so the first launch needs one extra step: right-click BitChord → **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.
   
 <div align="center">
   <video src="https://github.com/user-attachments/assets/8d1dba0a-c2f7-45e4-991d-602cc7095af8" width="100%" controls>
@@ -77,7 +79,7 @@ Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord
   <p><em>macOS installation walkthrough</em></p>
 </div>
 
-- **Linux** — download the Linux release archive (`-linux-x86_64.tar.gz`) or directly download respective package for your distro
+- **Linux** — install the `.deb` (Debian, Ubuntu, Mint) or `.rpm` (Fedora, openSUSE), or run the `.AppImage` directly: `chmod +x BitChord-<version>-linux-amd64.AppImage && ./BitChord-<version>-linux-amd64.AppImage`. The AppImage carries its own libraries (WebKitGTK, GTK, the tray's appindicator, ALSA) — nothing else to install.
 
 ## Building from source
 

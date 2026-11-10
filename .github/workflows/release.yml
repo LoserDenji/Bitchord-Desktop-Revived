@@ -68,23 +68,18 @@ jobs:
           path: dist/*
 
   macos:
-    name: macOS · app, dmg (${{ matrix.arch }})
-    strategy:
-      matrix:
-        include:
-          # macos-14 is retired (Nov 2026); macos-15 is arm64, supported into 2027.
-          - os: macos-15
-            arch: arm64
-          # The last Intel runner label; x86_64 builds until Aug 2027.
-          - os: macos-15-intel
-            arch: x64
-    runs-on: ${{ matrix.os }}
+    name: macOS · universal dmg
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos
 
       - name: Work out the version
         id: version
@@ -94,33 +89,46 @@ jobs:
           echo "value=$version" >> "$GITHUB_OUTPUT"
           echo "Building $version"
 
-      - name: Build
-        run: cargo build --release
+      - name: Build both halves of the universal binary
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
 
-      - name: App bundle
+      - name: App bundle and dmg
         run: |
           v="${{ steps.version.outputs.value }}"
-          arch="${{ matrix.arch }}"
-          mkdir -p dist bundle
-          sh macos/bundle.sh target/release/bitchord "$v" bundle
-          ditto -c -k --keepParent bundle/bitchord.app "dist/BitChord-$v-macos-$arch.zip"
-          hdiutil create -volname "BitChord" -srcfolder bundle/bitchord.app -ov -format UDZO "dist/BitChord-$v-macos-$arch.dmg"
+          mkdir -p dist
+          lipo -create \
+            target/aarch64-apple-darwin/release/bitchord \
+            target/x86_64-apple-darwin/release/bitchord \
+            -output bitchord-universal
+          sh macos/bundle.sh bitchord-universal "$v" bundle
+          codesign --verify bundle/bitchord.app
+          # Mounts with the app next to an Applications shortcut, so
+          # installing is a drag and a drop.
+          mkdir -p dmg-staging
+          cp -R bundle/bitchord.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname BitChord -srcfolder dmg-staging -ov -format UDZO \
+            "dist/BitChord-$v-macos-universal.dmg"
           ls -lh dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ matrix.arch }}-artifacts
+          name: macos-artifacts
           path: dist/*
 
   linux:
-    name: Linux · tarball
-    runs-on: ubuntu-24.04
+    name: Linux · AppImage, deb, rpm
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
 
       - name: Native dependencies (GTK, WebKitGTK, ALSA, tray, DBus, TLS)
         run: |
@@ -133,6 +141,9 @@ jobs:
             libdbus-1-dev \
             libssl-dev \
             pkg-config
+
+      - name: Packaging tools (rpmbuild, desktop-file-validate, file)
+        run: sudo apt-get install -y rpm file desktop-file-utils
 
       - name: Work out the version
         id: version
@@ -148,26 +159,13 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Tarball
-        run: |
-          v="${{ steps.version.outputs.value }}"
-          mkdir -p "dist/BitChord-$v-linux-x86_64"
-          cd "dist/BitChord-$v-linux-x86_64"
-          cp ../../target/release/bitchord .
-          cp ../../linux/install.sh .
-          cp ../../linux/bitchord.desktop .
-          cp ../../linux/portable.txt .
-          cp ../../assets/icon/icon.png bitchord.png
-          cp ../../README.md .
-          cp ../../LICENSE .
-          cd ..
-          tar -czf "BitChord-$v-linux-x86_64.tar.gz" "BitChord-$v-linux-x86_64"
-          ls -lh
+      - name: AppImage, deb and rpm
+        run: linux/package.sh target/release/bitchord "${{ steps.version.outputs.value }}" dist
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-artifacts
-          path: dist/*.tar.gz
+          path: dist/*
 
   release:
     name: Publish
@@ -189,6 +187,13 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: BitChord ${{ github.ref_name }}
           draft: true
+          generate_release_notes: true
+          body: |
+            ### Install notes
+
+            - **Windows** — run the `-setup.exe`, or unzip the `-portable.zip`.
+            - **macOS** — one universal build for Apple Silicon and Intel: open the `.dmg` and drag BitChord into Applications. The app is unsigned (no Apple Developer ID), so the first launch needs one extra step: right-click BitChord → **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.
+            - **Linux** — install the `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/openSUSE), or run the `.AppImage` directly (`chmod +x` it first). The AppImage carries its own libraries — nothing else to install.
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
