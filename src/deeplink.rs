@@ -557,7 +557,9 @@ mod tests {
         use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegDeleteTreeW, RegGetValueW};
         use windows::core::HSTRING;
         let key = format!(r"Software\ytm-rs-deeplink-test-{}", std::process::id());
-        register_at(HKEY_CURRENT_USER, &key, r"C:\x\ytm-rs.exe").unwrap();
+        // `register_at` lives in `mod win` (`pub(super)`): reachable from here only
+        // through the module path, not via `use super::*`.
+        win::register_at(HKEY_CURRENT_USER, &key, r"C:\x\ytm-rs.exe").unwrap();
         let read = |sub: &str, name: &str| -> String {
             let mut buf = [0u16; 256];
             let mut len = (buf.len() * 2) as u32;
