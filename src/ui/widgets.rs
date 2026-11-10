@@ -1120,7 +1120,14 @@ fn checkbox(ui: &Ui, c: Pos2, on: bool) {
 /// Section header with optional strapline/avatar and ‹ › scroll arrows.
 /// Returns (scroll left, scroll right) clicks.
 pub fn shelf_header(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thumb: Option<&str>, arrows: bool) -> (bool, bool) {
-    let mut res = (false, false);
+    let (l, r, _) = shelf_header_ext(ui, title, strap, strap_thumb, arrows, false);
+    (l, r)
+}
+
+/// The shelf's header, with an optional Show all on its right (left of the arrows, as
+/// music.youtube.com puts its More). Returns (left, right, show-all clicked).
+pub fn shelf_header_ext(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thumb: Option<&str>, arrows: bool, show_all: bool) -> (bool, bool, bool) {
+    let mut res = (false, false, false);
     ui.add_space(34.0);
     ui.horizontal(|ui| {
         if let Some(url) = strap_thumb {
@@ -1135,10 +1142,16 @@ pub fn shelf_header(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thumb: 
             }
             ui.label(egui::RichText::new(title).font(theme::bold(21.0)).color(theme::text()));
         });
-        if arrows {
+        if arrows || show_all {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                res.1 = icon_button(ui, icon::CHEVRON_RIGHT, 18.0, &format!("Scroll {title} right"), false).clicked();
-                res.0 = icon_button(ui, icon::CHEVRON_LEFT, 18.0, &format!("Scroll {title} left"), false).clicked();
+                if arrows {
+                    res.1 = icon_button(ui, icon::CHEVRON_RIGHT, 18.0, &format!("Scroll {title} right"), false).clicked();
+                    res.0 = icon_button(ui, icon::CHEVRON_LEFT, 18.0, &format!("Scroll {title} left"), false).clicked();
+                }
+                if show_all {
+                    ui.add_space(6.0);
+                    res.2 = pill(ui, "Show all", None, false).clicked();
+                }
             });
         }
     });

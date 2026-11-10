@@ -18,6 +18,8 @@ const TEXT_DIM_LIGHT: Color32 = Color32::from_rgb(86, 82, 94);
 const TEXT_FAINT_LIGHT: Color32 = Color32::from_rgb(124, 118, 132);
 /// Default accent until a cover provides one (BitChord pink).
 pub const RED: Color32 = Color32::from_rgb(0xFA, 0x58, 0x6A);
+/// A check's colour: source Tests and other "that worked" lines (Apple's system green).
+pub const GREEN: Color32 = Color32::from_rgb(0x30, 0xD1, 0x58);
 
 /// Light or dark, as the app picked it for what's being drawn (see `set_mode`): the
 /// colours below follow it. Now playing always draws dark, over the album art.

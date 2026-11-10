@@ -32,6 +32,10 @@ pub enum Req {
     /// `load` comes back with the album, so an older answer can't replace a newer one.
     Album { id: String, load: u64 },
     Artist(String),
+    /// A shelf's Show all: the artist's full discography for that shelf, as YouTube
+    /// lists it behind its own More button (browseId and its params). `artist` and
+    /// `title` come back with the answer, so a stale one can't fill a newer shelf.
+    ArtistShelf { browse_id: String, params: String, artist: String, title: String },
     /// `stream`: send the first page as soon as it's in and the rest as they come,
     /// rather than all of it at the end.
     Playlist { id: String, load: u64, stream: bool },
@@ -110,6 +114,7 @@ impl Req {
             Req::ForgetSearch(_) => "Removing the search",
             Req::Album { .. } => "Loading album",
             Req::Artist(_) => "Loading artist",
+            Req::ArtistShelf { .. } => "Loading the artist's releases",
             Req::Playlist { .. } => "Loading playlist",
             Req::Library => "Loading library",
             Req::History => "Loading history",
@@ -222,8 +227,22 @@ pub struct ArtistPage {
     /// "Top songs" playlist behind the shelf's Show all button.
     pub top_playlist: Option<String>,
     pub albums: Vec<Card>,
+    /// The "Singles & EPs" shelf, kept apart from the albums since BitChord's
+    /// artist page gives each its own Show all.
+    pub singles: Vec<Card>,
     pub playlists: Vec<Card>,
     pub similar: Vec<Card>,
+    /// Where a shelf's Show all goes: YouTube's own discography browse for that
+    /// shelf (browseId with its params), which lists everything the artist has.
+    pub albums_more: Option<ShelfLink>,
+    pub singles_more: Option<ShelfLink>,
+}
+
+/// A shelf's More button, as its navigation endpoint carries it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShelfLink {
+    pub browse_id: String,
+    pub params: String,
 }
 
 pub struct Library {
@@ -255,6 +274,8 @@ pub enum Resp {
     /// The next page of a playlist sent as `Collection` with the same `load`.
     CollectionMore { id: String, load: u64, tracks: Vec<Track>, set_ids: Vec<Option<String>>, more: bool },
     Artist(ArtistPage),
+    /// What a `Req::ArtistShelf` brought back: the shelf's cards, all of them.
+    ArtistShelf { artist: String, title: String, cards: Vec<Card> },
     Library(Library),
     History(Vec<Track>),
     Uploads(Vec<Track>),
@@ -695,6 +716,7 @@ impl Backend {
                 Req::Playlist { id, load, stream: false } => Resp::Collection { load, c: ytm::playlist(api, &id, me, None).await?, more: false },
                 Req::Playlist { id, load, stream: true } => self.stream_playlist(id, load, me).await?,
                 Req::Artist(id) => Resp::Artist(ytm::artist(api, &id).await?),
+                Req::ArtistShelf { browse_id, params, artist, title } => Resp::ArtistShelf { artist, title, cards: ytm::discography(api, &browse_id, &params).await? },
                 Req::Library => self.library().await?,
                 Req::History => Resp::History(ytm::history(api).await?),
                 Req::Uploads => Resp::Uploads(ytm::uploads(api).await?),

@@ -10,6 +10,7 @@ mod dev;
 mod dialogs;
 mod glyphs;
 mod integrations;
+mod island;
 mod jam;
 mod karaoke;
 mod lists;
@@ -63,6 +64,9 @@ pub enum Page {
     Album(String),
     Playlist(String),
     Artist(String),
+    /// One of an artist's shelves with all of it (a Show all): `artist` is the artist's
+    /// id and `title` names the shelf (Albums / Singles / Songs).
+    ArtistShelf { artist: String, title: String },
     Settings,
     /// Transfer from Spotify.
     Transfer,
@@ -85,6 +89,37 @@ pub enum NpTab {
     UpNext,
     /// Neither panel: just the artwork.
     Art,
+}
+
+/// An artist shelf opened with Show all: everything the artist has for one kind of
+/// release (or every song the page listed, when YouTube named no playlist for it).
+pub struct ShelfPage {
+    /// The artist's id and the shelf's name, what the page is keyed by.
+    pub key: (String, String),
+    /// The shelf as its header says it ("Singles & EPs" keeps its own name).
+    pub title: String,
+    /// The artist, as the page's strap.
+    pub artist_name: String,
+    /// The releases, when the shelf is one of releases.
+    pub cards: Vec<Card>,
+    /// The songs, when the shelf is the artist's songs.
+    pub tracks: Option<Vec<Track>>,
+    /// The discography request is out and nothing is here yet.
+    pub loading: bool,
+}
+
+/// The shelf-page keys, as the artist page's Show-all buttons open them.
+pub(super) const SONGS_SHELF: &str = "Songs";
+pub(super) const SINGLES_SHELF: &str = "Singles";
+
+/// What a shelf page is headed: the artist page's own name for the shelf when it has
+/// one, else the key.
+fn shelf_title(key: &str) -> String {
+    match key {
+        SONGS_SHELF => "Songs".to_owned(),
+        SINGLES_SHELF => "Singles & EPs".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 /// User intents collected while drawing; applied after the frame's UI pass.
@@ -204,6 +239,10 @@ pub struct Channels {
 /// Settings › Network's connection test: not run (`None`), running (`Some(None)`), or
 /// its answer (works, message).
 type ProxyTest = Option<Option<(bool, String)>>;
+
+/// A hi-res source's Test: the same shape as a [`ProxyTest`], with the probe's verdict
+/// (there and usable, or the reason it isn't) once it's in.
+type SourceTest = Option<Option<(bool, String)>>;
 
 /// A thing opened from a search, shown on the search landing with its artwork.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -325,6 +364,13 @@ pub struct App {
     /// refreshes it quietly), and their loads under way.
     lists: Lists,
     artist: Option<ArtistPage>,
+    /// The artist shelf page that's open (a Show all): its key, title, artist's name,
+    /// and either the cards or the songs it lists. One at a time — opening another
+    /// artist's shelf replaces it, like `artist` does for artist pages.
+    shelf: Option<ShelfPage>,
+    /// A shelf page waiting for its artist page to come in (it wasn't kept), so the
+    /// discography request can carry the shelf's More link.
+    shelf_pending: Option<(String, String)>,
     library: Option<Library>,
     /// When the library was last requested; the sidebar spinner gives up after a while.
     library_requested: std::time::Instant,
@@ -404,6 +450,10 @@ pub struct App {
     hires_draft: String,
     /// Focus the draft row as soon as it opens.
     hires_focus: bool,
+    /// Each source's Test (by the link as typed), the way the proxy test runs: a slot
+    /// the check's thread fills while the page draws — `None` not run, `Some(None)`
+    /// running, `Some(Some(..))` the verdict. Keyed by the link, so edits start fresh.
+    hires_tests: HashMap<String, Arc<std::sync::Mutex<SourceTest>>>,
     /// Ask the addons for Dolby Atmos renditions.
     prefer_atmos: bool,
     /// What the playing stream is (codec, rate, depth, size), when a hi-res source
@@ -458,6 +508,10 @@ pub struct App {
     fullscreen: bool,
     /// The mini player: the window shrunk to a strip.
     mini: mini::Mini,
+    /// The dynamic island: the floating pill at the window's top centre.
+    island: island::Island,
+    /// Settings › Window: the island shows itself while something plays.
+    island_on: bool,
     /// Every source's lyrics for the current song (by video ID).
     lyrics: Option<(String, LyricsSet)>,
     /// Romanization/translation for one source's lines: (video ID, source key, language, extras).
@@ -644,6 +698,8 @@ impl App {
             search: None,
             lists: Lists::default(),
             artist: None,
+            shelf: None,
+            shelf_pending: None,
             library: None,
             library_requested: std::time::Instant::now(),
             history: None,
@@ -728,6 +784,7 @@ impl App {
             hires_adding: false,
             hires_draft: String::new(),
             hires_focus: false,
+            hires_tests: Default::default(),
             prefer_atmos,
             audio_info: None,
             art_changed: -10.0,
@@ -761,6 +818,8 @@ impl App {
             queue_open: false,
             fullscreen: false,
             mini: mini::Mini::load(get),
+            island: island::Island::default(),
+            island_on: get("island").is_none_or(|v| v != "0"),
             lyrics: None,
             lyrics_extras: None,
             extras_asked: None,
@@ -922,6 +981,7 @@ impl App {
                 None
             }
             Page::Artist(id) => Some(Req::Artist(id.clone())),
+            Page::ArtistShelf { artist, title } => self.open_shelf(artist, title),
             Page::Library(LibTab::History) if self.logged_in => Some(Req::History),
             Page::Library(LibTab::Uploads) if self.logged_in => Some(Req::Uploads),
             Page::Library(LibTab::Songs) => {
@@ -939,6 +999,7 @@ impl App {
             Page::New => self.explore.is_some(),
             Page::Album(id) | Page::Playlist(id) => self.opened(id).is_some(),
             Page::Artist(id) => self.artist.as_ref().is_some_and(|a| &a.id == id),
+            Page::ArtistShelf { artist, title } => self.shelf.as_ref().is_some_and(|s| s.key == (artist.clone(), title.clone()) && !s.loading),
             Page::Library(LibTab::History) => self.history.is_some(),
             Page::Library(LibTab::Uploads) => self.uploads.is_some(),
             Page::Library(LibTab::Songs) => self.opened(LIKED_MUSIC).is_some(),
@@ -961,6 +1022,41 @@ impl App {
             Page::Album(id) | Page::Playlist(id) => Some(id),
             Page::Library(LibTab::Songs) => Some(LIKED_MUSIC),
             _ => None,
+        }
+    }
+
+    /// A shelf page (a Show all) is opening: keep the copy the artist page already
+    /// holds, or ask for the shelf's full list from its More link. `None` when the
+    /// kept copy stands.
+    fn open_shelf(&mut self, artist: &str, title: &str) -> Option<Req> {
+        if self.shelf.as_ref().is_some_and(|s| s.key == (artist.to_owned(), title.to_owned()) && !s.loading) {
+            return None;
+        }
+        // The songs' Show all lists what the artist page holds when YouTube named no
+        // playlist for them; with one, the shelf never opens (the playlist does).
+        let Some(a) = self.artist.as_ref().filter(|a| a.id == artist) else {
+            self.shelf = Some(ShelfPage { key: (artist.to_owned(), title.to_owned()), title: title.to_owned(), artist_name: String::new(), cards: Vec::new(), tracks: None, loading: true });
+            self.shelf_pending = Some((artist.to_owned(), title.to_owned()));
+            return Some(Req::Artist(artist.to_owned()));
+        };
+        let name = a.name.clone();
+        let shelf_title = shelf_title(title);
+        if title == SONGS_SHELF {
+            self.shelf = Some(ShelfPage { key: (artist.to_owned(), title.to_owned()), title: shelf_title, artist_name: name, cards: Vec::new(), tracks: Some(a.top.clone()), loading: false });
+            return None;
+        }
+        let more = if title == SINGLES_SHELF { a.singles_more.clone() } else { a.albums_more.clone() };
+        match more {
+            Some(link) => {
+                self.shelf = Some(ShelfPage { key: (artist.to_owned(), title.to_owned()), title: shelf_title, artist_name: name, cards: Vec::new(), tracks: None, loading: true });
+                Some(Req::ArtistShelf { browse_id: link.browse_id, params: link.params, artist: artist.to_owned(), title: title.to_owned() })
+            }
+            // No More button (YouTube offered none): the page's own cards are the shelf.
+            None => {
+                let cards = if title == SINGLES_SHELF { a.singles.clone() } else { a.albums.clone() };
+                self.shelf = Some(ShelfPage { key: (artist.to_owned(), title.to_owned()), title: shelf_title, artist_name: name, cards, tracks: None, loading: false });
+                None
+            }
         }
     }
 
@@ -1338,6 +1434,9 @@ impl eframe::App for App {
             nowplaying::overlay(self, &ctx, now);
             theme::set_mode(&ctx, pages);
         }
+        // The dynamic island, over everything but the dialogs (it hangs where the
+        // window's own top bar is clear).
+        island::overlay(self, &ctx, now);
         self.draw_dialog(&ctx);
         notes::card(self, &ctx);
         notes::dialog(self, &ctx);
@@ -1436,6 +1535,7 @@ impl eframe::App for App {
             self.good_window = Some(w);
         }
         storage.set_string("close_to_tray", b(self.close_to_tray));
+        storage.set_string("island", b(self.island_on));
         storage.set_string("sidebar_collapsed", b(self.sidebar_collapsed));
         // The sidebar's playlist order, completed with any playlist that appeared since
         // it was last changed (so a drag can place them all).

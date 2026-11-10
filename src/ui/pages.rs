@@ -65,6 +65,7 @@ pub fn page(app: &mut App, ui: &mut Ui, now: f64) {
             Page::Search(q) => search(app, ui, q, now),
             Page::Album(id) | Page::Playlist(id) => collection(app, ui, id, now),
             Page::Artist(id) => artist(app, ui, id, now),
+            Page::ArtistShelf { artist, title } => artist_shelf(app, ui, artist, title, now),
             Page::Library(tab) => library(app, ui, *tab, now),
             Page::Downloads => downloads(app, ui, now),
             Page::Settings => settings(app, ui),
@@ -190,6 +191,26 @@ fn card_row(ui: &mut Ui, id: &str, title: &str, cards: &[Card], acts: &mut Vec<A
         return;
     }
     let (l, r) = shelf_header(ui, title, None, None, true);
+    let nudge = r as i32 - l as i32;
+    let tile = feed_tile(ui, true);
+    h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
+        ui.spacing_mut().item_spacing.x = 20.0;
+        for c in cards {
+            card(ui, c, tile, false, acts);
+        }
+    });
+}
+
+/// A card shelf with a Show all on its header (`all`: there is more where this came
+/// from, and `open` asks for it). The arrows stay: the shelf still scrolls sideways.
+fn card_row_all(ui: &mut Ui, id: &str, title: &str, cards: &[Card], all: bool, acts: &mut Vec<Action>, open: impl FnOnce() -> Action) {
+    if cards.is_empty() {
+        return;
+    }
+    let (l, r, show_all) = widgets::shelf_header_ext(ui, title, None, None, true, all);
+    if show_all {
+        acts.push(open());
+    }
     let nudge = r as i32 - l as i32;
     let tile = feed_tile(ui, true);
     h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
@@ -896,13 +917,16 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         ui.add_space(26.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Top songs").font(theme::bold(24.0)).color(theme::text()));
-            if let Some(pl) = &a.top_playlist {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if pill(ui, "Show all", None, false).clicked() {
-                        acts.push(Action::Open(Target::Playlist(pl.clone())));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // With a "Top songs" playlist behind the shelf, Show all opens it; without
+                // one, the shelf page stands in and lists everything the page holds.
+                if pill(ui, "Show all", None, false).clicked() {
+                    match a.top_playlist.clone() {
+                        Some(pl) => acts.push(Action::Open(Target::Playlist(pl))),
+                        None => acts.push(Action::Go(Page::ArtistShelf { artist: id.to_owned(), title: super::SONGS_SHELF.to_owned() })),
                     }
-                });
-            }
+                }
+            });
         });
         ui.add_space(12.0);
         for (i, t) in top.iter().enumerate().take(5) {
@@ -912,7 +936,10 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             }
         }
     }
-    card_row(ui, "a-albums", "Albums & singles", &a.albums, acts);
+    // Albums and singles keep their own shelves now, each with its Show all into the
+    // artist's full discography for that kind of release.
+    card_row_all(ui, "a-albums", "Albums", &a.albums, a.albums_more.is_some(), acts, || Action::Go(Page::ArtistShelf { artist: id.to_owned(), title: "Albums".to_owned() }));
+    card_row_all(ui, "a-singles", "Singles", &a.singles, a.singles_more.is_some(), acts, || Action::Go(Page::ArtistShelf { artist: id.to_owned(), title: super::SINGLES_SHELF.to_owned() }));
     card_row(ui, "a-pl", "Featured on", &a.playlists, acts);
     card_row(ui, "a-sim", "Fans might also like", &a.similar, acts);
     if let Some(d) = a.description.as_deref().filter(|d| !d.trim().is_empty()) {
@@ -944,6 +971,75 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.5), theme::text_dim(), full, 8);
             ui.label(g);
         }
+    }
+}
+
+/// An artist shelf with everything on it (a Show all): the artist's releases for one
+/// kind (`cards`), or every song the page listed (`tracks`). The cards open like any
+/// shelf's; the songs play in order, like a playlist's rows do.
+fn artist_shelf(app: &mut App, ui: &mut Ui, artist: &str, title: &str, now: f64) {
+    let Some(s) = app.shelf.as_ref().filter(|s| s.key == (artist.to_owned(), title.to_owned())) else {
+        placeholder(app, ui, now, 1, CARD);
+        return;
+    };
+    if s.loading && s.cards.is_empty() && s.tracks.is_none() {
+        placeholder(app, ui, now, 1, CARD);
+        return;
+    }
+    let rows = Rows::new(app, now);
+    let acts = &mut app.actions;
+    ui.add_space(6.0);
+    // The header: the shelf's name over the artist, whose name goes back to their page.
+    ui.label(RichText::new(s.title.to_uppercase()).font(theme::semibold(12.0)).color(theme::text_dim()));
+    let (name_rect, name_r) = ui.allocate_exact_size(vec2(ui.available_width().min(560.0), 46.0), Sense::click());
+    ui.painter().text(name_rect.left_center(), Align2::LEFT_CENTER, &s.artist_name, theme::bold(40.0), theme::text());
+    if name_r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if name_r.clicked() {
+        acts.push(Action::Go(Page::Artist(artist.to_owned())));
+    }
+    let (count, songs) = match &s.tracks {
+        Some(t) => (format!("{} songs", t.len()), true),
+        None => (format!("{} releases", s.cards.len()), false),
+    };
+    ui.label(RichText::new(count).font(theme::regular(13.5)).color(theme::text_faint()));
+    ui.add_space(16.0);
+    if songs {
+        let Some(tracks) = &s.tracks else { return };
+        if !tracks.is_empty() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if pill(ui, "Play", Some(icon::PLAY), true).clicked() {
+                    acts.push(Action::Play(tracks.clone(), 0));
+                }
+                if pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() {
+                    let mut t = tracks.clone();
+                    super::shuffle(&mut t);
+                    acts.push(Action::Play(t, 0));
+                }
+            });
+            ui.add_space(14.0);
+        }
+        let liked = &app.liked;
+        let plain = |_: usize, _: &Track| None;
+        let mut sel = std::mem::take(&mut app.selection);
+        let page = app.page.clone();
+        let cx = ListCtx { sel: &mut sel, page: &page, own: false };
+        let clicked = list(ui, &rows, liked, tracks, true, plain, cx, acts);
+        app.selection = sel;
+        let _ = clicked;
+    } else if !s.cards.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(20.0, 22.0);
+            for c in &s.cards {
+                card(ui, c, CARD, false, acts);
+            }
+        });
+    }
+    if s.loading {
+        ui.add_space(10.0);
+        ui.spinner();
     }
 }
 
@@ -1303,28 +1399,33 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// The hi-res source list: one line per addon, and "+ Add a source" below it that
-/// opens a fresh line for the next one.
+/// The hi-res source list: one line per addon with its Test, and "+ Add a source" below
+/// it that opens a fresh line for the next one. Test health-checks the link (BitChord's
+/// source editor's Test, [`crate::hires::Client::probe`]), whether or not it's saved.
 fn hires_sources_editor(app: &mut App, ui: &mut Ui) {
     let mut edited = false;
     let mut remove = None;
     for i in 0..app.hires_sources.len() {
+        let link = app.hires_sources[i].trim().to_owned();
         ui.horizontal(|ui| {
-            let field_w = (ui.available_width() - 34.0).max(120.0);
+            let field_w = (ui.available_width() - 110.0).max(120.0);
             ui.allocate_ui_with_layout(vec2(field_w, 42.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(field_w);
                 if super::text_field(ui, "", &mut app.hires_sources[i], false, "https://your-addon.example").changed() {
                     edited = true;
                 }
             });
+            hires_test_button(app, ui, &link);
             if widgets::icon_button(ui, icon::X, 14.0, "Remove source", false).clicked() {
                 remove = Some(i);
             }
         });
+        hires_test_line(app, ui, &link);
         ui.add_space(6.0);
     }
     if let Some(i) = remove {
-        app.hires_sources.remove(i);
+        let gone = app.hires_sources.remove(i);
+        app.hires_tests.remove(gone.trim());
         edited = true;
     }
     if edited {
@@ -1336,6 +1437,16 @@ fn hires_sources_editor(app: &mut App, ui: &mut Ui) {
             resp.request_focus();
             app.hires_focus = false;
         }
+        // Test before the link is even saved: finding out here beats finding out the
+        // first time a song would have used it (the editor's Test beside Save).
+        let typed = app.hires_draft.trim().to_owned();
+        ui.horizontal(|ui| {
+            hires_test_button(app, ui, &typed);
+            if typed.is_empty() {
+                ui.label(RichText::new("Enter a link, then Test it or press Enter to add it.").font(theme::regular(12.5)).color(theme::text_faint()));
+            }
+        });
+        hires_test_line(app, ui, &typed);
         if resp.lost_focus() {
             let link = app.hires_draft.trim().to_owned();
             if !link.is_empty() && !app.hires_sources.iter().any(|s| s.trim() == link) {
@@ -1351,6 +1462,44 @@ fn hires_sources_editor(app: &mut App, ui: &mut Ui) {
         app.hires_focus = true;
         app.hires_draft.clear();
     }
+}
+
+/// The Test pill for one source link (saved or still being typed): empty links can't be
+/// probed, a running probe spins, and a re-Test asks again.
+fn hires_test_button(app: &mut App, ui: &mut Ui, link: &str) {
+    let empty = link.is_empty();
+    if empty {
+        ui.add_space(ui.available_width().min(76.0));
+        return;
+    }
+    let slot = app.hires_tests.entry(link.to_owned()).or_default().clone();
+    let state = slot.lock().unwrap().clone();
+    if matches!(state, Some(None)) {
+        ui.add_space(ui.available_width().min(76.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spinner();
+        });
+        return;
+    }
+    if pill(ui, "Test", None, false).clicked() {
+        *slot.lock().unwrap() = Some(None);
+        let (slot, http, link) = (slot, app.backend.http(), link.to_owned());
+        app.backend.spawn(async move {
+            let health = crate::hires::probe_link(&link, &http).await;
+            *slot.lock().unwrap() = Some(Some((health.good(), health.message().to_owned())));
+        });
+    }
+}
+
+/// The verdict line under one source's row, colored like the sources list's status line:
+/// green when the probe reached a working addon, red when the addon (or the link) is
+/// wrong, dimmed gray while it asks.
+fn hires_test_line(app: &App, ui: &mut Ui, link: &str) {
+    let Some(state) = app.hires_tests.get(link).and_then(|s| s.lock().unwrap().clone()) else { return };
+    let Some((good, msg)) = state else { return };
+    let color = if good { theme::GREEN } else { theme::RED };
+    let label = if good { format!("{msg}") } else { format!("Didn't work: {msg}") };
+    ui.label(RichText::new(label).font(theme::regular(12.5)).color(color));
 }
 
 /// The non-empty links as one newline-separated list, the way the backend reads them.
@@ -1566,6 +1715,10 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
 fn settings_window(app: &mut App, ui: &mut Ui) {
     section_label(ui, "Window", None);
     settings_card(ui, |ui| {
+        setting_row(ui, "Dynamic island", Some("A floating pill at the window's top centre while music plays: artwork, title and the time left, growing into a card with a scrubber and controls when you click it. It folds away on pause, and a right-click puts it off until the song changes."), |ui| {
+            toggle(ui, &mut app.island_on, "Dynamic island");
+        });
+        divider(ui);
         setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. Click the tray icon to bring it back, or right-click it to quit. If the icon never shows up, launching BitChord again brings the window back; --no-tray starts a session where × quits for real."), |ui| {
             toggle(ui, &mut app.close_to_tray, "Close to tray");
         });
@@ -1646,10 +1799,11 @@ fn settings_shortcuts(ui: &mut Ui) {
             ("Play / pause", &["Space"]),
             ("Next / previous song", &["Ctrl", "→ / ←"]),
             ("Volume up / down", &["Ctrl", "↑ / ↓"]),
-            ("Search", &["Ctrl", "F"]),
+            ("Search", &["/"]),
+            ("Now playing", &["F"]),
+            ("Full-screen player", &["Shift", "F"]),
             ("Lyrics", &["L"]),
             ("Queue", &["Q"]),
-            ("Full-screen lyrics (in now playing)", &["F"]),
             ("Back / forward", &["Alt", "← / →"]),
             ("Close now playing", &["Esc"]),
         ];

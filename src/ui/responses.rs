@@ -232,7 +232,9 @@ impl App {
             Resp::CollectionMore { id, load, tracks, set_ids, more } => self.collection_more(id, load, tracks, set_ids, more),
             Resp::Artist(a) => {
                 // A slow answer for an artist left meanwhile doesn't replace the one on screen.
-                if matches!(&self.page, Page::Artist(id) if *id != a.id) {
+                if matches!(&self.page, Page::Artist(id) if *id != a.id)
+                    && !self.shelf_pending.as_ref().is_some_and(|(id, _)| *id == a.id)
+                {
                     return;
                 }
                 if self.page == Page::Artist(a.id.clone()) {
@@ -248,7 +250,26 @@ impl App {
                         self.backend.request(Req::AppleArtist { id, name });
                     }
                 }
+                // A shelf page that opened before its artist page was here gets its
+                // request out now, with the More link the page carries.
+                let pending = self.shelf_pending.take_if(|(id, _)| *id == a.id);
                 self.artist = Some(a);
+                if let Some((id, title)) = pending {
+                    if let Some(req) = self.open_shelf(&id, &title) {
+                        self.backend.request(req);
+                    }
+                }
+            }
+            Resp::ArtistShelf { artist, title, cards } => {
+                // Only the shelf that asked shows the answer: its key rode with the
+                // request, so a slow answer for a shelf left meanwhile is dropped.
+                let filled = self.shelf.as_mut().filter(|s| s.key == (artist.clone(), title.clone()) && s.loading).map(|s| {
+                    s.cards = cards;
+                    s.loading = false;
+                });
+                if filled.is_some() && self.page == (Page::ArtistShelf { artist: artist.clone(), title: title.clone() }) {
+                    self.loading = false;
+                }
             }
             Resp::Library(mut l) => {
                 // A half that didn't load keeps what was shown (or last launch's sidebar),

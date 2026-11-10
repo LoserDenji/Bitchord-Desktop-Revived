@@ -549,8 +549,18 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
             edit.request_focus();
         }
     }
-    if field.clicked() || ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+    // A click focuses the box; `/` does it from any page (App::shortcuts), so the box
+    // doesn't have to be on screen to be found.
+    if field.clicked() {
         edit.request_focus();
+    }
+    // While it's empty and unfocused, the pill advertises the key that opens it.
+    if !app.search_focused && app.search_text.is_empty() {
+        let at = pos2(rect.right() - 22.0, rect.center().y);
+        let h = theme::anim_bool(ui.ctx(), "search-hint", ui.rect_contains_pointer(Rect::from_center_size(at, Vec2::splat(24.0))), 0.15);
+        let painter = ui.painter();
+        painter.rect_filled(Rect::from_center_size(at, vec2(20.0, 20.0)), 5.0, theme::glass(0.07 + 0.05 * h));
+        painter.text(at, egui::Align2::CENTER_CENTER, "/", theme::semibold(12.0), theme::text_dim());
     }
     if edit.changed() || edit.gained_focus() || cleared {
         app.suggest_sel = None;

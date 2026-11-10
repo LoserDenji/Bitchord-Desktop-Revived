@@ -68,6 +68,35 @@ impl Info {
     }
 }
 
+/// What a source's Test says, ported from BitChord's `SourceHealth`
+/// (`AddonSource.health()`): the manifest answers reachable, well-formed and useful
+/// all at once, so the three ways a link can be stand out on the editor's Test line.
+/// `Rejected` is the addon (or the address) being wrong in a way no amount of
+/// retrying fixes; `Unreachable` is a server having a bad minute, worth trying again.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Health {
+    /// There and usable, with what the addon said about itself.
+    Ok(String),
+    /// The addon refused, or isn't an addon: retrying won't help.
+    Rejected(String),
+    /// Couldn't be asked this once: worth trying again.
+    Unreachable(String),
+}
+
+impl Health {
+    /// Whether the row should read as good (a check, not a cross).
+    pub fn good(&self) -> bool {
+        matches!(self, Health::Ok(_))
+    }
+
+    /// The line under the row.
+    pub fn message(&self) -> &str {
+        match self {
+            Health::Ok(m) | Health::Rejected(m) | Health::Unreachable(m) => m,
+        }
+    }
+}
+
 /// One playable answer from the addon.
 pub struct Stream {
     pub url: String,
@@ -311,6 +340,78 @@ impl Client {
             }
         }
         Ok(url.into())
+    }
+
+    /// The editor's Test: health-checks a link whether or not it's been saved, so a
+    /// typed one reports on itself rather than on a stored source (BitChord's
+    /// `SourceRegistry::probeCandidate`). The manifest answers reachable, well-formed
+    /// and useful in one read; an addon that never published one may still answer a
+    /// search, and is healthy the moment it does — which is why a failed manifest read
+    /// is given the second opinion before it's called a fault.
+    pub async fn probe(&self, http: &reqwest::Client) -> Health {
+        let url = format!("{}/manifest.json", self.base);
+        let manifest = async {
+            let json = get_json(http, &url).await?;
+            let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
+            anyhow::ensure!(!id.is_empty(), "that URL answered, but not with an addon manifest");
+            let resources: Vec<&str> = json.get("resources").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            anyhow::ensure!(resources.is_empty() || resources.iter().any(|r| r.eq_ignore_ascii_case("search")), "the addon doesn't offer search");
+            let name = json.get("name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+            Ok::<_, anyhow::Error>(name)
+        }
+        .await;
+        match manifest {
+            Ok(name) => {
+                // A manifest alone is only half an answer: what the player does with a
+                // source is search it, so the probe asks for one ordinary word.
+                match probe_search(http, &self.base).await {
+                    Ok(n) => {
+                        let suffix = if n == 1 { "result" } else { "results" };
+                        Health::Ok(format!("{} · search works{}", name.unwrap_or_else(|| self.host()), (n > 0).then(|| format!(" · {n} {suffix}")).unwrap_or_default()))
+                    }
+                    Err(e) => Health::Rejected(format!("search failed: {e:#}")),
+                }
+            }
+            Err(e) => {
+                let reason = format!("{e:#}");
+                match probe_search(http, &self.base).await {
+                    Ok(n) => Health::Ok(format!("No manifest · search works · {n} result{}", if n == 1 { "" } else { "s" })),
+                    // Transport trouble (DNS, connect, timeout) is a server having a bad
+                    // minute; anything the server itself answered is the addon being wrong.
+                    Err(_) if e.downcast_ref::<reqwest::Error>().is_some() => Health::Unreachable(reason),
+                    Err(_) => Health::Rejected(reason),
+                }
+            }
+        }
+    }
+}
+
+/// What the search probe asks for. Deliberately an ordinary word rather than a
+/// nonsense string: an addon is entitled to nothing for a query nobody could match,
+/// and a probe that reliably comes back empty proves less than one that usually
+/// comes back full (BitChord's `PROBE_QUERY`).
+const PROBE_QUERY: &str = "music";
+
+/// One `/search`, counted. Zero is a success — an addon holding nothing for one query
+/// is answering correctly — so callers read the count, not emptiness.
+async fn probe_search(http: &reqwest::Client, base: &str) -> anyhow::Result<usize> {
+    let mut url = url::Url::parse(base)?;
+    {
+        let mut path = url.path_segments_mut().map_err(|_| anyhow::anyhow!("that addon address can't take paths"))?;
+        path.pop_if_empty();
+        path.push("search");
+    }
+    url.query_pairs_mut().append_pair("q", PROBE_QUERY);
+    let json = get_json(http, url.as_str()).await?;
+    Ok(json.get("tracks").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0))
+}
+
+/// Health-checks a pasted link, saved or not. A link that isn't http(s) can't be a
+/// source, and is rejected before anything is asked of the network.
+pub async fn probe_link(raw: &str, http: &reqwest::Client) -> Health {
+    match Client::new(raw) {
+        Some(client) => client.probe(http).await,
+        None => Health::Rejected("That isn't an http(s) link, so it can't be a source.".to_owned()),
     }
 }
 

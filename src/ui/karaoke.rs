@@ -117,7 +117,8 @@ const FADE_OUT: f64 = 0.5;
 const SCALE_DURATION: f64 = 0.166;
 const WOBBLE_DURATION: f64 = 1.0;
 const LETTER_WAVE_CREST: f32 = 0.4;
-/// `blyrics-long-word-threshold` (ms → s): held words swell their letters.
+/// `blyrics-long-word-threshold` (ms → s), where a held word's glow is all the way in
+/// (am-lyrics: `0.45 × clamp((duration − 1) / 0.5, 0, 1)` — it ramps from one second).
 const LONG_WORD: f64 = 1.5;
 /// `blyrics-line-synced-animation-delay`.
 const LINE_SYNC_DELAY: f64 = 0.05;
@@ -217,9 +218,10 @@ impl Cfg {
         let (crest, settle) = if css.is_some() { (wave[0], wave[1]) } else { (s.lift.clamp(0.0, 8.0) / size, s.lift.clamp(0.0, 8.0) / size) };
         let (glow_alpha, long_glow_alpha) = match css.as_ref().and_then(|c| c.glow_alpha) {
             Some(a) => (a, css.as_ref().and_then(|c| c.long_word_glow_alpha).unwrap_or(a)),
-            // A look without a glow setting of its own glows only as much as its preset asks:
-            // the default look has none.
-            None => (glow, glow),
+            // A look without a glow setting of its own glows only as much as its preset
+            // asks, and by the held ramp: every sung word gets two fifths of it, words
+            // sung long ride it the rest of the way in (am-lyrics' intensive glow).
+            None => (glow * 0.4, glow),
         };
         let pad = css.as_ref().and_then(|c| c.padding_inline).map_or((0.0, 0.0), |p| (p[0] * rem / 10.0, p[1] * rem / 10.0));
         Self {
@@ -286,8 +288,10 @@ struct Word {
     /// Zero-duration (line-synced) word: fades in instead of sweeping.
     line_synced: bool,
     bg: bool,
-    /// Held longer than `LONG_WORD`: letters swell as they crest.
-    long: bool,
+    /// Held: how far into the glow a word sung this long is, 0..1 (am-lyrics' ramp
+    /// from one second of duration to `LONG_WORD`). Letters swell and the glow
+    /// intensifies by it, rather than switching on at a threshold.
+    held: f32,
     pos: Pos2,
     w: f32,
     h: f32,
@@ -511,7 +515,7 @@ fn flow(fonts: &mut FontsView<'_>, toks: Vec<Tok>, font: &FontId, max_w: f32, li
                         dur: t.dur,
                         line_synced: t.dur <= 0.0,
                         bg: t.bg,
-                        long: t.dur > LONG_WORD,
+                        held: held_word(t.dur),
                         pos: pos2(x, row as f32 * line_h + (line_h - size.y) * 0.5),
                         w: size.x,
                         h: size.y,
@@ -1508,7 +1512,11 @@ struct WordLook {
 }
 
 fn word_look(w: &Word, lit: &LitState, cfg: &Cfg) -> WordLook {
-    let glow_alpha = if w.long { cfg.long_glow_alpha } else { cfg.glow_alpha };
+    // am-lyrics' held-word glow: how intensive it gets rides on how long the word is
+    // sung — no glow for words under a second, all the way in at `LONG_WORD` — between
+    // the look's own glow alpha and its held-word one (`0.45 × clamp((d − 1)/0.5, 0, 1)`
+    // there; here the preset's two alphas take those places).
+    let glow_alpha = lerp(cfg.glow_alpha, cfg.long_glow_alpha, w.held);
     let none = WordLook { opacity: 0.0, start: SWIPE_START.0, end: SWIPE_END.0, glow: 0.0, glow_alpha };
     let full = |opacity: f32| WordLook { opacity, start: SWIPE_START.1, end: SWIPE_END.1, glow: 0.0, glow_alpha };
     if let Some((since, exit_t)) = lit.exit {
@@ -1526,7 +1534,9 @@ fn word_look(w: &Word, lit: &LitState, cfg: &Cfg) -> WordLook {
         return none;
     }
     // `resolveLineGlowSuppression`: a glow colour too faint to see isn't animated at all.
-    let glow_rem = if glow_alpha < GLOW_INVISIBLE { 0.0 } else { cfg.glow_rem * cfg.rem() };
+    // A held word's glow reaches further out as well as harder: the radius rides `held`
+    // up by two fifths, so the deep-hold words read as the intensive glow they are.
+    let glow_rem = if glow_alpha < GLOW_INVISIBLE { 0.0 } else { cfg.glow_rem * cfg.rem() * (1.0 + 0.4 * w.held) };
     match lit.fill {
         Fill::Line | Fill::Word => {
             // Word: a colour flip with a short transition (`data-word-state`);
@@ -1552,6 +1562,14 @@ fn word_look(w: &Word, lit: &LitState, cfg: &Cfg) -> WordLook {
             }
         }
     }
+}
+
+/// How far into the held-word glow a word of `dur` seconds is, 0..1: am-lyrics'
+/// `clamp((duration − 1) / 0.5, 0, 1)` — nothing under a second sung, all of it at
+/// `LONG_WORD` (its ramp is the second to that mark).
+fn held_word(dur: f64) -> f32 {
+    let ramp = (LONG_WORD - 1.0).max(0.001);
+    ((dur - 1.0) / ramp).clamp(0.0, 1.0) as f32
 }
 
 /// `drop-shadow` radius: 0.8rem → 0 with `ease`, then gone.
@@ -1584,14 +1602,16 @@ fn letter_waves(n: usize, d: f64, float: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// A letter's float this frame: (lift in em, scale).
-fn letter_float(e: f64, wave: (f64, f64), long: bool, cfg: &Cfg) -> (f32, f32) {
+/// A letter's float this frame: (lift in em, scale). `held` (0..1) is how far into the
+/// glow its word is: the deeper the hold, the higher and larger the crest (am-lyrics'
+/// `emphasis`, which its long words' letters ride instead of switching on).
+fn letter_float(e: f64, wave: (f64, f64), held: f32, cfg: &Cfg) -> (f32, f32) {
     let p = (e - wave.0) / wave.1;
     if p < 0.0 {
         return (0.0, 1.0);
     }
     let p = p.min(1.0) as f32;
-    let peak = if long { cfg.emphasis } else { 1.0 };
+    let peak = lerp(1.0, cfg.emphasis, held);
     if p < LETTER_WAVE_CREST {
         let k = EASE_IN_OUT.at(p / LETTER_WAVE_CREST);
         (cfg.wave_crest * k, lerp(1.0, peak, k))
@@ -1650,7 +1670,7 @@ fn word_glyphs(ctx: &egui::Context, w: &Word, lit: &LitState, cfg: &Cfg, wob: Op
             }
             let mut r = Rect::from_min_size(w.pos + row.pos.to_vec2() + gl.pos.to_vec2() + uv.offset, uv.size);
             if let Some(waves) = &waves {
-                let (lift, s) = letter_float(e, waves[idx], w.long, cfg);
+                let (lift, s) = letter_float(e, waves[idx], w.held, cfg);
                 // Letters scale about their own centre (`.blyrics--letter` box).
                 let c = pos2(w.pos.x + row.pos.x + gl.pos.x + gl.advance_width * 0.5, r.center().y);
                 r = Rect::from_min_max(c + (r.min - c) * s, c + (r.max - c) * s).translate(vec2(0.0, -lift * em));

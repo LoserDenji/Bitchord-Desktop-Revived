@@ -253,7 +253,10 @@ impl App {
                 ctrl(egui::Key::ArrowLeft),
                 k(egui::Key::L),
                 k(egui::Key::Q),
-                k(egui::Key::F),
+                // F opens and closes the now playing view; Shift+F is the full screen.
+                !typing && i.key_pressed(egui::Key::F) && !i.modifiers.shift,
+                !typing && i.key_pressed(egui::Key::F) && i.modifiers.shift,
+                k(egui::Key::Slash),
                 i.key_pressed(egui::Key::Escape),
                 ctrl(egui::Key::ArrowUp),
                 ctrl(egui::Key::ArrowDown),
@@ -261,13 +264,13 @@ impl App {
                 i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::M, pressed: true, repeat: false, modifiers, .. } if modifiers.ctrl)),
             )
         });
-        let (space, back, fwd, next, prev, lyr, queue, full, esc, vol_up, vol_down, mini) = i;
+        let (space, back, fwd, next, prev, lyr, queue, np, full, search, esc, vol_up, vol_down, mini) = i;
         if mini {
             self.actions.push(Action::Mini(!self.mini.target()));
         }
         // The mini player has no pages or now playing to go to, nor does a window on
         // its way back until it's there.
-        let (back, fwd, lyr, queue, full, esc) = if self.mini.busy() { (false, false, false, false, false, false) } else { (back, fwd, lyr, queue, full, esc) };
+        let (back, fwd, lyr, queue, np, full, search, esc) = if self.mini.busy() { (false, false, false, false, false, false, false, false) } else { (back, fwd, lyr, queue, np, full, search, esc) };
         if space {
             self.toggle();
         }
@@ -291,8 +294,35 @@ impl App {
             self.np_open = true;
             self.np_tab = NpTab::UpNext;
         }
-        if full && self.np_open {
-            self.set_fullscreen(ctx, !self.fullscreen);
+        // F opens and closes the now playing view; Shift+F is the player full screen
+        // (opening now playing first when it isn't up, since the full screen is its view).
+        // Now playing coming up folds the island's card away: same thing, full size.
+        if np && self.current().is_some() {
+            self.np_open = !self.np_open;
+            if self.np_open {
+                self.island.collapse();
+            }
+            if self.fullscreen && !self.np_open {
+                self.set_fullscreen(ctx, false);
+            }
+        }
+        if full && self.current().is_some() {
+            self.island.collapse();
+            if !self.np_open {
+                self.np_open = true;
+                self.set_fullscreen(ctx, true);
+            } else {
+                self.set_fullscreen(ctx, !self.fullscreen);
+            }
+        }
+        if search {
+            // From any page: the Search page opens, and its box takes the typing. (On
+            // the search page itself this just refocuses the box.)
+            if !matches!(self.page, Page::Search(_)) {
+                let q = self.search_text.trim().to_owned();
+                self.go(Page::Search(q));
+            }
+            self.search_refocus = true;
         }
         if esc {
             if self.fullscreen {

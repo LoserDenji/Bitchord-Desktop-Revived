@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::backend::{ArtistPage, Collection};
+use crate::backend::{ArtistPage, Collection, ShelfLink};
 use crate::model::{Card, Chip, Link, Shelf, ShelfKind, Target, Thumb, Track};
 use crate::ytmapi::Api;
 
@@ -608,8 +608,11 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
         top: Vec::new(),
         top_playlist: None,
         albums: Vec::new(),
+        singles: Vec::new(),
         playlists: Vec::new(),
         similar: Vec::new(),
+        albums_more: None,
+        singles_more: None,
         name,
     };
     for s in sections {
@@ -626,21 +629,94 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
         let carousel = &s["musicCarouselShelfRenderer"];
         let title = text(&carousel["header"]["musicCarouselShelfBasicHeaderRenderer"]["title"]).unwrap_or_default();
         // Release shelves list just the year; spell out the kind and artist like elsewhere.
-        let kind = if title.starts_with("Single") { "Single" } else { "Album" };
+        // Singles (and EPs) keep their own shelf, so each gets its own Show all.
+        let singles_shelf = title.starts_with("Single") || title.starts_with("EP");
+        let kind = if singles_shelf { "Single" } else { "Album" };
+        // The shelf's More button, where YouTube lists everything the artist has for this
+        // kind of release (a discography browse). Only the release shelves get one that
+        // leads there; other shelves' More opens a playlist or videos, not a discography.
+        let more = if singles_shelf || title.starts_with("Album") { more_link(carousel) } else { None };
+        let sink = if singles_shelf { &mut page.singles } else { &mut page.albums };
         for card in arr(&carousel["contents"]).iter().filter_map(|i| two_row(&i["musicTwoRowItemRenderer"])) {
             match card.target {
                 Target::Album(_) => {
                     let subtitle = [kind, me.name.as_str(), card.subtitle.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" • ");
                     let links = if card.links.is_empty() { vec![me.clone()] } else { card.links.clone() };
-                    page.albums.push(Card { subtitle, links, ..card });
+                    sink.push(Card { subtitle, links, ..card });
                 }
                 Target::Playlist(_) => page.playlists.push(card),
                 Target::Artist(_) => page.similar.push(card),
                 Target::Song(_) => {}
             }
         }
+        // An empty shelf is dropped later; its More survives, since a discography can
+        // hold releases the shelf's first ten cards didn't.
+        if singles_shelf {
+            page.singles_more = more.or(page.singles_more.take());
+        } else {
+            page.albums_more = more.or(page.albums_more.take());
+        }
     }
     Some(page)
+}
+
+/// A carousel's More button (`moreContentButton.buttonRenderer`), where it opens a
+/// discography browse: the browseId and params that list the whole shelf.
+fn more_link(carousel: &Value) -> Option<ShelfLink> {
+    let nav = &carousel["header"]["musicCarouselShelfBasicHeaderRenderer"]["moreContentButton"]["buttonRenderer"]["navigationEndpoint"];
+    let browse_id = nav["browseEndpoint"]["browseId"].as_str()?.trim().to_owned();
+    if browse_id.is_empty() {
+        return None;
+    }
+    Some(ShelfLink {
+        browse_id,
+        params: nav["browseEndpoint"]["params"].as_str().unwrap_or_default().trim().to_owned(),
+    })
+}
+
+/// An artist shelf's Show all: everything the artist has for that shelf, from the
+/// discography browse its More button opens. YouTube answers with a grid of cards
+/// (`gridRenderer`); any trailing pages are followed, bounded, so "all" means all.
+pub async fn discography(api: &Api, browse_id: &str, params: &str) -> anyhow::Result<Vec<Card>> {
+    let mut body = json!({ "browseId": browse_id });
+    if !params.is_empty() {
+        body["params"] = json!(params);
+    }
+    let v = api.call("browse", body, false).await?;
+    let mut cards = discog_cards(&v);
+    // A shelf long enough to page (rare: YouTube mostly answers in one grid) — follow
+    // its continuations, bounded, so a very long discography still ends somewhere.
+    let mut token = find_key(&v, "nextGridContinuationData").and_then(|c| c["continuation"].as_str()).map(str::to_owned);
+    for _ in 0..10 {
+        let Some(t) = token.filter(|t| !t.is_empty()) else { break };
+        let more = api.call("browse", json!({ "continuation": t }), false).await?;
+        let page = find_key(&more, "gridContinuation");
+        let Some(page) = page else { break };
+        let added = discog_cards(page);
+        let done = added.is_empty();
+        cards.extend(added);
+        token = find_key(page, "nextGridContinuationData").and_then(|c| c["continuation"].as_str()).map(str::to_owned);
+        if done {
+            break;
+        }
+    }
+    Ok(cards)
+}
+
+/// The cards of a discography grid (`gridRenderer`, or a shelf's list or carousel when
+/// YouTube answers with one of those instead).
+fn discog_cards(v: &Value) -> Vec<Card> {
+    static EMPTY: [Value; 0] = [];
+    let items = if let Some(g) = find_key(v, "gridRenderer") {
+        arr(&g["items"])
+    } else if let Some(shelf) = find_key(v, "musicShelfRenderer") {
+        arr(&shelf["contents"])
+    } else if let Some(carousel) = find_key(v, "musicCarouselShelfRenderer") {
+        arr(&carousel["contents"])
+    } else {
+        &EMPTY[..]
+    };
+    items.iter().filter_map(|i| two_row(&i["musicTwoRowItemRenderer"]).or_else(|| list_card(&i["musicResponsiveListItemRenderer"]))).collect()
 }
 
 // ------------------------------------------------------------- radio and explore

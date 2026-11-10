@@ -180,7 +180,9 @@ impl Default for LyricStyle {
             sung_color: "white".into(),
             blur: 2.0,
             blur_scope: BlurScope::Upcoming,
-            glow: 0.0,
+            // The sung word glows (am-lyrics' intensive look): held words ride this up
+            // to `long_word_glow_alpha`'s place, which the default look shares.
+            glow: 0.45,
             glow_color: "white".into(),
             active_scale: 1.05,
             lift: 3.0,
