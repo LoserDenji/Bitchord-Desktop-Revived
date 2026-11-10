@@ -235,7 +235,7 @@ pub fn keycaps(combo: &str) -> Vec<String> {
 }
 
 /// The keycap a stored key name draws as.
-fn cap_name(stored: &str) -> &'static str {
+fn cap_name(stored: &str) -> &str {
     match stored {
         "ctrl" => "Ctrl",
         "shift" => "Shift",
@@ -363,7 +363,7 @@ pub(super) fn capture_dialog(app: &mut App, ctx: &egui::Context) {
     let Some(cmd) = app.keybinds.capture.as_ref().map(|c| c.cmd) else { return };
     let (events, held) = ctx.input(|i| (i.events.clone(), i.modifiers));
     // Gone to another app: the player's keys shouldn't stay off behind this dialog.
-    if !ctx.input(|i| i.viewport().focused) {
+    if ctx.input(|i| i.viewport().focused) == Some(false) {
         app.keybinds.capture = None;
         return;
     }
@@ -457,7 +457,7 @@ pub(super) fn settings_section(app: &mut App, ui: &mut Ui) {
                 let name_w = ui.painter().layout_no_wrap(cmd.label().to_owned(), theme::regular(14.0), theme::text()).size().x;
                 let size = ui.painter().layout_no_wrap("Reset".to_owned(), theme::regular(12.5), theme::text_dim()).size();
                 let area = Align2::LEFT_CENTER.anchor_size(pos2(rect.left() + name_w + 14.0, mid), size);
-                let link = ui.interact(area.expand(3.0), ui.scope_id().with(("keybind-reset", cmd.key()))).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let link = ui.interact(area.expand(3.0), ui.scope_id().with(("keybind-reset", cmd.key())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
                 let color = if link.hovered() { theme::text() } else { theme::text_dim() };
                 ui.painter().text(area.left_center(), Align2::LEFT_CENTER, "Reset", theme::regular(12.5), color);
                 if link.clicked() {

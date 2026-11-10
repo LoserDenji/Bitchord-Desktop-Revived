@@ -1825,7 +1825,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.reactive_bg, "Pulse with the music");
         });
         divider(ui);
-        setting_row(ui, "Now playing backdrop", Some("What plays behind the full-screen player: the theme's own, or one of the alternatives without editing the theme. Artwork mesh is ForkChord's \u2014 the cover's colours as a still gradient under a full-cover blur."), |ui| {
+        setting_row(ui, "Now playing backdrop", Some("What plays behind the full-screen player: the theme's own, or one of the alternatives without editing the theme. Artwork mesh is ForkChord's \u{2014} the cover's colours as a still gradient under a full-cover blur."), |ui| {
             use crate::preset::BgMode;
             let label = |m: Option<BgMode>| match m {
                 None => "Theme default".to_owned(),
@@ -1839,7 +1839,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
                 },
             };
             let mut pick: Option<Option<BgMode>> = None;
-            let btn = dropdown_button(ui, label(app.np_bg), 220.0, "Now playing backdrop");
+            let btn = dropdown_button(ui, &label(app.np_bg), 220.0, "Now playing backdrop");
             egui::Popup::menu(&btn).show(|ui| {
                 ui.set_width(220.0);
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
