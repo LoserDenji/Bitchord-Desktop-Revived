@@ -470,10 +470,11 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
         }
         (resp, h, p)
     };
-    let (r, h, p) = btn(ui, 0, "shuffle", "Shuffle up next", true);
-    super::glyphs::draw(ui, r.rect.center(), icons[0] * (1.0 - 0.1 * p), super::glyphs::SHUFFLE, ink(h, 0.55, 1.0));
+    let (r, h, p) = btn(ui, 0, "shuffle", if app.queue.shuffled() { "Restore original order" } else { "Shuffle up next" }, true);
+    // On while shuffled, like the repeat button's, so the toggle has a visible state.
+    super::glyphs::draw(ui, r.rect.center(), icons[0] * (1.0 - 0.1 * p), super::glyphs::SHUFFLE, if app.queue.shuffled() { app.accent_color() } else { ink(h, 0.55, 1.0) });
     if r.clicked() {
-        app.shuffle_upcoming();
+        app.shuffle_toggle();
     }
     let (r, h, p) = btn(ui, 1, "prev", "Previous", enabled);
     super::glyphs::draw(ui, r.rect.center(), icons[1] * (1.0 - 0.1 * p), super::glyphs::PREVIOUS, ink(h, 1.0, dim));

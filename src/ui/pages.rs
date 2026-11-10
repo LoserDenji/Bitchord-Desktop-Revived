@@ -1228,18 +1228,129 @@ fn settings(app: &mut App, ui: &mut Ui) {
 
 fn settings_body(app: &mut App, ui: &mut Ui) {
     page_title(ui, "Settings");
-    settings_account(app, ui);
-    settings_playback(app, ui);
-    settings_downloads(ui);
-    settings_lyrics(app, ui);
-    settings_artists(app, ui);
-    settings_appearance(app, ui);
-    settings_window(app, ui);
-    settings_connections(app, ui);
-    section_label(ui, "Network", None);
-    settings_card(ui, |ui| network(app, ui));
-    super::transfer::settings_section(app, ui);
-    settings_shortcuts(ui);
+    settings_search_box(app, ui);
+    let query = app.settings_search.trim().to_lowercase();
+    if query.is_empty() {
+        settings_account(app, ui);
+        settings_playback(app, ui);
+        settings_downloads(ui);
+        settings_lyrics(app, ui);
+        settings_artists(app, ui);
+        settings_appearance(app, ui);
+        settings_window(app, ui);
+        settings_connections(app, ui);
+        section_label(ui, "Network", None);
+        settings_card(ui, |ui| network(app, ui));
+        super::transfer::settings_section(app, ui);
+        settings_shortcuts(ui);
+        return;
+    }
+    // While the box has words, only the sections they match stay up. A section matches
+    // when every word typed hits its name or one of its rows' (see the index below).
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let rows_of = |name: &str| SETTINGS_SECTIONS.iter().find(|(n, _)| *n == name).map_or(&[][..], |(_, r)| *r);
+    let shown = |name: &str| {
+        let name_lc = name.to_lowercase();
+        words.iter().all(|w| name_lc.contains(w) || rows_of(name).iter().any(|r| r.to_lowercase().contains(w)))
+    };
+    let visible = SETTINGS_SECTIONS.iter().any(|(name, _)| shown(name));
+    if !visible {
+        ui.add_space(24.0);
+        ui.label(
+            RichText::new(format!("No settings match \u{201c}{}\u{201d}.", app.settings_search.trim()))
+                .font(theme::regular(14.0))
+                .color(theme::text_dim()),
+        );
+        return;
+    }
+    if shown("Account") {
+        settings_account(app, ui);
+    }
+    if shown("Playback") {
+        settings_playback(app, ui);
+    }
+    if shown("Downloads") {
+        settings_downloads(ui);
+    }
+    if shown("Lyrics") {
+        settings_lyrics(app, ui);
+    }
+    if shown("Artist pages") {
+        settings_artists(app, ui);
+    }
+    if shown("Appearance") {
+        settings_appearance(app, ui);
+    }
+    if shown("Window") {
+        settings_window(app, ui);
+    }
+    if shown("Connections") {
+        settings_connections(app, ui);
+    }
+    if shown("Network") {
+        section_label(ui, "Network", None);
+        settings_card(ui, |ui| network(app, ui));
+    }
+    if shown("Import") {
+        super::transfer::settings_section(app, ui);
+    }
+    if shown("Keyboard shortcuts") {
+        settings_shortcuts(ui);
+    }
+}
+
+/// Settings' sections, and the words each one answers to: its rows' titles, plus a few
+/// synonyms the descriptions use (SponsorBlock, wgpu, scrobble…) that a search should find.
+const SETTINGS_SECTIONS: &[(&str, &[&str])] = &[
+    ("Account", &["Sign in", "Sign out", "Channel", "Google", "account"]),
+    (
+        "Playback",
+        &["Autoplay", "Volume normalization", "Logarithmic volume", "Play songs, not music videos", "Output device", "Automix", "Crossfade", "Crossfade length", "Skip non-music parts", "SponsorBlock", "Hi-Res audio", "hires", "lossless", "Dolby Atmos", "Add a source"],
+    ),
+    ("Downloads", &["Download folder", "Change", "Open", "offline"]),
+    ("Lyrics", &["Romanization", "Translation", "Translate into", "Text size", "Intensive glow", "Glow strength", "Timing offset", "Word-synced trim", "Line-synced trim", "Lyrics sources", "translate"]),
+    ("Artist pages", &["Signature service", "signature"]),
+    ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Font", "Hidden playlists", "theme"]),
+    ("Window", &["Dynamic island", "Close to tray", "Collapse sidebar", "Draw with", "Restart to apply", "renderer", "OpenGL", "wgpu"]),
+    ("Connections", &["Discord", "Last.fm", "scrobble", "rich presence"]),
+    ("Network", &["Proxy", "System proxy", "Test connection", "Restart to apply", "socks"]),
+    ("Import", &["Spotify", "Transfer", "account"]),
+    ("Keyboard shortcuts", &["Shortcut", "keys", "hotkey", "Space", "Ctrl"]),
+];
+
+/// The search box under the page title: typing hides the sections it doesn't match.
+fn settings_search_box(app: &mut App, ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::hover());
+    let over = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| rect.contains(p));
+    let focus = ui.memory(|m| m.has_focus(egui::Id::unique("settings-search")));
+    let h = theme::anim_bool(ui.ctx(), egui::Id::unique("settings-search-h"), over || focus, 0.12);
+    ui.painter().rect_filled(rect, 10.0, theme::glass(0.08 + 0.03 * h));
+    widgets::icon_at(ui, pos2(rect.left() + 18.0, rect.center().y), icon::SEARCH, 16.0, theme::text_dim());
+    let clearable = !app.settings_search.is_empty();
+    let inner = Rect::from_min_max(
+        pos2(rect.left() + 38.0, rect.top() + 4.0),
+        pos2(rect.right() - if clearable { 40.0 } else { 16.0 }, rect.bottom() - 4.0),
+    );
+    ui.put(
+        inner,
+        egui::TextEdit::singleline(&mut app.settings_search)
+            .id(egui::Id::unique("settings-search"))
+            .hint_text(egui::RichText::new("Search settings").color(theme::text_faint()))
+            .font(theme::regular(14.0))
+            .align(egui::Align2::LEFT_CENTER)
+            .frame(egui::Frame::NONE)
+            .desired_width(inner.width()),
+    );
+    if clearable {
+        // At the field's right edge: a child of its own, since the text edit was placed,
+        // not laid out, and the row's cursor is already past it.
+        let bx = Rect::from_center_size(pos2(rect.right() - 21.0, rect.center().y), Vec2::splat(30.0));
+        let mut b = ui.new_child(egui::UiBuilder::new().max_rect(bx).layout(egui::Layout::top_down(egui::Align::Min)));
+        if widgets::icon_button(&mut b, icon::X, 14.0, "Clear search", false).clicked() {
+            app.settings_search.clear();
+        }
+    }
+    ui.add_space(14.0);
 }
 
 /// Settings › Account: signing in and out, and which channel to use.
@@ -1256,7 +1367,7 @@ fn settings_account(app: &mut App, ui: &mut Ui) {
     settings_card(ui, |ui| {
         if app.logged_in {
             let name = app.account_name.clone().unwrap_or_else(|| "YouTube Music".to_owned());
-            setting_row(ui, &name, Some("Signed in with Google. Your home feed, library and likes come from this account. Saved encrypted in Windows Credential Manager."), |ui| {
+            setting_row(ui, &name, Some(&format!("Signed in with Google. Your home feed, library and likes come from this account. Saved encrypted in {}.", super::secret_store())), |ui| {
                 sign_out = pill(ui, "Sign out", Some(icon::LOG_OUT), false).clicked();
             });
             // Also with one, when the one in use isn't it (a brand channel since deleted).
@@ -1354,7 +1465,7 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.play_songs, "Play songs, not music videos");
         });
         divider(ui);
-        setting_row(ui, "Output device", Some("Where the music plays. A picked device that isn't connected leaves it to Windows' default until it's back."), |ui| {
+        setting_row(ui, "Output device", Some("Where the music plays. A picked device that isn't connected leaves it to the system's default until it's back."), |ui| {
             output_device_picker(app, ui);
         });
         divider(ui);
@@ -1711,7 +1822,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.reactive_bg, "Pulse with the music");
         });
         divider(ui);
-        setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this PC works, e.g. one made for your language."), |ui| {
+        setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this computer works, e.g. one made for your language."), |ui| {
             if let Some(name) = font_picker(ui) {
                 theme::set_font_choice(&name);
                 app.chrome_applied = None;
@@ -1751,7 +1862,7 @@ fn settings_window(app: &mut App, ui: &mut Ui) {
         let api = crate::renderer::api_name();
         let title = format!("Draw with {api}");
         let desc = format!(
-            "Use {api} (wgpu) instead of OpenGL. It isn't faster for this app and takes about three times the memory; try it if OpenGL draws wrong on this PC. If {api} won't start, the app goes back to OpenGL."
+            "Use {api} (wgpu) instead of OpenGL. It isn't faster for this app and takes about three times the memory; try it if OpenGL draws wrong on this computer. If {api} won't start, the app goes back to OpenGL."
         );
         setting_row(ui, &title, Some(&desc), |ui| {
             if toggle(ui, &mut app.wgpu_renderer, &title).changed() {
@@ -1882,11 +1993,18 @@ fn network(app: &mut App, ui: &mut Ui) {
     match &app.proxy_mode {
         Setting::System => {
             divider(ui);
-            let desc = match proxy::system() {
-                Some(p) => format!("Windows is set to use {}.", proxy::redact(&p)),
-                None => "Windows isn't set to use a proxy, so BitChord connects directly.".to_owned(),
-            };
-            setting_row(ui, "Windows proxy", Some(&desc), |_| {});
+            match proxy::system() {
+                Some(p) => {
+                    let os = if cfg!(target_os = "macos") { "macOS" } else { "Windows" };
+                    setting_row(ui, "System proxy", Some(&format!("{os} is set to use {}.", proxy::redact(&p))), |_| {});
+                }
+                None if cfg!(windows) => {
+                    setting_row(ui, "System proxy", Some("Windows isn't set to use a proxy, so BitChord connects directly."), |_| {});
+                }
+                None => {
+                    setting_row(ui, "System proxy", Some("BitChord doesn't read a system proxy on this platform, so it connects directly."), |_| {});
+                }
+            }
         }
         Setting::Custom(_) => {
             divider(ui);
@@ -1899,7 +2017,7 @@ fn network(app: &mut App, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 save = pill(ui, if saved { "Saved" } else { "Save" }, None, !saved).clicked() && !saved;
                 ui.add_space(8.0);
-                ui.label(RichText::new("A password in the address is kept in Windows Credential Manager.").font(theme::regular(12.5)).color(theme::text_dim()));
+                ui.label(RichText::new(format!("A password in the address is kept in {}.", super::secret_store())).font(theme::regular(12.5)).color(theme::text_dim()));
             });
             if save {
                 match proxy::save(app.backend.data_dir(), &custom) {
@@ -1994,7 +2112,7 @@ fn font_picker(ui: &mut Ui) -> Option<String> {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
-                ui.label(RichText::new("Installed on this PC").font(theme::semibold(12.0)).color(theme::text_faint()));
+                ui.label(RichText::new("Installed on this computer").font(theme::semibold(12.0)).color(theme::text_faint()));
             });
             ui.add_space(4.0);
             let ctx = ui.ctx().clone();
@@ -2017,11 +2135,10 @@ fn font_picker(ui: &mut Ui) -> Option<String> {
     picked.filter(|p| *p != current)
 }
 
-const SYSTEM_DEFAULT: &str = "Windows default";
-
 fn output_device_picker(app: &mut App, ui: &mut Ui) {
+    let default_label = super::system_device_label();
     let current = match &app.output_device {
-        None => SYSTEM_DEFAULT.to_owned(),
+        None => default_label.to_owned(),
         Some((id, name)) => match app.output_devices.iter().find(|d| d.id == *id) {
             Some(d) => d.name.clone(),
             None if app.output_devices.is_empty() => name.clone(),
@@ -2039,7 +2156,7 @@ fn output_device_picker(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             ui.add_space(4.0);
-            if option_row(ui, SYSTEM_DEFAULT, app.output_device.is_none()).clicked() {
+            if option_row(ui, default_label, app.output_device.is_none()).clicked() {
                 pick = Some(None);
                 ui.close();
             }

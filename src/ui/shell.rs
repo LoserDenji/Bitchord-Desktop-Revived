@@ -768,11 +768,12 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     };
     let mid = run_l + (run_w - 8.0) / 2.0;
     if !narrow {
-        let r = tbtn(ui, run_l + 14.0, "shuffle", "Shuffle up next");
+        let on = app.queue.shuffled();
+        let r = tbtn(ui, run_l + 14.0, "shuffle", if on { "Restore original order" } else { "Shuffle up next" });
         let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.12);
-        glyphs::draw(ui, r.rect.center(), 28.0, glyphs::SHUFFLE, ink(h));
+        glyphs::draw(ui, r.rect.center(), 28.0, glyphs::SHUFFLE, if on { app.accent_color() } else { ink(h) });
         if r.clicked() {
-            app.shuffle_upcoming();
+            app.shuffle_toggle();
         }
     }
     let r = tbtn(ui, mid - 33.0, "prev", "Previous");

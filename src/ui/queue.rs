@@ -37,6 +37,10 @@ pub struct Queue {
     /// The queue is a playlist played while its songs were still coming in: the rest
     /// join the queue as they arrive.
     pub fill: Option<QueueFill>,
+    /// Shuffle is a toggle: what played up next, in order, before the tail was shuffled.
+    /// Set on the first shuffle, and taken back to restore the original order (see
+    /// [`Queue::shuffle_toggle`]). Songs queued by hand while it's on stay at the end.
+    pub shuffle_original: Option<Vec<Track>>,
 }
 
 /// How many songs before and after the current one a saved session keeps: liked-songs
@@ -46,7 +50,7 @@ const SAVED_AFTER: usize = 150;
 
 impl Queue {
     pub fn new(repeat: Repeat) -> Self {
-        Self { tracks: Vec::new(), index: None, repeat, fill: None }
+        Self { tracks: Vec::new(), index: None, repeat, fill: None, shuffle_original: None }
     }
 
     pub fn current(&self) -> Option<&Track> {
@@ -67,6 +71,7 @@ impl Queue {
         self.fill = fill;
         self.index = Some(start.min(tracks.len() - 1));
         self.tracks = tracks;
+        self.shuffle_original = None;
         true
     }
 
@@ -76,6 +81,7 @@ impl Queue {
         self.tracks = tracks;
         self.index = Some(index);
         self.fill = None;
+        self.shuffle_original = None;
     }
 
     /// Next, or the end of a song: true when there's a song to play. At the end of a
@@ -124,18 +130,53 @@ impl Queue {
         }
     }
 
-    /// Shuffle what's still to come (and what of a playlist is still coming in): false
-    /// when nothing is.
-    pub fn shuffle_upcoming(&mut self) -> bool {
+    /// Shuffle what's still to come, or put it back in order: a toggle, so a playlist or
+    /// album can return to its original sequence. True when the tail is now shuffled,
+    /// false when the original order was restored, and `None` when there's nothing to
+    /// shuffle. Songs queued by hand while it was on keep their place, at the end.
+    pub fn shuffle_toggle(&mut self) -> Option<bool> {
+        if self.shuffle_original.is_some() {
+            self.unshuffle();
+            return Some(false);
+        }
         let start = self.index.map_or(0, |i| i + 1);
         if start >= self.tracks.len() {
-            return false;
+            return None;
         }
+        self.shuffle_original = Some(self.tracks[start..].to_vec());
         super::shuffle(&mut self.tracks[start..]);
         if let Some(fill) = &mut self.fill {
             fill.shuffled = true;
         }
-        true
+        Some(true)
+    }
+
+    /// Restore the tail's original order: the songs still there from it, in it, then any
+    /// that joined while it was shuffled (queued by hand, or a radio that went on) in
+    /// their order now. The song playing never moves.
+    fn unshuffle(&mut self) {
+        let Some(original) = self.shuffle_original.take() else { return };
+        let start = self.index.map_or(0, |i| i + 1).min(self.tracks.len());
+        // Matches are taken out of the tail as they're claimed, so a song that's in the
+        // queue twice matches once each, and what's left is what was added meanwhile.
+        let mut pool: Vec<Track> = self.tracks[start..].to_vec();
+        let mut tail: Vec<Track> = Vec::with_capacity(pool.len());
+        for want in &original {
+            if let Some(at) = pool.iter().position(|t| t.id == want.id) {
+                tail.push(pool.remove(at));
+            }
+        }
+        tail.extend(pool);
+        self.tracks.truncate(start);
+        self.tracks.extend(tail);
+        if let Some(fill) = &mut self.fill {
+            fill.shuffled = false;
+        }
+    }
+
+    /// Whether the tail is shuffled now (and clicking the button would restore the order).
+    pub fn shuffled(&self) -> bool {
+        self.shuffle_original.is_some()
     }
 
     /// Play `t` after the current song: true when nothing was playing, so it starts now.
@@ -427,7 +468,7 @@ mod tests {
         let refs: Vec<&str> = songs.iter().map(String::as_str).collect();
         let mut q = queue(&refs, 5, Repeat::Off);
         q.fill = filling("PL1", 1, false);
-        assert!(q.shuffle_upcoming());
+        assert_eq!(q.shuffle_toggle(), Some(true));
         assert!(q.fill.as_ref().unwrap().shuffled);
         assert_eq!(ids(&q)[..6], refs[..6]);
         let mut rest: Vec<&str> = ids(&q)[6..].to_vec();
@@ -437,7 +478,71 @@ mod tests {
         assert_eq!(rest, refs[6..]);
         // At the last song there's nothing to shuffle.
         let mut q = queue(&["a", "b"], 1, Repeat::Off);
-        assert!(!q.shuffle_upcoming());
+        assert_eq!(q.shuffle_toggle(), None);
+    }
+
+    #[test]
+    fn shuffling_twice_restores_the_original_order() {
+        let songs: Vec<String> = (0..40).map(|i| i.to_string()).collect();
+        let refs: Vec<&str> = songs.iter().map(String::as_str).collect();
+        let mut q = queue(&refs, 5, Repeat::Off);
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        assert!(q.shuffled());
+        assert_eq!(q.shuffle_toggle(), Some(false));
+        assert!(!q.shuffled());
+        assert_eq!(ids(&q), refs);
+        assert_eq!(q.index, Some(5));
+        // The third click shuffles again, with a fresh order to come back to.
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        assert!(q.shuffle_toggle().is_some());
+        assert_eq!(ids(&q), refs);
+        // Nothing playing: the whole list shuffles, and comes back.
+        let mut q = queue(&["a", "b", "c"], 0, Repeat::Off);
+        q.index = None;
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        assert_eq!(q.shuffle_toggle(), Some(false));
+        assert_eq!(ids(&q), ["a", "b", "c"]);
+        // A new queue forgets the toggle.
+        let mut q = queue(&refs[..10], 2, Repeat::Off);
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        assert!(q.replace(vec![track("x")], 0, None));
+        assert!(!q.shuffled());
+    }
+
+    #[test]
+    fn unshuffling_keeps_songs_queued_while_shuffled() {
+        let mut q = queue(&["a", "b", "c", "d"], 0, Repeat::Off);
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        // Songs queued by hand land in the shuffled tail; they stay at the end, in order.
+        q.play_next(track("x"));
+        q.enqueue(track("y"));
+        // A song taken out while shuffled doesn't come back.
+        let at = q.tracks.iter().position(|t| t.id == "c").unwrap();
+        q.remove(at);
+        assert_eq!(q.shuffle_toggle(), Some(false));
+        assert_eq!(ids(&q), ["a", "b", "d", "x", "y"]);
+        assert!(!q.tracks.iter().any(|t| t.id == "c"), "removed song stays out");
+        // A song in the queue twice matches once each (play next of the playing song);
+        // the hand-queued copy is an extra, so it moves to the end of the restored tail.
+        let mut q = queue(&["a", "b"], 0, Repeat::Off);
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        q.play_next(track("a"));
+        assert_eq!(q.shuffle_toggle(), Some(false));
+        assert_eq!(ids(&q), ["a", "b", "a"]);
+        // The song playing never moves, even at the tail's start.
+        let mut q = queue(&["a", "b", "c", "d", "e"], 3, Repeat::Off);
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        assert_eq!(q.current().unwrap().id, "d");
+        assert_eq!(q.shuffle_toggle(), Some(false));
+        assert_eq!(q.index, Some(3));
+        assert_eq!(ids(&q), ["a", "b", "c", "d", "e"]);
+        // A playlist still coming in stops shuffling its next pages.
+        let mut q = queue(&["a", "b"], 0, Repeat::Off);
+        q.fill = filling("PL1", 1, false);
+        assert_eq!(q.shuffle_toggle(), Some(true));
+        assert!(q.fill.as_ref().unwrap().shuffled);
+        assert_eq!(q.shuffle_toggle(), Some(false));
+        assert!(!q.fill.as_ref().unwrap().shuffled);
     }
 
     #[test]

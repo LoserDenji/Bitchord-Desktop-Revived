@@ -478,13 +478,22 @@ impl App {
         self.audio.send(if playing { AudioCmd::Pause } else { AudioCmd::Resume });
     }
 
-    pub(super) fn shuffle_upcoming(&mut self) {
+    /// Shuffle up next, or back to the original order: a toggle, so a playlist or album
+    /// can return to its sequence.
+    pub(super) fn shuffle_toggle(&mut self) {
         if self.jam.guest() {
             return self.toast("Only the host can shuffle the jam");
         }
-        if self.queue.shuffle_upcoming() {
-            self.toast("Shuffled up next");
-            self.prefetch_next();
+        match self.queue.shuffle_toggle() {
+            Some(true) => {
+                self.toast("Shuffled up next");
+                self.prefetch_next();
+            }
+            Some(false) => {
+                self.toast("Original order restored");
+                self.prefetch_next();
+            }
+            None => {}
         }
     }
 }

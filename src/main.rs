@@ -76,24 +76,40 @@ fn main() -> eframe::Result {
             return Ok(());
         }
     }
-    // A jam link (`ytm-rs://jam/CODE` or the https share link): hand it to the running
-    // instance if there is one, else join once this one is up. Before `init_logging`,
-    // which would truncate the running instance's log file. A plain launch (or the
-    // explicit `--show`) hands the window request over the same way.
+    // The single-instance hand-off, before anything slow: the first launch takes the
+    // per-user channel and serves it; a later one (the shortcut clicked again, a jam
+    // link) finds it taken, hands its message over and exits — or, when the holder
+    // turns out to be gone, takes the channel over and carries on. Before `init_logging`,
+    // which would truncate the running instance's log file.
+    let claim = deeplink::claim();
     let mut show_requested = false;
-    if let Some(code) = deeplink::from_args() {
-        if deeplink::forward_to_running(&code) {
-            return Ok(());
+    let mut handed = false;
+    if claim.busy() {
+        if let Some(code) = deeplink::from_args() {
+            handed = deeplink::forward(&code);
+        } else {
+            handed = deeplink::forward_show();
         }
-        deeplink::push(code);
-    } else if deeplink::forward_show() {
+        show_requested = !handed && std::env::args_os().skip(1).any(|a| a == deeplink::SHOW_FLAG);
+        if !handed {
+            // Nobody answered: the holder died mid-startup. Keep its channel for us.
+            deeplink::take_over();
+        }
+    }
+    if handed {
         return Ok(());
-    } else {
-        show_requested = std::env::args_os().skip(1).any(|a| a == deeplink::SHOW_FLAG);
+    }
+    if let Some(code) = deeplink::from_args() {
+        deeplink::push(code);
     }
     logging::init(&data_dir());
     if show_requested {
-        log::info!("--show: no running copy to hand the window to; starting");
+        if claim.busy() {
+            // The holder was there but didn't answer; `take_over` has the channel now.
+            log::warn!("--show: the running copy didn't answer; starting");
+        } else {
+            log::info!("--show: no running copy to hand the window to; starting");
+        }
     }
     update::clean_portable();
     stream::init_dev_hooks();
@@ -151,8 +167,9 @@ fn main() -> eframe::Result {
                 }
             };
 
-            // Jam links from later launches arrive over a pipe (first instance only).
-            deeplink::listen(wake);
+            // Jam links from later launches arrive over the channel claimed at startup:
+            // this is where their wake-up meets the UI.
+            deeplink::set_wake(Arc::new(move || wake()));
             // Keep `ytm-rs:` links pointing at this copy; dev builds leave it alone
             // (even with YTM_UPDATE_FORCE).
             if update::installed() && !cfg!(debug_assertions) {

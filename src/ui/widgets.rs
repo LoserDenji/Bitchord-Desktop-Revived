@@ -858,6 +858,9 @@ pub fn song_actions(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, 
             }
         }
     }
+    if menu_action(ui, Some(icon::LINK), "Copy link") {
+        acts.push(Action::Share(Target::Song(t.clone())));
+    }
 }
 
 /// Soft drop shadow under a rounded rect (e.g. artwork).

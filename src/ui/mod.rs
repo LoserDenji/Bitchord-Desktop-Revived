@@ -597,6 +597,9 @@ pub struct App {
     hidden_playlists: HashSet<String>,
     /// The collection page whose inline search is open, and what's typed in it.
     coll_search: Option<(String, String)>,
+    /// What's typed into Settings' own search box, which hides the sections it doesn't
+    /// match. Session-only: a new visit starts clean.
+    settings_search: String,
     actions: Vec<Action>,
     dialog: Option<Dialog>,
     share_pending: Option<String>,
@@ -845,6 +848,7 @@ impl App {
             xfer: Default::default(),
             jam: Default::default(),
             toast: None,
+            settings_search: String::new(),
             actions: Vec::new(),
             dialog: None,
             share_pending: None,
@@ -926,6 +930,10 @@ impl App {
         }
         // Leaving a page deloads its motion clips: no decoder keeps running unseen.
         self.apple_motion.clear();
+        // A settings search is for the session there: a new visit starts clean.
+        if self.page == Page::Settings {
+            self.settings_search.clear();
+        }
         let prev = std::mem::replace(&mut self.page, page);
         self.back.push(prev);
         self.forward.clear();
@@ -1796,6 +1804,29 @@ pub fn shuffle<T>(v: &mut [T]) {
         x ^= x >> 7;
         x ^= x << 17;
         v.swap(i, (x % (i as u64 + 1)) as usize);
+    }
+}
+
+/// The OS's encrypted credential store, where sign-ins are kept: the settings text
+/// names the one the app is actually using.
+pub fn secret_store() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "the login Keychain"
+    } else if cfg!(windows) {
+        "Windows Credential Manager"
+    } else {
+        "the system keyring"
+    }
+}
+
+/// The output device picker's entry for following the OS's own choice, named after it.
+pub fn system_device_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS default"
+    } else if cfg!(windows) {
+        "Windows default"
+    } else {
+        "System default"
     }
 }
 

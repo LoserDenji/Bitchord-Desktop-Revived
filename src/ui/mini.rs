@@ -28,6 +28,11 @@ use crate::theme::{self, icon};
 pub const SIZE: Vec2 = vec2(400.0, 112.0);
 const MIN_W: f32 = 330.0;
 const MAX_W: f32 = 720.0;
+/// The seek line's hit band along the bottom, taller than the line it shows: a press
+/// anywhere near the line seeks, instead of dragging the strip. The window-drag area
+/// keeps out of it (see `strip`), and it clears the resize border a frameless window
+/// can reserve along its bottom edge.
+const SEEK_BAND: f32 = 14.0;
 /// Kept above other windows until unpinned.
 const PINNED_BY_DEFAULT: bool = true;
 /// What the strip's × does.
@@ -471,7 +476,11 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
     let ctx = ui.ctx().clone();
     let r = ctx.content_rect();
     // Its background moves the window; a double-click goes back to the full window.
-    if titlebar::drag_strip(ui, r, "mini").double_clicked() {
+    // The seek line's band along the bottom stays out of it, so a press there seeks
+    // instead of dragging the window (and on macOS, where the strip keeps the system
+    // frame, the bottom edge is easy to land on by mistake).
+    let drag = Rect::from_min_max(r.min, pos2(r.right(), r.bottom() - SEEK_BAND));
+    if titlebar::drag_strip(ui, drag, "mini").double_clicked() {
         app.actions.push(Action::Mini(false));
     }
     ui.painter().rect_filled(r, theme::thumb_radius() + 1.0, theme::panel(0.62));
@@ -713,14 +722,16 @@ fn seek_line(app: &mut App, ui: &mut Ui, r: Rect, track: Option<&crate::model::T
     let held = hold.is_some();
     let pos = app.seek_drag.unwrap_or(smooth).min(total.max(0.0));
     // Runs the window's full width, like Apple's strip; the corner radius is small
-    // enough that the bottom edge rounds it off on its own.
+    // enough that the bottom edge rounds it off on its own. The band is taller than
+    // the line — and clear of the transport above it — so a press anywhere near the
+    // line lands on the seek, however imprecise the pointer (a trackpad especially).
     let (l, rr) = (r.left(), r.right());
-    let hit = Rect::from_min_max(pos2(l, r.bottom() - 10.0), pos2(rr, r.bottom()));
+    let hit = Rect::from_min_max(pos2(l, r.bottom() - SEEK_BAND), pos2(rr, r.bottom()));
     let resp = ui.interact(hit, ui.scope_id().with("mini-seek"), if held { Sense::hover() } else { Sense::click_and_drag() });
     let resp = if total > 0.0 && !held { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
     resp.widget_info(|| egui::WidgetInfo::slider(total > 0.0 && !held, pos as f64, "Seek"));
     let h = theme::anim_bool(ui.ctx(), "mini-seek-h", total > 0.0 && !held && (resp.hovered() || resp.dragged()), 0.15);
-    let thick = 4.0 + 2.0 * h;
+    let thick = 4.0 + 3.0 * h;
     let line = Rect::from_min_max(pos2(l, r.bottom() - thick), pos2(rr, r.bottom()));
     ui.painter().rect_filled(line, 0.0, theme::glass(0.2));
     let frac = if total > 0.0 { pos / total } else { 0.0 };
