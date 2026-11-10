@@ -169,6 +169,28 @@ impl Queue {
         }
     }
 
+    /// Move a song to another place in the queue (drag and drop). The song playing
+    /// stays the one playing, wherever it lands.
+    pub fn move_track(&mut self, from: usize, to: usize) {
+        let n = self.tracks.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        let t = self.tracks.remove(from);
+        self.tracks.insert(to, t);
+        if let Some(cur) = self.index {
+            self.index = Some(if cur == from {
+                to
+            } else if from < cur && to >= cur {
+                cur - 1
+            } else if from > cur && to <= cur {
+                cur + 1
+            } else {
+                cur
+            });
+        }
+    }
+
     /// Radio songs for `seed` join the end, without the seed or songs already queued.
     /// Returns whether the song playing was the last one.
     pub fn add_radio(&mut self, seed: &str, tracks: Vec<Track>) -> bool {
@@ -307,6 +329,42 @@ mod tests {
         assert!(q.add_radio("seed", vec![track("seed"), track("a"), track("b"), track("c")]));
         assert_eq!(ids(&q), ["seed", "a", "b", "c"]);
         assert!(!q.add_radio("seed", vec![track("d")]));
+    }
+
+    #[test]
+    fn moving_songs_keeps_the_song_playing() {
+        let mut q = queue(&["a", "b", "c", "d"], 2, Repeat::Off);
+        // The playing song moves: it stays the one playing.
+        q.move_track(2, 0);
+        assert_eq!(ids(&q), ["c", "a", "b", "d"]);
+        assert_eq!(q.index, Some(0));
+        // A song before the playing one leaves: the playing one slides up.
+        let mut q = queue(&["a", "b", "c", "d"], 2, Repeat::Off);
+        q.move_track(0, 3);
+        assert_eq!(ids(&q), ["b", "c", "d", "a"]);
+        assert_eq!(q.index, Some(1));
+        // A song after the playing one jumps ahead of it: the playing one slides down.
+        let mut q = queue(&["a", "b", "c", "d"], 1, Repeat::Off);
+        q.move_track(3, 0);
+        assert_eq!(ids(&q), ["d", "a", "b", "c"]);
+        assert_eq!(q.index, Some(2));
+        // A song next to the playing one moved over it: the playing one slides.
+        let mut q = queue(&["a", "b", "c", "d"], 1, Repeat::Off);
+        q.move_track(2, 0);
+        assert_eq!(ids(&q), ["c", "a", "b", "d"]);
+        assert_eq!(q.index, Some(2));
+        // A song moved within one side of the playing song leaves it alone.
+        let mut q = queue(&["a", "b", "c", "d"], 2, Repeat::Off);
+        q.move_track(0, 1);
+        assert_eq!(ids(&q), ["b", "a", "c", "d"]);
+        assert_eq!(q.index, Some(2));
+        // No-ops don't disturb anything.
+        let mut q = queue(&["a", "b"], 0, Repeat::Off);
+        q.move_track(0, 0);
+        q.move_track(1, 5);
+        q.move_track(5, 0);
+        assert_eq!(ids(&q), ["a", "b"]);
+        assert_eq!(q.index, Some(0));
     }
 
     #[test]

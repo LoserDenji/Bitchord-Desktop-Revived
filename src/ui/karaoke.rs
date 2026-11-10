@@ -165,6 +165,8 @@ struct Cfg {
     /// `--blyrics-glow-color` alpha on the container and on held words.
     glow_alpha: f32,
     long_glow_alpha: f32,
+    /// The listener's intensive glow, 0 when off (the looks' own glow as-is).
+    glow_boost: f32,
     css: Option<ThemeCss>,
 }
 
@@ -178,7 +180,7 @@ impl Cfg {
         self.active_scale.max(self.css.as_ref().and_then(|c| c.hover_scale).unwrap_or(1.0)).max(1.0)
     }
 
-    fn new(s: &LyricStyle, accent: Color32, width: f32, viewport: f32, centered: bool, scale: f32) -> Self {
+    fn new(s: &LyricStyle, accent: Color32, width: f32, viewport: f32, centered: bool, scale: f32, glow_boost: f32) -> Self {
         let css = s.css.clone();
         // Font size and rem: a theme's own `--blyrics-font-size` steps in YouTube Music's
         // 10 px rem; otherwise 48 pt scaled by the preset with the extension's proportions.
@@ -223,6 +225,14 @@ impl Cfg {
             // sung long ride it the rest of the way in (am-lyrics' intensive glow).
             None => (glow * 0.4, glow),
         };
+        // Intensive glow, the listener's own: the drop-shadow reaches further out and
+        // burns harder, up to full, with the held ramp riding the strength as well.
+        let k = glow_boost.clamp(0.0, 1.0);
+        let (glow_alpha, long_glow_alpha) = if k > 0.0 {
+            ((glow_alpha + (1.0 - glow_alpha) * k).min(1.0), (long_glow_alpha + (1.0 - long_glow_alpha) * k).min(1.0))
+        } else {
+            (glow_alpha, long_glow_alpha)
+        };
         let pad = css.as_ref().and_then(|c| c.padding_inline).map_or((0.0, 0.0), |p| (p[0] * rem / 10.0, p[1] * rem / 10.0));
         Self {
             font: theme::effective_font(&s.font),
@@ -231,7 +241,7 @@ impl Cfg {
             active: crate::preset::paint(&s.sung_color, accent),
             inactive_alpha: s.active_alpha,
             glow: crate::preset::paint(&s.glow_color, accent),
-            glow_rem: if css.is_some() { 0.8 } else { 0.8 * (1.0 + glow) },
+            glow_rem: if css.is_some() { 0.8 * (1.0 + k) } else { 0.8 * (1.0 + glow + 1.6 * k) },
             scale: 0.95,
             active_scale: s.active_scale.max(1.0),
             padding: rem * 2.0 * (s.line_gap / 0.6).clamp(0.2, 3.0),
@@ -255,6 +265,7 @@ impl Cfg {
             wave_duration: wave[2] as f64,
             glow_alpha,
             long_glow_alpha,
+            glow_boost: k,
             css,
         }
     }
@@ -821,6 +832,8 @@ pub struct Frame<'a> {
     pub centered: bool,
     /// The listener's lyrics text size, a multiple of the theme's.
     pub scale: f32,
+    /// The listener's intensive glow strength, 0 when the toggle is off.
+    pub glow_boost: f32,
 }
 
 pub struct Out {
@@ -863,7 +876,7 @@ impl View {
         let rect = f.rect;
         let ctx = ui.ctx().clone();
         self.shown_pass = ctx.cumulative_pass_nr();
-        let cfg = Cfg::new(f.style, f.accent, rect.width(), ctx.content_rect().width(), f.centered, f.scale);
+        let cfg = Cfg::new(f.style, f.accent, rect.width(), ctx.content_rect().width(), f.centered, f.scale, f.glow_boost);
         let layout_key = hash((f.key, rect.width().round() as i32, cfg.size.to_bits(), cfg.padding.to_bits(), cfg.max_scale().to_bits(), cfg.centered, &cfg.font, cfg.weight as u8));
         if self.layout.as_ref().is_none_or(|l| l.key != layout_key) {
             self.relayout(ui, &cfg, &f, layout_key, rect);
@@ -1535,8 +1548,9 @@ fn word_look(w: &Word, lit: &LitState, cfg: &Cfg) -> WordLook {
     }
     // `resolveLineGlowSuppression`: a glow colour too faint to see isn't animated at all.
     // A held word's glow reaches further out as well as harder: the radius rides `held`
-    // up by two fifths, so the deep-hold words read as the intensive glow they are.
-    let glow_rem = if glow_alpha < GLOW_INVISIBLE { 0.0 } else { cfg.glow_rem * cfg.rem() * (1.0 + 0.4 * w.held) };
+    // up by two fifths (a little more under the listener's intensive glow), so the
+    // deep-hold words read as the intensive glow they are.
+    let glow_rem = if glow_alpha < GLOW_INVISIBLE { 0.0 } else { cfg.glow_rem * cfg.rem() * (1.0 + (0.4 + 0.6 * cfg.glow_boost) * w.held) };
     match lit.fill {
         Fill::Line | Fill::Word => {
             // Word: a colour flip with a short transition (`data-word-state`);

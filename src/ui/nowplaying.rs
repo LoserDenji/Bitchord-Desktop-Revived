@@ -250,9 +250,10 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let radius = if round { side / 2.0 } else { cs.radius.clamp(0.0, side / 2.0) };
     let cr = egui::CornerRadius::same(radius.min(255.0) as u8);
     // The melting ambience first, under everything: the cover's colours blur out around
-    // the sleeve and fade away, so the two blend with no line between them.
+    // the sleeve, dim by the scrim over the backdrop and give way — so the two blend
+    // with no line between them, bright covers included.
     if cs.ambience > 0.0 {
-        widgets::paint_ambience(ui, egui::Id::unique("np-ambience"), amb, art, &track.thumbs, cs.ambience);
+        widgets::paint_ambience(ui, egui::Id::unique("np-ambience"), amb, art, &track.thumbs, cs.ambience, look.background.scrim);
     }
     if cs.glow > 0.0 {
         let s = egui::epaint::Shadow { offset: [0, 16], blur: 90, spread: 6, color: theme::with_alpha(app.accent_color(), cs.glow.min(1.0) * 0.7) };
@@ -636,7 +637,8 @@ fn synced(app: &mut App, ui: &mut Ui, rect: Rect, id: &str, lyrics: &Lyrics, now
         h.finish()
     };
     let scale = app.lyric_prefs.text_scale;
-    let frame = karaoke::Frame { lyrics, key, roman, trans, t, playing, now, rect, style, accent, centered, scale };
+    let glow_boost = if app.lyric_prefs.glow_boost { app.lyric_prefs.glow_strength } else { 0.0 };
+    let frame = karaoke::Frame { lyrics, key, roman, trans, t, playing, now, rect, style, accent, centered, scale, glow_boost };
     // The view lives in `app`; the frame borrows `app` for decorations, so swap it out.
     let mut view = std::mem::take(&mut app.lyric_view);
     let out = if karaoke::dev_off("view") { karaoke::Out { seek: None, animating: true, user_scrolling: false } } else { view.show(ui, frame) };
@@ -746,12 +748,13 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
         ui.add_space(4.0);
         // Lyrics first: the source, translation and timing are what the menu is for
         // while the lyrics are up.
-        let liked = app.liked.contains(&track.id);
         if lyrics {
             lyric_options(app, ui);
             menu_divider(ui);
         }
-        widgets::song_actions(ui, track, liked, None, &mut app.actions);
+        // No Like/Dislike here: the star under the cover does the liking, and this menu
+        // keeps to what a playing song's ⋯ is for.
+        widgets::song_actions(ui, track, false, None, &mut app.actions, false);
         menu_divider(ui);
         if widgets::menu_action(ui, Some(icon::LIST_PLUS), "Play next") {
             app.actions.push(Action::PlayNext(track.clone()));

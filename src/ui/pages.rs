@@ -126,6 +126,7 @@ impl Rows {
             selected: None,
             remove: None,
             hide_duration_hover: false,
+            drag: false,
         }
     }
 }
@@ -1579,6 +1580,26 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
+        // Intensive glow: the sung words' drop-shadow lit much harder than the look
+        // asks, with the listener's own strength on top.
+        setting_row(ui, "Intensive glow", Some("Light the word being sung with a far stronger glow than the theme's own, the way am-lyrics does it. Strength sets how far it goes."), |ui| {
+            toggle(ui, &mut app.lyric_prefs.glow_boost, "Intensive glow");
+        });
+        if app.lyric_prefs.glow_boost {
+            divider(ui);
+            setting_row(ui, "Glow strength", Some("How far the intensive glow goes, from a hint to all the way in."), |ui| {
+                let (min, max, step) = super::lyric_prefs::GLOW_STRENGTH;
+                let v = &mut app.lyric_prefs.glow_strength;
+                if ui.add_enabled(*v < max - 0.01, egui::Button::new("+").min_size(vec2(28.0, 26.0))).on_hover_text("Stronger").clicked() {
+                    *v = ((*v + step) * 10.0).round() / 10.0;
+                }
+                ui.label(egui::RichText::new(format!("{:.0}%", *v * 100.0)).font(theme::semibold(13.0)));
+                if ui.add_enabled(*v > min + 0.01, egui::Button::new("−").min_size(vec2(28.0, 26.0))).on_hover_text("Softer").clicked() {
+                    *v = ((*v - step) * 10.0).round() / 10.0;
+                }
+            });
+        }
+        divider(ui);
         // Offsets: seconds taken off the lyrics clock, as the extension's dock sets them.
         for (title, desc, which) in [
             ("Timing offset", "Shift all lyrics later (+) or earlier (−).", 0),
@@ -1715,7 +1736,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
 fn settings_window(app: &mut App, ui: &mut Ui) {
     section_label(ui, "Window", None);
     settings_card(ui, |ui| {
-        setting_row(ui, "Dynamic island", Some("A floating pill at the window's top centre while music plays: artwork, title and the time left, growing into a card with a scrubber and controls when you click it. It folds away on pause, and a right-click puts it off until the song changes."), |ui| {
+        setting_row(ui, "Dynamic island", Some("While music plays and the app isn't looked at (another window has focus, or this one is minimized or hidden), a floating pill opens over the system: artwork, title and the time left, growing into a card with a scrubber and controls when you click it. Clicking its title brings the app back. It folds away the moment the app is in focus again, and a right-click puts it off until the song changes."), |ui| {
             toggle(ui, &mut app.island_on, "Dynamic island");
         });
         divider(ui);

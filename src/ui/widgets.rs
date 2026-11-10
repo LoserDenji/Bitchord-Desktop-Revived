@@ -368,7 +368,12 @@ pub fn preload_cover(ctx: &egui::Context, thumbs: &[Thumb], px: u32) {
 // ------------------------------------------------------------------ ambience
 
 /// How far the melting ambience reaches out past the sleeve, as a fraction of its side.
-const AMBIENCE_EXPAND: f32 = 0.38;
+/// Wide on purpose: the melt needs the runway, or a bright sleeve's glow ends on a
+/// visible edge against the backdrop instead of dissolving into it.
+const AMBIENCE_EXPAND: f32 = 0.5;
+/// How far into the feather the ambience keeps full strength while it melts: the colours
+/// dim toward the backdrop's own first, and only then does the layer give way.
+const MELT_HOLD: f32 = 0.4;
 /// The ambience is a small blurred copy of the cover, upscaled on the GPU; this is its
 /// size. Small on purpose: a blur this wide loses nothing at 96 px.
 const AMBIENCE_SIZE: usize = 96;
@@ -398,8 +403,10 @@ enum AmbienceEntry {
 /// The melting ambience behind the now-playing sleeve: the cover's own colours, held at
 /// its rim, blurred and feathered, spilling out past the artwork so the sleeve blends
 /// into the view with no line between the two — the glow by the sleeve is the sleeve's
-/// own edge. Crossfades when the track changes. `strength`: the preset's 0..1 knob.
-pub fn paint_ambience(ui: &Ui, site: egui::Id, clip: Rect, art: Rect, thumbs: &[Thumb], strength: f32) {
+/// own edge. Crossfades when the track changes. `strength`: the preset's 0..1 knob;
+/// `melt`: how much the backdrop is dimmed where the glow lands (the scrim's strength),
+/// so the glow can darken into the page instead of fading against it.
+pub fn paint_ambience(ui: &Ui, site: egui::Id, clip: Rect, art: Rect, thumbs: &[Thumb], strength: f32, melt: f32) {
     let rect = art.expand(art.width() * AMBIENCE_EXPAND);
     if strength <= 0.0 || !ui.is_rect_visible(rect) {
         return;
@@ -410,9 +417,12 @@ pub fn paint_ambience(ui: &Ui, site: egui::Id, clip: Rect, art: Rect, thumbs: &[
     // adds a second download of the same picture (the sleeve fetches its own sizes).
     let Some(t) = pick_thumb(thumbs, 120) else { return };
     let url = sized(&t.url, 120);
+    // A texture is per cover *and* melt: a scrim change rebuilds it, so the melt always
+    // lands on the backdrop that's actually there.
+    let blend = format!("{url}|{melt:.2}");
     let key = site.with("ambience-shown");
     let mut s = ctx.data(|d| d.get_temp::<AmbienceShown>(key));
-    let Some(tex) = ambience_texture(ctx, &url) else {
+    let Some(tex) = ambience_texture(ctx, &url, melt) else {
         // Still decoding: hold what's on screen, like the sleeve holds its last cover.
         if let Some(st) = &s {
             paint_ambience_tex(ui, clip, rect, &st.tex, strength);
@@ -421,19 +431,19 @@ pub fn paint_ambience(ui: &Ui, site: egui::Id, clip: Rect, art: Rect, thumbs: &[
         return;
     };
     s = match s {
-        Some(mut st) if st.url == url => {
+        Some(mut st) if st.url == blend => {
             // Back to what's on screen (a rebuilt texture after an eviction).
             st.tex = tex;
             Some(st)
         }
         Some(mut st) => {
             st.from = Some((st.tex.clone(), now));
-            st.url = url;
+            st.url = blend;
             st.tex = tex;
             st.born = now;
             Some(st)
         }
-        None => Some(AmbienceShown { url, tex, born: now, from: None }),
+        None => Some(AmbienceShown { url: blend, tex, born: now, from: None }),
     };
     let st = s.unwrap();
     let level = strength * theme::ease_in_out((((now - st.born) / 0.9) as f32).clamp(0.0, 1.0));
@@ -465,16 +475,17 @@ fn paint_ambience_tex(ui: &Ui, clip: Rect, rect: Rect, tex: &egui::TextureHandle
     p.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha));
 }
 
-/// The blurred, feathered copy of `url`'s cover, built once and kept per cover.
-fn ambience_texture(ctx: &egui::Context, url: &str) -> Option<egui::TextureHandle> {
+/// The blurred, feathered copy of `url`'s cover, built once and kept per cover and melt.
+fn ambience_texture(ctx: &egui::Context, url: &str, melt: f32) -> Option<egui::TextureHandle> {
     const CAP: usize = 24;
-    let key = egui::Id::unique("ambience-textures");
-    let mut cache = ctx.data(|d| d.get_temp::<HashMap<String, AmbienceEntry>>(key)).unwrap_or_default();
-    let entry = match cache.get(url) {
+    let slot = egui::Id::unique("ambience-textures");
+    let key = format!("{url}|{melt:.2}");
+    let mut cache = ctx.data(|d| d.get_temp::<HashMap<String, AmbienceEntry>>(slot)).unwrap_or_default();
+    let entry = match cache.get(&key) {
         Some(e) => e.clone(),
         None => match ctx.try_load_bytes(url) {
             // The same bytes the sleeve itself is drawn from: no second download.
-            Ok(egui::load::BytesPoll::Ready { bytes, .. }) => match ambience_image(bytes.as_ref()) {
+            Ok(egui::load::BytesPoll::Ready { bytes, .. }) => match ambience_image(bytes.as_ref(), melt) {
                 Some(img) => AmbienceEntry::Ready(ctx.load_texture("ambience", img, egui::TextureOptions::LINEAR)),
                 None => AmbienceEntry::Failed,
             },
@@ -492,8 +503,8 @@ fn ambience_texture(ctx: &egui::Context, url: &str) -> Option<egui::TextureHandl
             if cache.len() >= CAP {
                 cache.clear();
             }
-            cache.insert(url.to_owned(), e);
-            ctx.data_mut(|d| d.insert_temp(key, cache));
+            cache.insert(key, e);
+            ctx.data_mut(|d| d.insert_temp(slot, cache));
         }
     }
     tex
@@ -501,8 +512,10 @@ fn ambience_texture(ctx: &egui::Context, url: &str) -> Option<egui::TextureHandl
 
 /// The cover's colours as a feathered blur. Sampled with its edges held, so past the
 /// rim the rim's own colour continues and the sleeve melts into the glow; saturated a
-/// touch like the reference; blurred; then faded to nothing away from the rim.
-fn ambience_image(bytes: &[u8]) -> Option<egui::ColorImage> {
+/// touch like the reference; blurred; then melted into the backdrop — dimmed by the
+/// scrim over it, the way the backdrop itself is dimmed — and only then let go, so a
+/// bright sleeve's glow dissolves into the page instead of ending on an edge against it.
+fn ambience_image(bytes: &[u8], melt: f32) -> Option<egui::ColorImage> {
     let img = image::load_from_memory(bytes).ok()?.to_rgb8();
     let n = AMBIENCE_SIZE;
     let src = image::imageops::resize(&img, 128, 128, image::imageops::FilterType::Triangle);
@@ -535,19 +548,25 @@ fn ambience_image(bytes: &[u8]) -> Option<egui::ColorImage> {
     for _ in 0..3 {
         out = crate::art::box_blur(&out, n, 5);
     }
+    let melt = melt.clamp(0.0, 0.95);
     let mut rgba = Vec::with_capacity(n * n * 4);
     for y in 0..n {
         for x in 0..n {
             // 0 at the centre, 1 at the square's edge; the sleeve's rim sits at `f`.
             let m = (x as f32 / (n - 1) as f32 - 0.5).abs().max((y as f32 / (n - 1) as f32 - 0.5).abs()) * 2.0;
-            let a = if m <= f {
+            let t = ((m - f) / (1.0 - f)).clamp(0.0, 1.0);
+            // The melt: for the first stretch past the rim the glow keeps full strength
+            // while its colours dim to the backdrop's own (the scrim's share of them);
+            // only then does the layer itself give way, with nothing left to reveal.
+            let keep = 1.0 - melt * (t * t * (3.0 - 2.0 * t));
+            let a = if t < MELT_HOLD {
                 255u8
             } else {
-                let t = ((m - f) / (1.0 - f)).clamp(0.0, 1.0);
-                ((1.0 - t * t * (3.0 - 2.0 * t)) * 255.0) as u8
+                let q = ((t - MELT_HOLD) / (1.0 - MELT_HOLD)).clamp(0.0, 1.0);
+                ((1.0 - q * q * (3.0 - 2.0 * q)) * 255.0) as u8
             };
             let p = out[y * n + x];
-            rgba.extend_from_slice(&[p[0] as u8, p[1] as u8, p[2] as u8, a]);
+            rgba.extend_from_slice(&[(p[0] * keep) as u8, (p[1] * keep) as u8, (p[2] * keep) as u8, a]);
         }
     }
     Some(egui::ColorImage::from_rgba_unmultiplied([n, n], &rgba))
@@ -789,7 +808,7 @@ fn menu_action_star(ui: &mut Ui, liked: bool, label: &str) -> bool {
 pub fn song_menu(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, acts: &mut Vec<Action>) {
     ui.set_width(226.0);
     ui.add_space(3.0);
-    song_actions(ui, t, liked, remove, acts);
+    song_actions(ui, t, liked, remove, acts, true);
     ui.separator();
     if menu_action(ui, Some(icon::LIST_PLUS), "Play next") {
         acts.push(Action::PlayNext(t.clone()));
@@ -807,14 +826,18 @@ pub fn song_menu(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, act
 }
 
 /// The song menu's items, for menus that add their own (now playing's options).
-pub fn song_actions(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, acts: &mut Vec<Action>) {
-    if menu_action_star(ui, liked, if liked { "Remove like" } else { "Like song" }) {
-        acts.push(Action::Like(t.clone(), !liked));
+/// `like`: the Like and Dislike rows — off in now playing's ⋯ menu, where the star
+/// already sits under the cover and a rating doesn't belong.
+pub fn song_actions(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, acts: &mut Vec<Action>, like: bool) {
+    if like {
+        if menu_action_star(ui, liked, if liked { "Remove like" } else { "Like song" }) {
+            acts.push(Action::Like(t.clone(), !liked));
+        }
+        if menu_action(ui, Some(icon::THUMBS_DOWN), "Dislike") {
+            acts.push(Action::Dislike(t.clone()));
+        }
+        ui.separator();
     }
-    if menu_action(ui, Some(icon::THUMBS_DOWN), "Dislike") {
-        acts.push(Action::Dislike(t.clone()));
-    }
-    ui.separator();
     if menu_action(ui, Some(icon::LIST_PLUS), "Add to playlist") {
         acts.push(Action::AddToPlaylist(vec![t.clone()]));
     }
@@ -961,9 +984,12 @@ pub struct RowOpts {
     /// Queue rows: the length makes way for the remove ✕ while the row is hovered
     /// (the drawer and now playing draw it over the length's place).
     pub hide_duration_hover: bool,
+    /// The row gives itself to a drag, so a held row reorders the queue (clicks still play).
+    pub drag: bool,
 }
 
-const ROW_H: f32 = 56.0;
+/// A song row's height (the queue's drag maths borrows it too).
+pub const ROW_H: f32 = 56.0;
 
 /// A long list of song rows: only the ones on screen are built; the rest is empty space
 /// of the same height. `row(ui, i)` draws row `i`, under an id of its own so its hover
@@ -990,7 +1016,8 @@ pub fn track_row(ui: &mut Ui, t: &Track, o: &RowOpts, acts: &mut Vec<Action>) ->
     // Picking: the cover (left 54 px) plays, the rest of the row picks.
     let hit_left = if o.pick && o.number.is_none() { rect.left() + 54.0 } else { rect.left() };
     let hit_rect = Rect::from_min_max(pos2(hit_left, rect.top()), pos2(rect.right() - 42.0, rect.bottom()));
-    let resp = named(ui.interact(hit_rect, base.id.with("play"), Sense::click()), &t.title).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let sense = if o.drag { Sense::click_and_drag() } else { Sense::click() };
+    let resp = named(ui.interact(hit_rect, base.id.with("play"), sense), &t.title).on_hover_cursor(egui::CursorIcon::PointingHand);
     let h = theme::anim_bool(ui.ctx(), base.id.with("h"), base.contains_pointer(), 0.15);
     if h > 0.0 || o.current {
         let a = if o.current { 0.07 + 0.05 * h } else { 0.07 * h };

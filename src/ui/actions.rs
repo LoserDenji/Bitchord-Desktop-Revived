@@ -89,6 +89,7 @@ impl App {
                 self.play_current();
             }
             Action::QueueRemove(i) => self.queue.remove(i),
+            Action::QueueMove(from, to) => self.queue.move_track(from, to),
             Action::ViewQueue => {
                 if self.np_open {
                     self.np_tab = NpTab::UpNext;
@@ -300,14 +301,14 @@ impl App {
         if np && self.current().is_some() {
             self.np_open = !self.np_open;
             if self.np_open {
-                self.island.collapse();
+                self.island.lock().unwrap().collapse();
             }
             if self.fullscreen && !self.np_open {
                 self.set_fullscreen(ctx, false);
             }
         }
         if full && self.current().is_some() {
-            self.island.collapse();
+            self.island.lock().unwrap().collapse();
             if !self.np_open {
                 self.np_open = true;
                 self.set_fullscreen(ctx, true);
