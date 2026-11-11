@@ -114,7 +114,7 @@ Two launch flags help when the tray icon misbehaves (taskbar replacements can ke
 
 - Audio and the main interface are native (Rust + egui + rodio). Sign-in and some web flows may open a system webview window.
 - Hi-res/Lossless/Atmos playback depends on configured addon sources and whether a matching, playable copy exists for the selected track.
-- BitChord does not bypass subscriptions, DRM, or regional restrictions. Availability depends on the services and sources you use.
+- BitChord Desktop Revived does not bypass subscriptions, DRM, or regional restrictions. Availability depends on the services and sources you use.
 - Third-party services (YouTube Music, lyrics providers, Discord, Last.fm, Spotify, addon sources) can change behavior over time.
 
 ## Contributing
@@ -123,11 +123,13 @@ Bug reports and pull requests are welcome. Please open an issue with clear repro
 
 ## License
 
-BitChord is licensed under [GPL-3.0](LICENSE).
+BitChord Desktop Revived is licensed under [GPL-3.0](LICENSE).
 
 ## Acknowledgements
 
-- [jackychan4891](https://github.com/jackychan4891/BitChord-PC-Continued) for original app
+- [BitChord](https://github.com/kushagrasinghx/BitChord) for the the orignal android app
+- [ytm-rs](https://github.com/grapedjuice/ytm-rs) for the base of the app which was later modified by jackychan4891
+- [jackychan4891](https://github.com/jackychan4891/BitChord-PC-Continued) for the modification in ytm-rs app for parity with BitChord
 - [egui](https://github.com/emilk/egui) for the interface.
 - [rodio](https://github.com/RustAudio/rodio) and Symphonia for audio playback and decoding.
 - Lyrics, metadata, playback, and integrations depend on the upstream libraries and third-party services used by this project.
