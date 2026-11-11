@@ -337,6 +337,12 @@ fn box_blur_pass(source: &[u8], target: &mut [u8], width: usize, height: usize, 
 /// decode box-blurred for the layer above it.
 fn make_entry(ctx: &egui::Context, bytes: &[u8], url: &str) -> Option<Entry> {
     let img = image::load_from_memory(bytes).ok()?.to_rgb8();
+    // The sleeve shows the thumbnail's square crop (`Thumb::square_uv`); a raw
+    // letterboxed one would carry its bars into the mesh and the blur.
+    let img = match crate::model::square_crop_px(img.width(), img.height()) {
+        Some((x, y, side)) => image::imageops::crop_imm(&img, x, y, side, side).to_image(),
+        None => img,
+    };
     let img = image::imageops::resize(&img, MESH_PX, MESH_PX, image::imageops::FilterType::Triangle);
     let px: Vec<u8> = img.pixels().flat_map(|p| p.0).collect();
 

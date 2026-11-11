@@ -18,6 +18,13 @@ pub struct Art {
 
 pub fn process(bytes: &[u8]) -> anyhow::Result<Art> {
     let img = image::load_from_memory(bytes)?.to_rgb8();
+    // The sleeve shows the thumbnail's square crop (`Thumb::square_uv`); a raw one is
+    // letterboxed 4:3 for many videos, and the backdrop's bars would tint toward the
+    // accent as bands of colour nothing else shows. Crop first, like the sleeve does.
+    let img = match crate::model::square_crop_px(img.width(), img.height()) {
+        Some((x, y, side)) => image::imageops::crop_imm(&img, x, y, side, side).to_image(),
+        None => img,
+    };
     let small = image::imageops::resize(&img, SIZE, SIZE, image::imageops::FilterType::Triangle);
 
     let accent = palette(&small);
@@ -41,7 +48,7 @@ pub fn process(bytes: &[u8]) -> anyhow::Result<Art> {
     Ok(Art { rgba, accent })
 }
 
-fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }

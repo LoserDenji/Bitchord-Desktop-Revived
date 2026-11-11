@@ -216,10 +216,35 @@ fn parse_combo(combo: &str) -> Option<(Option<Mods>, egui::Key)> {
             "ctrl" => mods.ctrl = true,
             "shift" => mods.shift = true,
             "alt" => mods.alt = true,
-            other => key = egui::Key::from_name(other),
+            // The key keeps the case it was saved in: egui's names are mixed-case
+            // ("ArrowUp", "Space"), and they're what `from_name` looks for.
+            _ => key = key_from_name(part.trim()).or(key),
         }
     }
     Some((if mods == Mods::default() { None } else { Some(mods) }, key?))
+}
+
+/// The key a stored name stands for. `egui::Key::from_name` is case-sensitive, and the
+/// combinations are saved with egui's own names ("ArrowUp", "Space"), but a name typed
+/// by hand reads just as well whatever case it's in.
+fn key_from_name(name: &str) -> Option<egui::Key> {
+    if let Some(key) = egui::Key::from_name(name) {
+        return Some(key);
+    }
+    // Some of from_name's aliases aren't what `Key::name` answers ("ArrowUp" is stored
+    // but `name` reads "Up"), so those go by their own names, any case. Anything else
+    // finds its key by its name or symbol, any case again.
+    match name.to_ascii_lowercase().as_str() {
+        "arrowup" | "up" => Some(egui::Key::ArrowUp),
+        "arrowdown" | "down" => Some(egui::Key::ArrowDown),
+        "arrowleft" | "left" => Some(egui::Key::ArrowLeft),
+        "arrowright" | "right" => Some(egui::Key::ArrowRight),
+        "escape" | "esc" => Some(egui::Key::Escape),
+        "return" | "numpadenter" => Some(egui::Key::Enter),
+        _ => egui::Key::ALL.iter().copied().find(|k| {
+            k.name().eq_ignore_ascii_case(name) || k.symbol_or_name().eq_ignore_ascii_case(name)
+        }),
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -477,12 +502,12 @@ pub(super) fn settings_section(app: &mut App, ui: &mut Ui) {
                 }
             }
         }
-        // Seek and volume share the arrows with the songs' skip; Esc keeps its own job.
+        // Seek keeps the plain arrows and volume the Ctrl arrows; Esc keeps its own job.
         pages::divider(ui);
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
         ui.painter().text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, "Seek and volume", theme::regular(14.0), theme::text_dim());
         let mut x = rect.right();
-        for key in ["Ctrl", "→ / ← / ↑ / ↓"] {
+        for key in ["Ctrl + ↑ / ↓", "← / →"] {
             x = pages::keycap(ui, pos2(x, rect.center().y), key) - 6.0;
         }
         if let Some(cmd) = reset {

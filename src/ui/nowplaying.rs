@@ -264,9 +264,25 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let cr = egui::CornerRadius::same(radius.min(255.0) as u8);
     // The melting ambience first, under everything: the cover's colours blur out around
     // the sleeve, dim by the scrim over the backdrop and give way — so the two blend
-    // with no line between them, bright covers included.
+    // with no line between them, bright covers included. Built the way the backdrop is:
+    // the shader modes run the cover through Kawarp, whose saturation knob and
+    // dark-region tint toward the artwork's accent are the backdrop's own, so the glow
+    // takes them too; the other backdrops show the cover itself or a flat colour, and
+    // keep the glow as the cover's own colours.
     if cs.ambience > 0.0 {
-        widgets::paint_ambience(ui, egui::Id::unique("np-ambience"), amb, art, &track.thumbs, cs.ambience, look.background.scrim);
+        let b = &look.background;
+        let shader = matches!(app.np_bg.unwrap_or(b.mode), crate::preset::BgMode::Kawarp | crate::preset::BgMode::CoverStatic);
+        widgets::paint_ambience(
+            ui,
+            egui::Id::unique("np-ambience"),
+            amb,
+            art,
+            &track.thumbs,
+            cs.ambience,
+            b.scrim,
+            if shader { b.saturation } else { 1.3 },
+            shader.then_some(app.accent),
+        );
     }
     if cs.glow > 0.0 {
         let s = egui::epaint::Shadow { offset: [0, 16], blur: 90, spread: 6, color: theme::with_alpha(app.accent_color(), cs.glow.min(1.0) * 0.7) };

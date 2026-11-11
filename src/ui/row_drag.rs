@@ -74,7 +74,10 @@ pub fn feedback(ui: &mut Ui, drag: &mut Option<RowDrag>, list: Id, rows: Rows) -
     let (from, id) = keep(ui, drag, list)?;
     let (pos, down, dt) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down(), i.stable_dt));
     let clip = ui.clip_rect();
-    let h = ROW_H;
+    // Rows sit ROW_H apart with the list's spacing between them (see `visible_rows`):
+    // the pitch is what the gaps are counted in, or the line drifts off the pointer
+    // the further down the list it goes.
+    let h = ROW_H + ui.spacing().item_spacing.y;
     let width = ui.max_rect().x_range();
     let over = pos.filter(|p| p.x >= width.min - SIDE_MARGIN && p.x <= width.max + SIDE_MARGIN);
     let gap = over.map(|p| first + gap_at(p.y, top, h, lowest.saturating_sub(first), end.saturating_sub(first)));
@@ -271,7 +274,8 @@ mod tests {
                 let area = egui::ScrollArea::vertical().id_salt("test-scroll").auto_shrink(false).show(ui, |ui| {
                     let top = ui.cursor().top();
                     self.top = top;
-                    self.row = super::ROW_H;
+                    // What the rows really sit apart by: the pitch feedback counts gaps in.
+                    self.row = super::ROW_H + ui.spacing().item_spacing.y;
                     let mut acts = Vec::new();
                     let (songs, drag, clicked) = (&self.songs, &mut self.drag, &mut self.clicked);
                     visible_rows(ui, songs.len(), |ui, i| {

@@ -405,8 +405,20 @@ enum AmbienceEntry {
 /// into the view with no line between the two — the glow by the sleeve is the sleeve's
 /// own edge. Crossfades when the track changes. `strength`: the preset's 0..1 knob;
 /// `melt`: how much the backdrop is dimmed where the glow lands (the scrim's strength),
-/// so the glow can darken into the page instead of fading against it.
-pub fn paint_ambience(ui: &Ui, site: egui::Id, clip: Rect, art: Rect, thumbs: &[Thumb], strength: f32, melt: f32) {
+/// so the glow can darken into the page instead of fading against it. `saturation` and
+/// `tint` are the backdrop's own (the shader's knob, and Kawarp's dark-region tint), so
+/// the glow is built the way the backdrop is and the two read as one.
+pub fn paint_ambience(
+    ui: &Ui,
+    site: egui::Id,
+    clip: Rect,
+    art: Rect,
+    thumbs: &[Thumb],
+    strength: f32,
+    melt: f32,
+    saturation: f32,
+    tint: Option<Color32>,
+) {
     let rect = art.expand(art.width() * AMBIENCE_EXPAND);
     if strength <= 0.0 || !ui.is_rect_visible(rect) {
         return;
@@ -417,12 +429,12 @@ pub fn paint_ambience(ui: &Ui, site: egui::Id, clip: Rect, art: Rect, thumbs: &[
     // adds a second download of the same picture (the sleeve fetches its own sizes).
     let Some(t) = pick_thumb(thumbs, 120) else { return };
     let url = sized(&t.url, 120);
-    // A texture is per cover *and* melt: a scrim change rebuilds it, so the melt always
-    // lands on the backdrop that's actually there.
-    let blend = format!("{url}|{melt:.2}");
+    // A texture is per cover *and* look — melt, saturation, tint: any change rebuilds
+    // it, so the glow always lands on the backdrop that's actually there.
+    let blend = format!("{url}|{melt:.2}|{saturation:.2}|{}", tint.is_some());
     let key = site.with("ambience-shown");
     let mut s = ctx.data(|d| d.get_temp::<AmbienceShown>(key));
-    let Some(tex) = ambience_texture(ctx, &url, melt) else {
+    let Some(tex) = ambience_texture(ctx, &url, &blend, melt, saturation, tint) else {
         // Still decoding: hold what's on screen, like the sleeve holds its last cover.
         if let Some(st) = &s {
             paint_ambience_tex(ui, clip, rect, &st.tex, strength);
@@ -475,17 +487,24 @@ fn paint_ambience_tex(ui: &Ui, clip: Rect, rect: Rect, tex: &egui::TextureHandle
     p.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha));
 }
 
-/// The blurred, feathered copy of `url`'s cover, built once and kept per cover and melt.
-fn ambience_texture(ctx: &egui::Context, url: &str, melt: f32) -> Option<egui::TextureHandle> {
+/// The blurred, feathered copy of `url`'s cover, built once and kept per cover and look.
+fn ambience_texture(
+    ctx: &egui::Context,
+    url: &str,
+    key: &str,
+    melt: f32,
+    saturation: f32,
+    tint: Option<Color32>,
+) -> Option<egui::TextureHandle> {
     const CAP: usize = 24;
     let slot = egui::Id::unique("ambience-textures");
-    let key = format!("{url}|{melt:.2}");
+    let key = key.to_owned();
     let mut cache = ctx.data(|d| d.get_temp::<HashMap<String, AmbienceEntry>>(slot)).unwrap_or_default();
     let entry = match cache.get(&key) {
         Some(e) => e.clone(),
         None => match ctx.try_load_bytes(url) {
             // The same bytes the sleeve itself is drawn from: no second download.
-            Ok(egui::load::BytesPoll::Ready { bytes, .. }) => match ambience_image(bytes.as_ref(), melt) {
+            Ok(egui::load::BytesPoll::Ready { bytes, .. }) => match ambience_image(bytes.as_ref(), melt, saturation, tint) {
                 Some(img) => AmbienceEntry::Ready(ctx.load_texture("ambience", img, egui::TextureOptions::LINEAR)),
                 None => AmbienceEntry::Failed,
             },
@@ -510,13 +529,19 @@ fn ambience_texture(ctx: &egui::Context, url: &str, melt: f32) -> Option<egui::T
     tex
 }
 
-/// The cover's colours as a feathered blur. Sampled with its edges held, so past the
-/// rim the rim's own colour continues and the sleeve melts into the glow; saturated a
-/// touch like the reference; blurred; then melted into the backdrop — dimmed by the
-/// scrim over it, the way the backdrop itself is dimmed — and only then let go, so a
-/// bright sleeve's glow dissolves into the page instead of ending on an edge against it.
-fn ambience_image(bytes: &[u8], melt: f32) -> Option<egui::ColorImage> {
+/// The cover's colours as a feathered blur, built the way the backdrop is. Cropped to
+/// the square the sleeve shows first (a raw thumbnail can be a letterboxed video
+/// still, whose bars would wash the glow grey); dark regions tinted toward the
+/// artwork's accent like Kawarp's backdrop; blurred; saturated like the shader runs
+/// it; then melted into the backdrop — dimmed by the scrim over it, the way the
+/// backdrop itself is dimmed — and only then let go, so a bright sleeve's glow
+/// dissolves into the page instead of ending on an edge against it.
+fn ambience_image(bytes: &[u8], melt: f32, saturation: f32, tint: Option<Color32>) -> Option<egui::ColorImage> {
     let img = image::load_from_memory(bytes).ok()?.to_rgb8();
+    let img = match crate::model::square_crop_px(img.width(), img.height()) {
+        Some((x, y, side)) => image::imageops::crop_imm(&img, x, y, side, side).to_image(),
+        None => img,
+    };
     let n = AMBIENCE_SIZE;
     let src = image::imageops::resize(&img, 128, 128, image::imageops::FilterType::Triangle);
     let px: Vec<[f32; 3]> = src.pixels().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
@@ -539,14 +564,29 @@ fn ambience_image(bytes: &[u8], melt: f32) -> Option<egui::ColorImage> {
             out[y * n + x] = mix(top, bottom, ty);
         }
     }
-    for p in &mut out {
-        let luma = 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
-        for c in p.iter_mut() {
-            *c = luma + (*c - luma) * 1.3;
+    // Kawarp's tint pass, the backdrop's own: near-black regions take the artwork's
+    // accent, so a dark cover's glow stays in the backdrop's colours instead of going
+    // grey against them (the backdrop's own tint runs in `art::process`).
+    if let Some(tint) = tint {
+        let tint = [tint.r() as f32, tint.g() as f32, tint.b() as f32];
+        for p in &mut out {
+            let luma = (0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]) / 255.0;
+            let dark = 1.0 - crate::art::smoothstep(0.0, 0.5, luma);
+            for c in 0..3 {
+                p[c] += (tint[c] - p[c]) * dark * 0.45;
+            }
         }
     }
     for _ in 0..3 {
         out = crate::art::box_blur(&out, n, 5);
+    }
+    // The shader saturates the blurred backdrop as it draws it; the glow takes the
+    // same turn here, after its blur, so the two carry colour the same way.
+    for p in &mut out {
+        let luma = 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+        for c in p.iter_mut() {
+            *c = luma + (*c - luma) * saturation;
+        }
     }
     let melt = melt.clamp(0.0, 0.95);
     let mut rgba = Vec::with_capacity(n * n * 4);

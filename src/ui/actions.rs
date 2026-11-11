@@ -330,6 +330,17 @@ impl App {
                 self.np_open = false;
             }
         }
+        // Seek stays on the plain arrows (the ones beside the songs' skip, without the
+        // modifier the skip has): five seconds either way, and holding the key keeps
+        // stepping, a key's repeats counting as presses. Keys a text box or slider wants
+        // stay with it, and without a song there's nothing to seek.
+        if self.current().is_some() && ctx.input(|i| i.modifiers.is_none()) && !ctx.egui_wants_keyboard_input() {
+            let (back, fwd) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)));
+            if back || fwd {
+                let at = self.audio.status.position().as_secs_f32() + if fwd { 5.0 } else { -5.0 };
+                self.seek_to(Duration::from_secs_f32(at.max(0.0)));
+            }
+        }
         if vol_up || vol_down {
             let v = (self.audio.volume() + if vol_up { 0.05 } else { -0.05 }).clamp(0.0, 1.0);
             self.audio.set_volume(v);
