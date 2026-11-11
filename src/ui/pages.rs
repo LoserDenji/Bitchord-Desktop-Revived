@@ -1236,6 +1236,7 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
     if query.is_empty() {
         settings_account(app, ui);
         settings_playback(app, ui);
+        settings_sources(app, ui);
         settings_downloads(ui);
         settings_lyrics(app, ui);
         settings_artists(app, ui);
@@ -1271,6 +1272,9 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
     }
     if shown("Playback") {
         settings_playback(app, ui);
+    }
+    if shown("Music sources") {
+        settings_sources(app, ui);
     }
     if shown("Downloads") {
         settings_downloads(ui);
@@ -1310,6 +1314,7 @@ const SETTINGS_SECTIONS: &[(&str, &[&str])] = &[
         "Playback",
         &["Autoplay", "Volume normalization", "Logarithmic volume", "Play songs, not music videos", "Output device", "Automix", "Crossfade", "Crossfade length", "Skip non-music parts", "SponsorBlock", "Hi-Res audio", "hires", "lossless", "Dolby Atmos", "Add a source"],
     ),
+    ("Music sources", &["JioSaavn", "Monochrome", "provider", "AAC", "FLAC", "320", "160", "96", "server", "stream", "Test", "Add a server"]),
     ("Downloads", &["Download folder", "Change", "Open", "offline"]),
     ("Lyrics", &["Romanization", "Translation", "Translate into", "Text size", "Intensive glow", "Glow strength", "Timing offset", "Word-synced trim", "Line-synced trim", "Lyrics sources", "translate"]),
     ("Artist pages", &["Signature service", "signature"]),
@@ -1620,6 +1625,178 @@ fn hires_test_line(app: &App, ui: &mut Ui, link: &str) {
 /// The non-empty links as one newline-separated list, the way the backend reads them.
 fn live_sources(app: &App) -> String {
     app.hires_sources.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+/// Settings › Music sources: the providers ported from Mochy-Music. When one has the
+/// song, its copy plays instead of YouTube's, and its quality shows in the player.
+fn settings_sources(app: &mut App, ui: &mut Ui) {
+    section_label(ui, "Music sources", None);
+    ui.label(
+        RichText::new("Other catalogs that can stand in for YouTube's stream when they have the song: a source holding the song plays its own copy, and when none does, YouTube plays as usual.")
+            .font(theme::regular(13.0))
+            .color(theme::text_dim()),
+    );
+    ui.add_space(12.0);
+    settings_card(ui, |ui| {
+        setting_row(ui, "Monochrome", Some("Lossless FLAC for every song Monochrome has, from its track streamer or a server you add below. No account needed."), |ui| {
+            if toggle(ui, &mut app.monochrome, "Monochrome").changed() {
+                app.backend.set_monochrome(app.monochrome, &live_mono_servers(app));
+            }
+        });
+        divider(ui);
+        ui.add_space(12.0);
+        mono_servers_editor(app, ui);
+        ui.add_space(10.0);
+        divider(ui);
+        setting_row(ui, "JioSaavn", Some("JioSaavn's catalog in AAC up to 320 kbps, no account needed. Strongest on Indian music; it misses many big international labels."), |ui| {
+            if toggle(ui, &mut app.jiosaavn, "JioSaavn").changed() {
+                app.backend.set_jiosaavn(app.jiosaavn, app.jiosaavn_quality);
+            }
+        });
+        divider(ui);
+        setting_row(ui, "JioSaavn stream", Some("How much data a JioSaavn copy uses. 320 is its best; songs that don't have it play 160."), |ui| {
+            let btn = dropdown_button(ui, app.jiosaavn_quality.label(), 200.0, "JioSaavn stream");
+            egui::Popup::menu(&btn).show(|ui| {
+                ui.set_width(200.0);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                ui.add_space(4.0);
+                for quality in crate::providers::SaavnQuality::ALL {
+                    if option_row(ui, quality.label(), app.jiosaavn_quality == quality).clicked() {
+                        app.jiosaavn_quality = quality;
+                        app.backend.set_jiosaavn(app.jiosaavn, quality);
+                        ui.close();
+                    }
+                }
+            });
+        });
+        divider(ui);
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            let slot = app.saavn_test.clone();
+            let state = slot.lock().unwrap().clone();
+            if matches!(state, Some(None)) {
+                ui.add_space(ui.available_width().min(76.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spinner();
+                });
+            } else if pill(ui, "Test", None, false).clicked() {
+                *slot.lock().unwrap() = Some(None);
+                let (slot, http) = (slot, app.backend.http());
+                app.backend.spawn(async move {
+                    let (good, msg) = crate::providers::probe_saavn(&http).await;
+                    *slot.lock().unwrap() = Some(Some((good, msg)));
+                });
+            }
+        });
+        test_line(ui, &app.saavn_test.lock().unwrap().clone());
+    });
+}
+
+/// The Monochrome server list: one line per server with its Test, and "+ Add a server"
+/// below it. The built-in track streamer is always on and isn't listed. Test asks the
+/// link whether a server answers there — or, for a Monochrome site's link, reads the
+/// site for the server it plays from ([`crate::providers::probe_monochrome`]).
+fn mono_servers_editor(app: &mut App, ui: &mut Ui) {
+    let mut edited = false;
+    let mut remove = None;
+    for i in 0..app.mono_servers.len() {
+        let link = app.mono_servers[i].trim().to_owned();
+        ui.horizontal(|ui| {
+            let field_w = (ui.available_width() - 110.0).max(120.0);
+            ui.allocate_ui_with_layout(vec2(field_w, 42.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(field_w);
+                if super::text_field(ui, "", &mut app.mono_servers[i], false, "https://monochrome.example").changed() {
+                    edited = true;
+                }
+            });
+            mono_test_button(app, ui, &link);
+            if widgets::icon_button(ui, icon::X, 14.0, "Remove server", false).clicked() {
+                remove = Some(i);
+            }
+        });
+        let state = app.mono_tests.get(&link).and_then(|s| s.lock().unwrap().clone());
+        test_line(ui, &state);
+        ui.add_space(6.0);
+    }
+    if let Some(i) = remove {
+        let gone = app.mono_servers.remove(i);
+        app.mono_tests.remove(gone.trim());
+        edited = true;
+    }
+    if edited {
+        app.backend.set_monochrome(app.monochrome, &live_mono_servers(app));
+    }
+    if app.mono_adding {
+        let resp = super::text_field(ui, "", &mut app.mono_draft, false, "https://monochrome.example");
+        if app.mono_focus {
+            resp.request_focus();
+            app.mono_focus = false;
+        }
+        // Test before the link is even saved: finding out here beats finding out the
+        // first time a song would have used it.
+        let typed = app.mono_draft.trim().to_owned();
+        ui.horizontal(|ui| {
+            mono_test_button(app, ui, &typed);
+            if typed.is_empty() {
+                ui.label(RichText::new("Enter a server or site link, then Test it or press Enter to add it.").font(theme::regular(12.5)).color(theme::text_faint()));
+            }
+        });
+        let state = app.mono_tests.get(&typed).and_then(|s| s.lock().unwrap().clone());
+        test_line(ui, &state);
+        if resp.lost_focus() {
+            let link = app.mono_draft.trim().to_owned();
+            if !link.is_empty() && !app.mono_servers.iter().any(|s| s.trim() == link) {
+                app.mono_servers.push(link);
+                app.backend.set_monochrome(app.monochrome, &live_mono_servers(app));
+            }
+            app.mono_draft.clear();
+            app.mono_adding = false;
+        }
+        ui.add_space(6.0);
+    } else if pill(ui, "+  Add a server", None, false).clicked() {
+        app.mono_adding = true;
+        app.mono_focus = true;
+        app.mono_draft.clear();
+    }
+}
+
+/// The Test pill for one Monochrome server link (saved or still being typed).
+fn mono_test_button(app: &mut App, ui: &mut Ui, link: &str) {
+    if link.is_empty() {
+        ui.add_space(ui.available_width().min(76.0));
+        return;
+    }
+    let slot = app.mono_tests.entry(link.to_owned()).or_default().clone();
+    let state = slot.lock().unwrap().clone();
+    if matches!(state, Some(None)) {
+        ui.add_space(ui.available_width().min(76.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spinner();
+        });
+        return;
+    }
+    if pill(ui, "Test", None, false).clicked() {
+        *slot.lock().unwrap() = Some(None);
+        let (slot, http, link) = (slot, app.backend.http(), link.to_owned());
+        app.backend.spawn(async move {
+            let (good, msg) = crate::providers::probe_monochrome(&http, &link).await;
+            *slot.lock().unwrap() = Some(Some((good, msg)));
+        });
+    }
+}
+
+/// The verdict line under a Test: green when the probe reached a working server, red
+/// when the link (or the server) is wrong, nothing while it asks.
+fn test_line(ui: &mut Ui, state: &Option<Option<(bool, String)>>) {
+    let Some(Some((good, msg))) = state else { return };
+    let color = if *good { theme::GREEN } else { theme::RED };
+    let label = if *good { format!("{msg}") } else { format!("Didn't work: {msg}") };
+    ui.label(RichText::new(label).font(theme::regular(12.5)).color(color));
+}
+
+/// The Monochrome servers as one newline-separated list, the way the backend reads them.
+fn live_mono_servers(app: &App) -> String {
+    app.mono_servers.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 /// Settings › Downloads.

@@ -16,7 +16,7 @@ use crate::audio::{AudioCmd, AudioHandle};
 use crate::lyrics::{self, LyricsSet};
 use crate::model::{self, Card, Target, Thumb, Track, sized};
 use crate::stream::{self, Shared};
-use crate::{hires, innertube, jsc, webmusic, ytdlp, ytm, ytmapi};
+use crate::{hires, innertube, jsc, providers, webmusic, ytdlp, ytm, ytmapi};
 
 pub enum Req {
     /// Home feed, optionally filtered by a mood chip's params.
@@ -493,6 +493,12 @@ pub struct Backend {
     hq: Arc<std::sync::atomic::AtomicBool>,
     /// The listener's hi-res addons, in the order their links were given.
     hires: Arc<std::sync::RwLock<Vec<Arc<hires::Client>>>>,
+    /// Music providers, ported from Mochy-Music: Monochrome's FLAC and JioSaavn's AAC.
+    monochrome: Arc<providers::Monochrome>,
+    jiosaavn: Arc<providers::JioSaavn>,
+    /// Whether each provider is on (Settings › Music sources).
+    monochrome_on: Arc<std::sync::atomic::AtomicBool>,
+    jiosaavn_on: Arc<std::sync::atomic::AtomicBool>,
     /// Ask the addons for Dolby Atmos renditions when they offer one.
     atmos: Arc<std::sync::atomic::AtomicBool>,
     /// Songs the listener sent back to YouTube audio: no addon copy until they leave.
@@ -527,7 +533,7 @@ impl Backend {
         {
             log::warn!("proxy relay: {e:#}");
         }
-        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), hires: Default::default(), atmos: Default::default(), reverted: Default::default(), songs: Default::default() };
+        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), hires: Default::default(), monochrome: Arc::new(providers::Monochrome::new()), jiosaavn: Arc::new(providers::JioSaavn::new()), monochrome_on: Default::default(), jiosaavn_on: Default::default(), atmos: Default::default(), reverted: Default::default(), songs: Default::default() };
         backend.keep_signed_in();
         Ok(backend)
     }
@@ -1405,6 +1411,26 @@ impl Backend {
             }
         }
         let hq = best || self.hq.load(Ordering::Relaxed);
+        // The music providers (Monochrome, JioSaavn) answer for the songs they have, too;
+        // when neither has it, YouTube plays. A song sent back to YouTube audio skips
+        // them the same as it skips the addons.
+        if allow_hires
+            && !reverted
+            && (self.monochrome_on.load(Ordering::Relaxed) || self.jiosaavn_on.load(Ordering::Relaxed))
+            && let Some(track) = track
+        {
+            let started = std::time::Instant::now();
+            match tokio::time::timeout(HIRES_WAIT, self.from_providers(track)).await {
+                Ok(Some(s)) => {
+                    if let Some(info) = s.info.as_ref() {
+                        log::info!("{video_id}: {} audio from {}", info.badge(), info.source);
+                    }
+                    return Ok((Source::Provider, s));
+                }
+                Ok(None) => log::info!("{video_id}: no music provider has a copy ({:.1}s)", started.elapsed().as_secs_f32()),
+                Err(_) => log::info!("{video_id}: the music providers gave no answer in {HIRES_WAIT:?}"),
+            }
+        }
         if best
             && !self.jsc.ready()
             && let Some(session) = self.api.account()
@@ -1495,6 +1521,10 @@ impl Backend {
                 anyhow::ensure!(!sources.is_empty(), "no hi-res source is set");
                 self.from_hires(&sources, track).await.ok_or_else(|| anyhow::anyhow!("no hi-res source has a copy"))?
             }
+            Source::Provider => {
+                let track = track.ok_or_else(|| anyhow::anyhow!("no song to look up"))?;
+                self.from_providers(track).await.ok_or_else(|| anyhow::anyhow!("no music provider has a copy"))?
+            }
         })
     }
 
@@ -1530,6 +1560,24 @@ impl Backend {
                 Ok((client, Err(e))) => log::info!("hi-res {}: {e:#}", client.host()),
                 Err(e) => log::info!("hi-res: a lookup stopped: {e}"),
             }
+        }
+        None
+    }
+
+    /// The first music provider that holds `track`: Monochrome's lossless FLAC first,
+    /// then JioSaavn's AAC. `None`: none is on, or none of them has it — which is a miss
+    /// rather than a fault, so the caller plays the song from YouTube.
+    async fn from_providers(&self, track: &Track) -> Option<ResolvedStream> {
+        let http = self.http();
+        if self.monochrome_on.load(Ordering::Relaxed)
+            && let Ok(Some(found)) = self.monochrome.find(&http, &providers::Query::of(track)).await
+        {
+            return Some(provider_stream(found));
+        }
+        if self.jiosaavn_on.load(Ordering::Relaxed)
+            && let Ok(Some(found)) = self.jiosaavn.find(&http, &providers::Query::of(track)).await
+        {
+            return Some(provider_stream(found));
         }
         None
     }
@@ -1626,6 +1674,19 @@ impl Backend {
         self.reverted.lock().unwrap().remove(video_id);
     }
 
+    /// Turn JioSaavn on or off, and set the stream quality its Settings row picked.
+    pub fn set_jiosaavn(&self, on: bool, quality: providers::SaavnQuality) {
+        self.jiosaavn_on.store(on, Ordering::Relaxed);
+        self.jiosaavn.set_quality(quality);
+    }
+
+    /// Turn Monochrome on or off, and point it at the servers saved as
+    /// `url|kind|name` lines (empty: just the built-in streamer).
+    pub fn set_monochrome(&self, on: bool, servers: &str) {
+        self.monochrome_on.store(on, Ordering::Relaxed);
+        self.monochrome.set_servers(servers);
+    }
+
     /// Point the hi-res sources at the links in `links`, one per line (empty: none). The
     /// links themselves aren't logged: they can carry a token.
     pub fn set_hires_source(&self, links: &str) {
@@ -1707,6 +1768,24 @@ enum Source {
     YtDlp,
     /// The listener's own addon server (see `hires`).
     HiRes,
+    /// A music provider (see `providers`): Monochrome or JioSaavn.
+    Provider,
+}
+
+/// A provider's answer, as the playback pipeline takes it: their CDN takes byte ranges
+/// by header, and the quality the player shows comes from the `Info` they build.
+fn provider_stream(found: providers::Found) -> ResolvedStream {
+    ResolvedStream {
+        url: found.url,
+        size: found.size,
+        duration_ms: found.duration_ms,
+        user_agent: found.user_agent.to_owned(),
+        loudness_db: None,
+        format: found.format,
+        info: Some(found.info),
+        ranging: stream::Ranging::Header,
+        data: None,
+    }
 }
 
 struct ResolvedStream {

@@ -28,6 +28,7 @@ mod model;
 mod motion;
 mod opus;
 mod preset;
+mod providers;
 mod shader;
 mod sponsorblock;
 mod stream;

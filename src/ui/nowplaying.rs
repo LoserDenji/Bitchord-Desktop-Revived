@@ -4,7 +4,7 @@
 
 use egui::{Color32, Rect, Sense, Ui, Vec2, pos2, vec2};
 
-use super::widgets::{self, icon_button, named, text_at};
+use super::widgets::{self, named, text_at};
 use super::{Action, App, NpTab, Repeat, karaoke};
 use crate::lyrics::{Lyrics, Sync, SyncKind};
 use crate::shader::Params;
@@ -90,6 +90,18 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
         });
 }
 
+/// The chevron that closes now playing, drawn from two strokes with a round joint —
+/// the way the window buttons draw theirs, with no font involved.
+fn chevron_down(ui: &Ui, center: egui::Pos2, half: f32, color: Color32) {
+    let stroke = egui::Stroke::new(2.0, color);
+    let left = center + vec2(-half, -half * 0.45);
+    let point = center + vec2(0.0, half * 0.55);
+    let right = center + vec2(half, -half * 0.45);
+    ui.painter().line_segment([left, point], stroke);
+    ui.painter().line_segment([point, right], stroke);
+    ui.painter().circle_filled(point, stroke.width / 2.0, color);
+}
+
 fn body(app: &mut App, ui: &mut Ui, now: f64) {
     use crate::preset::{Layout, Side};
     // An Automix handoff keeps the outgoing song here until the next one is the louder
@@ -112,8 +124,19 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     let lift = 20.0 - f32::from(super::titlebar::top_margin(20, 44.0));
     let header = Rect::from_min_size(area.min - vec2(0.0, if app.fullscreen { 0.0 } else { lift }), vec2(area.width(), 44.0));
     let mut hui = ui.new_child(egui::UiBuilder::new().max_rect(header).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    // The player's own close, top left; the window buttons keep the top right.
-    if icon_button(&mut hui, icon::CHEVRON_DOWN, 22.0, "Close now playing", false).clicked() {
+    // The player's own close, top left; the window buttons keep the top right. The
+    // chevron is drawn with strokes rather than read from the icon font: a glyph the
+    // atlas hasn't got paints nothing at all, which used to leave this button
+    // clickable but without a visible icon.
+    let (close_rect, close_resp) = hui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
+    let close_resp = widgets::named(close_resp, "Close now playing").on_hover_text("Close now playing").on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hover = theme::anim_bool(ui.ctx(), close_resp.id.with("h"), close_resp.hovered(), 0.15);
+    if hover > 0.0 {
+        ui.painter().circle_filled(close_rect.center(), 19.0, theme::glass(0.10 * hover));
+    }
+    let press = if close_resp.is_pointer_button_down_on() { 0.9 } else { 1.0 };
+    chevron_down(ui, close_rect.center(), 11.0 * press, theme::lerp_color(theme::text_dim(), theme::text(), hover));
+    if close_resp.clicked() {
         app.np_open = false;
         if app.fullscreen {
             app.set_fullscreen(ui.ctx(), false);

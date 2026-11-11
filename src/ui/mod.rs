@@ -461,6 +461,23 @@ pub struct App {
     hires_tests: HashMap<String, Arc<std::sync::Mutex<SourceTest>>>,
     /// Ask the addons for Dolby Atmos renditions.
     prefer_atmos: bool,
+    /// Settings › Music sources: the providers ported from Mochy-Music are on, and the
+    /// stream quality JioSaavn's row picked.
+    jiosaavn: bool,
+    jiosaavn_quality: crate::providers::SaavnQuality,
+    monochrome: bool,
+    /// Monochrome's added servers, one link per line (the built-in streamer isn't here).
+    mono_servers: Vec<String>,
+    /// The "+ Add a server" row is open.
+    mono_adding: bool,
+    /// What's typed in that row, before it's added.
+    mono_draft: String,
+    /// Focus the draft row as soon as it opens.
+    mono_focus: bool,
+    /// Each Monochrome server's Test (by the link as typed), the way the hi-res sources'
+    /// run: a slot the check's thread fills while the page draws. JioSaavn has one too.
+    mono_tests: HashMap<String, Arc<std::sync::Mutex<SourceTest>>>,
+    saavn_test: Arc<std::sync::Mutex<SourceTest>>,
     /// What the playing stream is (codec, rate, depth, size), when a hi-res source
     /// supplied it, with the generation it belongs to.
     audio_info: Option<(u64, crate::hires::Info)>,
@@ -665,6 +682,14 @@ impl App {
         backend.set_hires_source(&hires_sources.join("\n"));
         let prefer_atmos = get("prefer_atmos").is_some_and(|v| v == "1");
         backend.set_prefer_atmos(prefer_atmos);
+        // Before any request: a song started at launch must see the music sources too.
+        let jiosaavn = get("jiosaavn").is_none_or(|v| v == "1");
+        let jiosaavn_quality = crate::providers::SaavnQuality::from_key(&get("jiosaavn_quality").unwrap_or_default());
+        let monochrome = get("monochrome").is_none_or(|v| v == "1");
+        let mono_source = get("mono_servers").unwrap_or_default();
+        let mono_servers: Vec<String> = mono_source.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        backend.set_jiosaavn(jiosaavn, jiosaavn_quality);
+        backend.set_monochrome(monochrome, &mono_servers.join("\n"));
         backend.request(Req::Home(None));
         if logged_in {
             backend.request(Req::Library);
@@ -807,6 +832,15 @@ impl App {
             hires_focus: false,
             hires_tests: Default::default(),
             prefer_atmos,
+            jiosaavn,
+            jiosaavn_quality,
+            monochrome,
+            mono_servers,
+            mono_adding: false,
+            mono_draft: String::new(),
+            mono_focus: false,
+            mono_tests: Default::default(),
+            saavn_test: Default::default(),
             audio_info: None,
             art_changed: -10.0,
             accent: theme::RED,
@@ -1638,6 +1672,10 @@ impl eframe::App for App {
         storage.set_string("signature_api", self.signature_api.clone());
         storage.set_string("hires_source", self.hires_sources.join("\n"));
         storage.set_string("prefer_atmos", b(self.prefer_atmos));
+        storage.set_string("jiosaavn", b(self.jiosaavn));
+        storage.set_string("jiosaavn_quality", self.jiosaavn_quality.key().to_owned());
+        storage.set_string("monochrome", b(self.monochrome));
+        storage.set_string("mono_servers", self.mono_servers.join("\n"));
         storage.set_string("sponsorblock", b(self.sponsorblock));
         storage.set_string("crossfade", b(self.crossfade));
         storage.set_string("automix", b(self.automix));

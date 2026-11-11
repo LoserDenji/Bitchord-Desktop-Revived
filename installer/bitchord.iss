@@ -3,13 +3,13 @@
 ;   iscc installer\bitchord.iss
 ; Output: installer\Output\bitchord-setup-<version>.exe
 ; The version comes from Cargo.toml by default; the release workflow stamps its own:
-;   iscc /DAppVersion="2.0.1" installer\bitchord.iss
+;   iscc /DAppVersion="2.0.2" installer\bitchord.iss
 ; ARM64: cargo build --release --target aarch64-pc-windows-msvc, then
 ;   iscc /DArm64 installer\bitchord.iss  ->  bitchord-setup-<version>-arm64.exe
 
 #define AppName "BitChord"
 #ifndef AppVersion
-#define AppVersion "2.0.1"
+#define AppVersion "2.0.2"
 #endif
 #define AppExe "bitchord.exe"
 #ifdef Arm64
@@ -26,9 +26,9 @@
 AppId={{6E0B7C4A-2D1F-4C8E-9B3A-7F5D1E2A9C40}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=jackychan4891
-AppPublisherURL=https://github.com/jackychan4891/BitChord-PC-Continued
-AppSupportURL=https://github.com/jackychan4891/BitChord-PC-Continued/issues
+AppPublisher=Loserdenji
+AppPublisherURL=https://github.com/LoserDenji/Bitchord-Desktop-Revived
+AppSupportURL=https://github.com/LoserDenji/Bitchord-Desktop-Revived/issues
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

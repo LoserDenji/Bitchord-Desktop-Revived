@@ -17,6 +17,8 @@ pub enum Cmd {
     TogglePlay,
     Next,
     Prev,
+    SeekForward,
+    SeekBackward,
     VolumeUp,
     VolumeDown,
     Lyrics,
@@ -30,10 +32,12 @@ pub enum Cmd {
 }
 
 impl Cmd {
-    pub const ALL: [Cmd; 13] = [
+    pub const ALL: [Cmd; 15] = [
         Self::TogglePlay,
         Self::Next,
         Self::Prev,
+        Self::SeekForward,
+        Self::SeekBackward,
         Self::VolumeUp,
         Self::VolumeDown,
         Self::Lyrics,
@@ -51,6 +55,8 @@ impl Cmd {
             Self::TogglePlay => "Play / pause",
             Self::Next => "Next song",
             Self::Prev => "Previous song",
+            Self::SeekForward => "Seek forwards",
+            Self::SeekBackward => "Seek backwards",
             Self::VolumeUp => "Volume up",
             Self::VolumeDown => "Volume down",
             Self::Lyrics => "Lyrics",
@@ -70,6 +76,8 @@ impl Cmd {
             Self::TogglePlay => "keybind_play",
             Self::Next => "keybind_next",
             Self::Prev => "keybind_prev",
+            Self::SeekForward => "keybind_seek_forward",
+            Self::SeekBackward => "keybind_seek_backward",
             Self::VolumeUp => "keybind_vol_up",
             Self::VolumeDown => "keybind_vol_down",
             Self::Lyrics => "keybind_lyrics",
@@ -83,12 +91,16 @@ impl Cmd {
         }
     }
 
-    /// What the key does by default.
+    /// What the key does by default. Seek keeps the plain arrows the songs' skip leaves
+    /// free, volume the Ctrl arrows. Back and forward read the browser's own: on a Mac
+    /// that's the Command key, which is what took Alt's place there (Macs have no Alt).
     fn default_combo(self) -> &'static str {
         match self {
             Self::TogglePlay => "Space",
             Self::Next => "ctrl+ArrowRight",
             Self::Prev => "ctrl+ArrowLeft",
+            Self::SeekForward => "ArrowRight",
+            Self::SeekBackward => "ArrowLeft",
             Self::VolumeUp => "ctrl+ArrowUp",
             Self::VolumeDown => "ctrl+ArrowDown",
             Self::Lyrics => "L",
@@ -97,8 +109,8 @@ impl Cmd {
             Self::FullScreen => "shift+F",
             Self::Search => "Slash",
             Self::MiniPlayer => "ctrl+M",
-            Self::Back => "alt+ArrowLeft",
-            Self::Forward => "alt+ArrowRight",
+            Self::Back => if cfg!(target_os = "macos") { "cmd+ArrowLeft" } else { "alt+ArrowLeft" },
+            Self::Forward => if cfg!(target_os = "macos") { "cmd+ArrowRight" } else { "alt+ArrowRight" },
         }
     }
 }
@@ -148,8 +160,8 @@ impl Bindings {
     fn pressed(&self, cmd: Cmd, ctx: &egui::Context, once: bool) -> bool {
         let Some((want_mods, want_key)) = parse_combo(self.get(cmd)) else { return false };
         let wanted = !if want_mods.is_none() { ctx.egui_wants_keyboard_input() } else { ctx.text_edit_focused() };
-        let (want_ctrl, want_shift, want_alt) = want_mods.map_or((false, false, false), |m| (m.ctrl, m.shift, m.alt));
-        let same_mods = |m: egui::Modifiers| m.ctrl == want_ctrl && m.shift == want_shift && m.alt == want_alt;
+        let (want_ctrl, want_shift, want_alt, want_cmd) = want_mods.map_or((false, false, false, false), |m| (m.ctrl, m.shift, m.alt, m.mac_cmd));
+        let same_mods = |m: egui::Modifiers| m.ctrl == want_ctrl && m.shift == want_shift && m.alt == want_alt && m.mac_cmd == want_cmd;
         ctx.input(|i| {
             if once {
                 wanted
@@ -216,6 +228,8 @@ fn parse_combo(combo: &str) -> Option<(Option<Mods>, egui::Key)> {
             "ctrl" => mods.ctrl = true,
             "shift" => mods.shift = true,
             "alt" => mods.alt = true,
+            // The Mac's Command key (what took Alt's place there, since Macs have none).
+            "cmd" | "command" | "mac_cmd" => mods.mac_cmd = true,
             // The key keeps the case it was saved in: egui's names are mixed-case
             // ("ArrowUp", "Space"), and they're what `from_name` looks for.
             _ => key = key_from_name(part.trim()).or(key),
@@ -252,6 +266,8 @@ struct Mods {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    /// The Mac's Command key (⌘). Written `cmd` in a stored combination.
+    mac_cmd: bool,
 }
 
 /// The keycaps for a stored combination (`["Ctrl", "→"]`).
@@ -259,12 +275,15 @@ pub fn keycaps(combo: &str) -> Vec<String> {
     combo.split('+').map(|part| cap_name(part.trim()).to_owned()).collect()
 }
 
-/// The keycap a stored key name draws as.
+/// The keycap a stored key name draws as. Modifier names follow the platform's own:
+/// a Mac has no Alt key (its Option is ⌥), and Command reads as ⌘ there.
 fn cap_name(stored: &str) -> &str {
+    let mac = cfg!(target_os = "macos");
     match stored {
         "ctrl" => "Ctrl",
         "shift" => "Shift",
-        "alt" => "Alt",
+        "alt" => if mac { "⌥" } else { "Alt" },
+        "cmd" | "command" | "mac_cmd" => if mac { "⌘" } else { "Cmd" },
         "ArrowUp" => "↑",
         "ArrowDown" => "↓",
         "ArrowLeft" => "←",
@@ -400,9 +419,9 @@ pub(super) fn capture_dialog(app: &mut App, ctx: &egui::Context) {
         }
         // The physical key is what gets saved, so Shift+1 binds Shift and that key.
         let Some(name) = key_of(key) else { continue };
-        let combo = match (modifiers.ctrl, modifiers.alt, modifiers.shift) {
-            (false, false, false) => name.to_owned(),
-            (ctrl, alt, shift) => {
+        let combo = match (modifiers.ctrl, modifiers.alt, modifiers.shift, modifiers.mac_cmd) {
+            (false, false, false, false) => name.to_owned(),
+            (ctrl, alt, shift, cmd) => {
                 let mut parts = Vec::new();
                 if ctrl {
                     parts.push("ctrl");
@@ -412,6 +431,9 @@ pub(super) fn capture_dialog(app: &mut App, ctx: &egui::Context) {
                 }
                 if shift {
                     parts.push("shift");
+                }
+                if cmd {
+                    parts.push("cmd");
                 }
                 format!("{}+{}", parts.join("+"), name)
             }
@@ -441,10 +463,13 @@ pub(super) fn capture_dialog(app: &mut App, ctx: &egui::Context) {
                 names.push("Ctrl");
             }
             if held.alt {
-                names.push("Alt");
+                names.push(if cfg!(target_os = "macos") { "⌥" } else { "Alt" });
             }
             if held.shift {
                 names.push("Shift");
+            }
+            if held.mac_cmd {
+                names.push(if cfg!(target_os = "macos") { "⌘" } else { "Cmd" });
             }
             let text = if names.is_empty() { "Waiting for a key".to_owned() } else { format!("{} + …", names.join(" + ")) };
             ui.label(egui::RichText::new(text).font(theme::semibold(17.0)).color(theme::text()));
@@ -462,8 +487,7 @@ pub(super) fn capture_dialog(app: &mut App, ctx: &egui::Context) {
 }
 
 /// Settings › Shortcuts: every command with its keys, a Change button each, and Reset
-/// for the ones that left their defaults. Seek and volume stay on the arrows beside the
-/// songs' skip; Esc keeps its own job.
+/// for the ones that left their defaults. Esc keeps its own job.
 pub(super) fn settings_section(app: &mut App, ui: &mut Ui) {
     pages::section_label(ui, "Keyboard shortcuts", None);
     pages::settings_card(ui, |ui| {
@@ -501,14 +525,6 @@ pub(super) fn settings_section(app: &mut App, ui: &mut Ui) {
                     x = plus.left() - 6.0;
                 }
             }
-        }
-        // Seek keeps the plain arrows and volume the Ctrl arrows; Esc keeps its own job.
-        pages::divider(ui);
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
-        ui.painter().text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, "Seek and volume", theme::regular(14.0), theme::text_dim());
-        let mut x = rect.right();
-        for key in ["Ctrl + ↑ / ↓", "← / →"] {
-            x = pages::keycap(ui, pos2(x, rect.center().y), key) - 6.0;
         }
         if let Some(cmd) = reset {
             set(app, cmd, cmd.default_combo().to_owned());

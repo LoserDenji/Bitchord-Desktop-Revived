@@ -521,14 +521,16 @@ checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
 
 [[package]]
 name = "bitchord"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bytes",
  "crossbeam-channel",
+ "des",
  "directories",
  "discord-rich-presence",
+ "ecb",
  "eframe",
  "egui",
  "egui_extras",
@@ -546,6 +548,7 @@ dependencies = [
  "memmap2",
  "mp4ameta",
  "raw-window-handle",
+ "regex",
  "reqwest",
  "rfd",
  "rodio",
@@ -1300,6 +1303,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "des"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1483,6 +1495,15 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "ecb"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a8bfa975b1aec2145850fcaa1c6fe269a16578c44705a532ae3edc92b8881c7"
+dependencies = [
+ "cipher",
+]
 
 [[package]]
 name = "ecolor"

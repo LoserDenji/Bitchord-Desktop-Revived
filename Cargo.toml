@@ -1,8 +1,9 @@
 [package]
 name = "bitchord"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2024"
 license = "GPL-3.0-only"
+authors = ["Loserdenji"]
 repository = "https://github.com/LoserDenji/Bitchord-Desktop-Revived"
 description = "Native BitChord client"
 
@@ -27,6 +28,11 @@ memmap2 = "0.9.11"
 raw-window-handle = "0.6"
 reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "json", "socks"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-flac", "symphonia-alac", "symphonia-wav", "symphonia-mp3", "symphonia-vorbis"] }
+# The music providers (providers.rs): JioSaavn's links hide behind DES-ECB, and the
+# TrackMatcher port reads the patterns Mochy's modules match with.
+regex = "1"
+des = "0.8"
+ecb = "0.1"
 rquickjs = "0.14.0"
 roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
