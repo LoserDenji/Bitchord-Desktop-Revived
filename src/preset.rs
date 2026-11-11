@@ -26,9 +26,6 @@ pub enum BgMode {
     Solid,
     /// Now playing: the cover itself fills the screen behind a scrim.
     CoverFullbleed,
-    /// Now playing: the artwork's colours as a still mesh gradient under a full-cover
-    /// blur — the ForkChord player's backdrop (`mesh_bg.rs`).
-    ArtworkMesh,
 }
 
 impl BgMode {
@@ -40,7 +37,6 @@ impl BgMode {
             Self::AccentGradient => "accent_gradient",
             Self::Solid => "solid",
             Self::CoverFullbleed => "cover_fullbleed",
-            Self::ArtworkMesh => "artwork_mesh",
         }
     }
 
@@ -52,7 +48,6 @@ impl BgMode {
             "accent_gradient" => Self::AccentGradient,
             "solid" => Self::Solid,
             "cover_fullbleed" => Self::CoverFullbleed,
-            "artwork_mesh" => Self::ArtworkMesh,
             _ => return None,
         })
     }
@@ -260,15 +255,11 @@ pub struct CoverStyle {
     pub size: f32,
     pub shadow: f32,
     pub glow: f32,
-    /// Now playing's melting ambience: the cover's own colours, blurred and feathered,
-    /// spilling out around the sleeve so it blends into the view with no visible edge.
-    /// 0 turns it off.
-    pub ambience: f32,
 }
 
 impl Default for CoverStyle {
     fn default() -> Self {
-        Self { layout: Layout::Split, side: Side::Left, shape: Shape::Rounded, radius: 12.0, spin_secs: 60.0, brightness: 1.0, size: 1.0, shadow: 0.55, glow: 0.0, ambience: 1.0 }
+        Self { layout: Layout::Split, side: Side::Left, shape: Shape::Rounded, radius: 12.0, spin_secs: 60.0, brightness: 1.0, size: 1.0, shadow: 0.55, glow: 0.0 }
     }
 }
 

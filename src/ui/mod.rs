@@ -16,7 +16,6 @@ mod karaoke;
 mod keybinds;
 mod lists;
 mod lyric_prefs;
-mod mesh_bg;
 mod mini;
 mod notes;
 mod nowplaying;
@@ -447,8 +446,10 @@ pub struct App {
     signature_missed: std::collections::HashMap<String, std::time::Instant>,
     /// Signature lookups already in flight.
     signature_waiting: std::collections::HashSet<String>,
-    /// Settings › Playback: the listener's hi-res addon links, in the order given.
+    /// Settings › Music sources: the listener's Bitchord addon links, in the order given.
     hires_sources: Vec<String>,
+    /// Each addon's on/off switch, parallel to [`Self::hires_sources`].
+    hires_enabled: Vec<bool>,
     /// The "+ Add a source" row is open.
     hires_adding: bool,
     /// What's typed in that row, before it's added.
@@ -527,7 +528,7 @@ pub struct App {
     np_open: bool,
     np_tab: NpTab,
     /// Settings › Appearance: the backdrop now playing uses, when it isn't the theme's
-    /// own (`None`): the ForkChord artwork mesh and friends, without editing a theme.
+    /// own (`None`), without editing a theme.
     np_bg: Option<crate::preset::BgMode>,
     /// A queue row being dragged to a new place (see `row_drag`).
     row_drag: Option<row_drag::RowDrag>,
@@ -676,10 +677,14 @@ impl App {
         let logged_in = backend.is_logged_in();
         // Before any request: a song started at launch (dev hooks) must see this setting.
         backend.set_high_quality(get("high_quality").is_none_or(|v| v == "1"));
-        // Before any request: a song started at launch must see the hi-res source too.
+        // Before any request: a song started at launch must see the addon sources too.
         let hires_source = get("hires_source").unwrap_or_default();
         let hires_sources: Vec<String> = hires_source.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
-        backend.set_hires_source(&hires_sources.join("\n"));
+        // The switched-off ones, saved as their links, survive reordering and removals.
+        let hires_disabled: std::collections::HashSet<String> = get("hires_disabled").unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        let hires_enabled: Vec<bool> = hires_sources.iter().map(|s| !hires_disabled.contains(s.as_str())).collect();
+        let hires_on: Vec<&str> = hires_sources.iter().enumerate().filter(|(i, _)| hires_enabled[*i]).map(|(_, s)| s.as_str()).collect();
+        backend.set_hires_source(&hires_on.join("\n"));
         let prefer_atmos = get("prefer_atmos").is_some_and(|v| v == "1");
         backend.set_prefer_atmos(prefer_atmos);
         // Before any request: a song started at launch must see the music sources too.
@@ -778,7 +783,7 @@ impl App {
             output_device: get("output_device").filter(|d| !d.is_empty()).map(|id| (id, get("output_device_name").unwrap_or_default())),
             output_devices: Vec::new(),
             updater: None,
-            close_to_tray: !no_tray && get("close_to_tray").is_some_and(|v| v == "1"),
+            close_to_tray: !no_tray && get("close_to_tray").is_none_or(|v| v == "1"),
             wgpu_renderer,
             app_icon,
             tray: None,
@@ -788,7 +793,7 @@ impl App {
             exiting: false,
             window_hidden: false,
             good_window: get("window"),
-            sidebar_collapsed: get("sidebar_collapsed").is_some_and(|v| v == "1"),
+            sidebar_collapsed: get("sidebar_collapsed").is_none_or(|v| v == "1"),
             playlist_order: get("playlist_order").map(|v| v.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default(),
             hidden_playlists: get("hidden_playlists").map(|v| v.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default(),
             coll_search: None,
@@ -827,6 +832,7 @@ impl App {
             signature_missed: Default::default(),
             signature_waiting: Default::default(),
             hires_sources,
+            hires_enabled,
             hires_adding: false,
             hires_draft: String::new(),
             hires_focus: false,
@@ -1671,6 +1677,8 @@ impl eframe::App for App {
         storage.set_string("reactive_bg", b(self.reactive_bg));
         storage.set_string("signature_api", self.signature_api.clone());
         storage.set_string("hires_source", self.hires_sources.join("\n"));
+        let hires_disabled: Vec<&str> = self.hires_sources.iter().enumerate().filter(|(i, _)| !self.hires_enabled.get(*i).copied().unwrap_or(true)).map(|(_, s)| s.trim()).filter(|s| !s.is_empty()).collect();
+        storage.set_string("hires_disabled", hires_disabled.join("\n"));
         storage.set_string("prefer_atmos", b(self.prefer_atmos));
         storage.set_string("jiosaavn", b(self.jiosaavn));
         storage.set_string("jiosaavn_quality", self.jiosaavn_quality.key().to_owned());

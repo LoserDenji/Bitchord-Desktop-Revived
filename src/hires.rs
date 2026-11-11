@@ -4,6 +4,11 @@
 //! `{base}/search?q=…&quality=LOSSLESS` and `{base}/stream/{trackId}?quality=LOSSLESS`.
 //! A track found there plays from the addon's own URL instead of YouTube Music; when
 //! the addon has no copy, or the answer isn't playable, playback falls back to YouTube.
+//! This is the same protocol the BitChord Android app's module sources speak, so a
+//! link shared for the phone works here too — except for addons that turn on
+//! `"bitchordAuth": true`: those verify every request against a hardware-backed key
+//! only the official Android app can hold, and this client detects that and says so
+//! instead of failing mysteriously.
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
@@ -119,6 +124,9 @@ struct Manifest {
     name: Option<String>,
     defaults: Vec<(String, String)>,
     quality: String,
+    /// The addon asks for BitChord's Android-only authentication
+    /// (`"bitchordAuth": true`), which a desktop client can't provide.
+    auth: bool,
 }
 
 #[derive(Clone)]
@@ -154,6 +162,9 @@ impl Client {
     /// rendition when the addon offers one, but still accept lossless/hi-res copies.
     pub async fn find(&self, http: &reqwest::Client, track: &crate::model::Track, atmos: bool) -> anyhow::Result<Option<Stream>> {
         let manifest = self.manifest(http).await?;
+        if manifest.auth {
+            anyhow::bail!("{}", AUTH_DESKTOP_MSG);
+        }
         let artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| track.artist_line());
         let title = track.title.clone();
         let mut queries = Vec::new();
@@ -202,7 +213,7 @@ impl Client {
     async fn manifest(&self, http: &reqwest::Client) -> anyhow::Result<Manifest> {
         let mut slot = self.manifest.lock().await;
         if let Some(m) = slot.as_ref() {
-            return Ok(Manifest { name: m.name.clone(), defaults: m.defaults.clone(), quality: m.quality.clone() });
+            return Ok(Manifest { name: m.name.clone(), defaults: m.defaults.clone(), quality: m.quality.clone(), auth: m.auth });
         }
         let url = format!("{}/manifest.json", self.base);
         let json = get_json(http, &url).await?;
@@ -212,8 +223,8 @@ impl Client {
         anyhow::ensure!(resources.is_empty() || resources.iter().any(|r| r.eq_ignore_ascii_case("search")), "the addon doesn't offer search");
         let name = json.get("name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
         let (defaults, quality) = settings(json.get("settings"));
-        let manifest = Manifest { name, defaults, quality };
-        *slot = Some(Manifest { name: manifest.name.clone(), defaults: manifest.defaults.clone(), quality: manifest.quality.clone() });
+        let manifest = Manifest { name, defaults, quality, auth: manifest_auth(&json) };
+        *slot = Some(Manifest { name: manifest.name.clone(), defaults: manifest.defaults.clone(), quality: manifest.quality.clone(), auth: manifest.auth });
         Ok(manifest)
     }
 
@@ -357,11 +368,14 @@ impl Client {
             let resources: Vec<&str> = json.get("resources").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
             anyhow::ensure!(resources.is_empty() || resources.iter().any(|r| r.eq_ignore_ascii_case("search")), "the addon doesn't offer search");
             let name = json.get("name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
-            Ok::<_, anyhow::Error>(name)
+            Ok::<_, anyhow::Error>((name, manifest_auth(&json)))
         }
         .await;
         match manifest {
-            Ok(name) => {
+            Ok((name, auth)) => {
+                if auth {
+                    return Health::Rejected(AUTH_DESKTOP_MSG.to_owned());
+                }
                 // A manifest alone is only half an answer: what the player does with a
                 // source is search it, so the probe asks for one ordinary word.
                 match probe_search(http, &self.base).await {
@@ -374,6 +388,11 @@ impl Client {
             }
             Err(e) => {
                 let reason = format!("{e:#}");
+                // An auth-protected addon (or one that guards even its manifest) says
+                // so in its answer; that's a verdict, not a server having a bad minute.
+                if reason.contains(AUTH_DESKTOP_MSG) {
+                    return Health::Rejected(reason);
+                }
                 match probe_search(http, &self.base).await {
                     Ok(n) => Health::Ok(format!("No manifest · search works · {n} result{}", if n == 1 { "" } else { "s" })),
                     // Transport trouble (DNS, connect, timeout) is a server having a bad
@@ -391,6 +410,12 @@ impl Client {
 /// and a probe that reliably comes back empty proves less than one that usually
 /// comes back full (BitChord's `PROBE_QUERY`).
 const PROBE_QUERY: &str = "music";
+
+/// What an addon that turned on BitChord's Android-only authentication means for a
+/// desktop listener, worded once and reused everywhere (the Test line and the
+/// playback log). BitChord addon auth checks a hardware-backed key only the official
+/// BitChord Android app can hold, so no desktop client can pass it.
+const AUTH_DESKTOP_MSG: &str = "requires BitChord Android authentication (only the official BitChord Android app can answer it)";
 
 /// One `/search`, counted. Zero is a success — an addon holding nothing for one query
 /// is answering correctly — so callers read the count, not emptiness.
@@ -428,6 +453,18 @@ pub fn normalize_base(raw: &str) -> String {
 
 fn host_of(url: &str) -> String {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// Whether the manifest turns on BitChord's addon authentication. The Android app
+/// accepts `true`, `1`, `"true"` and `"1"`; anything else (or nothing) means the
+/// addon works without it.
+fn manifest_auth(json: &Value) -> bool {
+    match json.get("bitchordAuth") {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n == 1.0),
+        Some(Value::String(s)) => matches!(s.trim(), "true" | "1"),
+        _ => false,
+    }
 }
 
 fn settings(value: Option<&Value>) -> (Vec<(String, String)>, String) {
@@ -842,10 +879,32 @@ async fn get_json(http: &reqwest::Client, url: &str) -> anyhow::Result<Value> {
     if status == reqwest::StatusCode::NOT_FOUND {
         anyhow::bail!("not found");
     }
-    anyhow::ensure!(status.is_success(), "HTTP {}", status.as_u16());
+    if !status.is_success() {
+        // BitChord addon auth answers 401 (503 while its verifier can't load keys)
+        // with a JSON body naming itself; say what that means rather than "HTTP 401".
+        let body = response.text().await.unwrap_or_default();
+        if let Some(msg) = auth_answer(&body) {
+            anyhow::bail!("{} {msg}", AUTH_DESKTOP_MSG);
+        }
+        anyhow::bail!("HTTP {}", status.as_u16());
+    }
     let bytes = response.bytes().await?;
     anyhow::ensure!(!bytes.is_empty(), "the addon answered with nothing");
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// The reason a `401 {"error":"bitchord_auth",…}` answer gave, for the log line.
+fn auth_answer(body: &str) -> Option<String> {
+    let json: Value = serde_json::from_str(body).ok()?;
+    if json.get("error").and_then(Value::as_str) != Some("bitchord_auth") {
+        return None;
+    }
+    let code = json.get("code").and_then(Value::as_str).unwrap_or("");
+    Some(match code {
+        "expired" | "stale_proof" => "the addon's proof went stale".to_owned(),
+        "unavailable" => "the addon's verifier couldn't load BitChord's keys".to_owned(),
+        _ => "the addon refused this client".to_owned(),
+    })
 }
 
 /// How many bytes the stream holds, from a HEAD or a one-byte range request.
@@ -951,5 +1010,29 @@ mod tests {
         assert!(row(serde_json::json!({"audioModes": ["STEREO", "DOLBY_ATMOS"]})));
         assert!(row(serde_json::json!({"quality": "E-AC-3 JOC"})));
         assert!(!row(serde_json::json!({"audioMode": "STEREO", "format": "FLAC"})));
+    }
+
+    #[test]
+    fn bitchord_auth_flags_are_read_like_the_android_app_reads_them() {
+        let flag = |v: Value| manifest_auth(&serde_json::json!({ "id": "x", "bitchordAuth": v }));
+        assert!(flag(Value::Bool(true)));
+        assert!(flag(Value::from(1)));
+        assert!(flag(Value::from("true")));
+        assert!(flag(Value::from("1")));
+        assert!(flag(Value::from("  true  ")));
+        assert!(!flag(Value::Bool(false)));
+        assert!(!flag(Value::from(0)));
+        assert!(!flag(Value::from("false")));
+        assert!(!flag(Value::from("off")));
+        assert!(!manifest_auth(&serde_json::json!({ "id": "x" })));
+    }
+
+    #[test]
+    fn an_auth_answer_is_named_for_what_it_is() {
+        let body = r#"{"error":"bitchord_auth","code":"missing","message":"no credentials"}"#;
+        assert_eq!(auth_answer(body).as_deref(), Some("the addon refused this client"));
+        assert_eq!(auth_answer(r#"{"error":"bitchord_auth","code":"unavailable"}"#).as_deref(), Some("the addon's verifier couldn't load BitChord's keys"));
+        assert!(auth_answer(r#"{"error":"other"}"#).is_none());
+        assert!(auth_answer("not json").is_none());
     }
 }

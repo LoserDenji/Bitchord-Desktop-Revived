@@ -88,7 +88,7 @@ pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 }
 
 /// Two box-blur passes (one horizontal, one vertical), which together read as a
-/// Gaussian; the now-playing ambience borrows it too.
+/// Gaussian.
 pub(crate) fn box_blur(src: &[[f32; 3]], n: usize, r: usize) -> Vec<[f32; 3]> {
     let pass = |src: &[[f32; 3]], horizontal: bool| -> Vec<[f32; 3]> {
         let mut out = vec![[0.0; 3]; src.len()];
@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn tint_aims_below_the_ui_accent() {
         // The colour the backdrop is pulled toward is dimmed, so a dark sleeve's
-        // ambience stays dark; only the UI accent itself is lifted.
+        // backdrop stays dark; only the UI accent itself is lifted.
         let img = sleeve([200, 40, 60], [220, 60, 40]);
         let look = analyse(&img);
         let mut tint = [look.accent.r() as f32, look.accent.g() as f32, look.accent.b() as f32];

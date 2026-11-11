@@ -90,7 +90,9 @@ impl Prefs {
             global_offset: num("lyric_offset"),
             word_trim: num("lyric_trim_word"),
             line_trim: num("lyric_trim_line"),
-            text_scale: get("lyric_scale").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(TEXT_SCALE.0, TEXT_SCALE.1),
+            // 70% out of the box: the theme's own size reads large on most screens, and
+            // the + button is right there for anyone who wants it bigger.
+            text_scale: get("lyric_scale").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.7).clamp(TEXT_SCALE.0, TEXT_SCALE.1),
             // Intensive glow is on out of the box at 70%: new listeners get the am-lyrics
             // look at once, and turning it off is one switch.
             glow_boost: get("lyric_glow").map(|v| v == "1").unwrap_or(true),

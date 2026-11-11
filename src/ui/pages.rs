@@ -1312,13 +1312,13 @@ const SETTINGS_SECTIONS: &[(&str, &[&str])] = &[
     ("Account", &["Sign in", "Sign out", "Channel", "Google", "account"]),
     (
         "Playback",
-        &["Autoplay", "Volume normalization", "Logarithmic volume", "Play songs, not music videos", "Output device", "Automix", "Crossfade", "Crossfade length", "Skip non-music parts", "SponsorBlock", "Hi-Res audio", "hires", "lossless", "Dolby Atmos", "Add a source"],
+        &["Autoplay", "Volume normalization", "Logarithmic volume", "Play songs, not music videos", "Output device", "Automix", "Crossfade", "Crossfade length", "Skip non-music parts", "SponsorBlock"],
     ),
-    ("Music sources", &["JioSaavn", "Monochrome", "provider", "AAC", "FLAC", "320", "160", "96", "server", "stream", "Test", "Add a server"]),
+    ("Music sources", &["JioSaavn", "Monochrome", "provider", "AAC", "FLAC", "320", "160", "96", "server", "stream", "Test", "Add a server", "Bitchord addons", "addon", "Hi-Res", "hires", "lossless", "Dolby Atmos", "Add a source"]),
     ("Downloads", &["Download folder", "Change", "Open", "offline"]),
     ("Lyrics", &["Romanization", "Translation", "Translate into", "Text size", "Intensive glow", "Glow strength", "Timing offset", "Word-synced trim", "Line-synced trim", "Lyrics sources", "translate"]),
     ("Artist pages", &["Signature service", "signature"]),
-    ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Now playing backdrop", "Artwork mesh", "ForkChord", "Font", "Hidden playlists", "theme"]),
+    ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Now playing backdrop", "Font", "Hidden playlists", "theme"]),
     ("Window", &["Dynamic island", "Close to tray", "Collapse sidebar", "Draw with", "Restart to apply", "renderer", "OpenGL", "wgpu"]),
     ("Connections", &["Discord", "Last.fm", "scrobble", "rich presence"]),
     ("Network", &["Proxy", "System proxy", "Test connection", "Restart to apply", "socks"]),
@@ -1504,30 +1504,28 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
                 app.request_segments();
             }
         });
-        divider(ui);
-        setting_row(ui, "Hi-Res audio", Some("Addon servers that serve hi-res copies of songs. When one has the song, its copy plays instead of YouTube's, and its quality shows in the player."), |_| {});
-        divider(ui);
-        ui.add_space(12.0);
-        hires_sources_editor(app, ui);
-        ui.add_space(10.0);
-        divider(ui);
-        setting_row(ui, "Prefer Dolby Atmos", Some("Ask the hi-res sources for a Dolby Atmos copy when they offer one. Falls back to the best stereo copy when the stream's codec can't be decoded."), |ui| {
-            if toggle(ui, &mut app.prefer_atmos, "Prefer Dolby Atmos").changed() {
-                app.backend.set_prefer_atmos(app.prefer_atmos);
-            }
-        });
     });
 }
 
-/// The hi-res source list: one line per addon with its Test, and "+ Add a source" below
-/// it that opens a fresh line for the next one. Test health-checks the link (BitChord's
-/// source editor's Test, [`crate::hires::Client::probe`]), whether or not it's saved.
-fn hires_sources_editor(app: &mut App, ui: &mut Ui) {
+/// The addon list: one line per addon with its on/off switch and its Test, and
+/// "+ Add a source" below it that opens a fresh line for the next one. Test
+/// health-checks the link (BitChord's source editor's Test, [`crate::hires::Client::probe`]),
+/// whether or not it's saved. A switched-off addon stays in the list, but no song
+/// is looked up on it.
+fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
     let mut edited = false;
     let mut remove = None;
     for i in 0..app.hires_sources.len() {
         let link = app.hires_sources[i].trim().to_owned();
         ui.horizontal(|ui| {
+            let mut on = app.hires_enabled.get(i).copied().unwrap_or(true);
+            if toggle(ui, &mut on, "Addon on").changed() {
+                if let Some(slot) = app.hires_enabled.get_mut(i) {
+                    *slot = on;
+                }
+                app.backend.set_hires_source(&live_sources(app));
+            }
+            ui.add_space(6.0);
             let field_w = (ui.available_width() - 110.0).max(120.0);
             ui.allocate_ui_with_layout(vec2(field_w, 42.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(field_w);
@@ -1545,6 +1543,9 @@ fn hires_sources_editor(app: &mut App, ui: &mut Ui) {
     }
     if let Some(i) = remove {
         let gone = app.hires_sources.remove(i);
+        if i < app.hires_enabled.len() {
+            app.hires_enabled.remove(i);
+        }
         app.hires_tests.remove(gone.trim());
         edited = true;
     }
@@ -1571,6 +1572,7 @@ fn hires_sources_editor(app: &mut App, ui: &mut Ui) {
             let link = app.hires_draft.trim().to_owned();
             if !link.is_empty() && !app.hires_sources.iter().any(|s| s.trim() == link) {
                 app.hires_sources.push(link);
+                app.hires_enabled.push(true);
                 app.backend.set_hires_source(&live_sources(app));
             }
             app.hires_draft.clear();
@@ -1622,9 +1624,14 @@ fn hires_test_line(app: &App, ui: &mut Ui, link: &str) {
     ui.label(RichText::new(label).font(theme::regular(12.5)).color(color));
 }
 
-/// The non-empty links as one newline-separated list, the way the backend reads them.
+/// The non-empty, switched-on links as one newline-separated list, the way the backend
+/// reads them. A row's link edits are saved whether its switch is on or not; only the
+/// on ones reach the backend.
 fn live_sources(app: &App) -> String {
-    app.hires_sources.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
+    app.hires_sources.iter().enumerate().filter(|(i, s)| {
+        let on = app.hires_enabled.get(*i).copied().unwrap_or(true);
+        on && !s.trim().is_empty()
+    }).map(|(_, s)| s.trim()).collect::<Vec<_>>().join("\n")
 }
 
 /// Settings › Music sources: the providers ported from Mochy-Music. When one has the
@@ -1689,6 +1696,18 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
             }
         });
         test_line(ui, &app.saavn_test.lock().unwrap().clone());
+        divider(ui);
+        setting_row(ui, "Bitchord addons", Some("Addon servers, shared as links, that serve hi-res copies of songs — the same ones the BitChord Android app takes. When one has the song, its copy plays instead of YouTube's, and its quality shows in the player."), |_| {});
+        divider(ui);
+        ui.add_space(12.0);
+        bitchord_addons_editor(app, ui);
+        ui.add_space(10.0);
+        divider(ui);
+        setting_row(ui, "Prefer Dolby Atmos", Some("Ask the addons for a Dolby Atmos copy when they offer one. Falls back to the best stereo copy when the stream's codec can't be decoded."), |ui| {
+            if toggle(ui, &mut app.prefer_atmos, "Prefer Dolby Atmos").changed() {
+                app.backend.set_prefer_atmos(app.prefer_atmos);
+            }
+        });
     });
 }
 
@@ -2002,7 +2021,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.reactive_bg, "Pulse with the music");
         });
         divider(ui);
-        setting_row(ui, "Now playing backdrop", Some("What plays behind the full-screen player: the theme's own, or one of the alternatives without editing the theme. Artwork mesh is ForkChord's \u{2014} the cover's colours as a still gradient under a full-cover blur."), |ui| {
+        setting_row(ui, "Now playing backdrop", Some("What plays behind the full-screen player: the theme's own, or one of the alternatives without editing the theme."), |ui| {
             use crate::preset::BgMode;
             let label = |m: Option<BgMode>| match m {
                 None => "Theme default".to_owned(),
@@ -2012,7 +2031,6 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
                     BgMode::AccentGradient => "Flat accent".to_owned(),
                     BgMode::Solid => "Solid colour".to_owned(),
                     BgMode::CoverFullbleed => "Full-bleed cover".to_owned(),
-                    BgMode::ArtworkMesh => "Artwork mesh (ForkChord)".to_owned(),
                 },
             };
             let mut pick: Option<Option<BgMode>> = None;
@@ -2021,7 +2039,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
                 ui.set_width(220.0);
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 ui.add_space(4.0);
-                for option in [None, Some(BgMode::Kawarp), Some(BgMode::CoverStatic), Some(BgMode::AccentGradient), Some(BgMode::Solid), Some(BgMode::CoverFullbleed), Some(BgMode::ArtworkMesh)] {
+                for option in [None, Some(BgMode::Kawarp), Some(BgMode::CoverStatic), Some(BgMode::AccentGradient), Some(BgMode::Solid), Some(BgMode::CoverFullbleed)] {
                     if option_row(ui, &label(option), option == app.np_bg).clicked() {
                         pick = Some(option);
                         ui.close();

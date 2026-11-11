@@ -53,14 +53,6 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
                         super::shell::hgradient(&painter, fade, Color32::TRANSPARENT, solid);
                     }
                 }
-            } else if mode == BgMode::ArtworkMesh {
-                // The ForkChord player's backdrop: the artwork's colours as a still mesh
-                // under a full-cover blur, scrims included (mesh_bg.rs). The theme's scrim
-                // knob scales its own; the shared one below stays out of its way.
-                painter.rect_filled(rect, 0.0, Color32::from_rgb(0x12, 0x12, 0x12));
-                if let Some(track) = app.shown() {
-                    super::mesh_bg::paint(ui, rect, &track.thumbs, (b.scrim / 0.3).max(0.0));
-                }
             } else if let Some(bg) = app.bg.as_ref().filter(|_| art) {
                 let blend = theme::ease_in_out(((now - app.art_changed) / 1.4) as f32);
                 let level = if app.reactive_bg && app.playing() { app.audio.status.level() * b.reactive } else { 0.0 };
@@ -81,10 +73,8 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
             } else {
                 painter.rect_filled(rect, 0.0, theme::lerp_color(theme::bg(), app.accent_color(), 0.25));
             }
-            if mode != BgMode::ArtworkMesh {
-                let k = b.scrim / 0.3;
-                super::shell::vgradient(ui.painter(), rect, theme::shade((0.18 * k).min(0.95)), theme::shade((0.42 * k).min(0.95)));
-            }
+            let k = b.scrim / 0.3;
+            super::shell::vgradient(ui.painter(), rect, theme::shade((0.18 * k).min(0.95)), theme::shade((0.42 * k).min(0.95)));
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(32.0, 20.0))));
             body(app, &mut child, now);
         });
@@ -156,8 +146,8 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     });
 
     let content = Rect::from_min_max(pos2(area.left(), header.bottom() + 12.0), area.max);
-    // What the margins came off: the whole player. The ambience bleeds into it, and the
-    // queue panel runs to its edge so its scroll bar hugs the window's edge.
+    // What the margins came off: the whole player. The queue panel runs to its edge so
+    // its scroll bar hugs the window's edge.
     let full = area.expand2(vec2(32.0, 20.0));
     // The side panel (lyrics / up next) slides in and out when its chip is toggled.
     // A song without lyrics shows just the artwork, with no transition.
@@ -201,7 +191,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         if art_vis > 0.001 {
             let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(content));
             cui.multiply_opacity(art_vis);
-            cover_column(app, &mut cui, col_art.translate(vec2(-slide * (1.0 - art_vis), 0.0)), &track, no_lyrics, now, px, full);
+            cover_column(app, &mut cui, col_art.translate(vec2(-slide * (1.0 - art_vis), 0.0)), &track, no_lyrics, now, px);
         } else {
             // Hidden behind the lyrics: have it loaded for when they're turned off.
             widgets::preload_cover(ui.ctx(), &track.thumbs, px);
@@ -219,7 +209,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         let col = Rect::from_min_max(col_art.min.lerp(col_panel.min, glide), col_art.max.lerp(col_panel.max, glide));
         // One image size for the whole glide, the bigger of its two ends.
         let px = (art_side(cs, col_art).max(art_side(cs, col_panel)) * ppp) as u32;
-        cover_column(app, ui, col, &track, no_lyrics, now, px, full);
+        cover_column(app, ui, col, &track, no_lyrics, now, px);
         if cs.side == Side::Right {
             Rect::from_min_max(content.min, pos2(col_panel.left() - 28.0, content.bottom()))
         } else {
@@ -271,9 +261,8 @@ fn art_side(cs: &crate::preset::CoverStyle, col: Rect) -> f32 {
 
 /// The sleeve: art, title and artists, the seek line with its two times, then the
 /// transport — the order the reference keeps them in. `px`: the size to fetch the image
-/// at (fixed while the column glides); `amb`: what the ambience may paint into.
-#[allow(clippy::too_many_arguments)]
-fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Track, no_lyrics: bool, now: f64, px: u32, amb: Rect) {
+/// at (fixed while the column glides).
+fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Track, no_lyrics: bool, now: f64, px: u32) {
     use crate::preset::Shape;
     // A handoff's outgoing song is still what's heard: its star, menu and seek are its own.
     let hold = app.mix_hold().map(|h| (h.total, h.mix, app.mix_hold_pos(h)));
@@ -285,28 +274,6 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let round = cs.shape != Shape::Rounded;
     let radius = if round { side / 2.0 } else { cs.radius.clamp(0.0, side / 2.0) };
     let cr = egui::CornerRadius::same(radius.min(255.0) as u8);
-    // The melting ambience first, under everything: the cover's colours blur out around
-    // the sleeve, dim by the scrim over the backdrop and give way — so the two blend
-    // with no line between them, bright covers included. Built the way the backdrop is:
-    // the shader modes run the cover through Kawarp, whose saturation knob and
-    // dark-region tint toward the artwork's accent are the backdrop's own, so the glow
-    // takes them too; the other backdrops show the cover itself or a flat colour, and
-    // keep the glow as the cover's own colours.
-    if cs.ambience > 0.0 {
-        let b = &look.background;
-        let shader = matches!(app.np_bg.unwrap_or(b.mode), crate::preset::BgMode::Kawarp | crate::preset::BgMode::CoverStatic);
-        widgets::paint_ambience(
-            ui,
-            egui::Id::unique("np-ambience"),
-            amb,
-            art,
-            &track.thumbs,
-            cs.ambience,
-            b.scrim,
-            if shader { b.saturation } else { 1.3 },
-            shader.then_some(app.accent),
-        );
-    }
     if cs.glow > 0.0 {
         let s = egui::epaint::Shadow { offset: [0, 16], blur: 90, spread: 6, color: theme::with_alpha(app.accent_color(), cs.glow.min(1.0) * 0.7) };
         ui.painter().add(s.as_shape(art, cr));

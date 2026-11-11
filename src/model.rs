@@ -69,8 +69,8 @@ pub fn pick_thumb(thumbs: &[Thumb], min_px: u32) -> Option<&Thumb> {
 /// The square region of a `w × h` image that [`Thumb::square_uv`] shows, as
 /// `(x, y, side)` in pixels: `None` when the image already is that square (or close
 /// enough that nothing shows). Image work that doesn't run through a texture's UV —
-/// the backdrop and ambience blurs — crops with this first, so what they show matches
-/// the sleeve the sleeve crops in flight.
+/// the backdrop blur — crops with this first, so what it shows matches the sleeve
+/// the sleeve crops in flight.
 pub fn square_crop_px(w: u32, h: u32) -> Option<(u32, u32, u32)> {
     let ratio = if h > 0 { w as f32 / h as f32 } else { 1.0 };
     let side = if ratio > 1.6 {

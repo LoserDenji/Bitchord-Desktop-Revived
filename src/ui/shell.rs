@@ -37,14 +37,12 @@ fn gradient(painter: &egui::Painter, rect: Rect, c: [Color32; 4]) {
 /// playing uses.
 fn page_mode(look: &crate::preset::Preset) -> crate::preset::BgMode {
     use crate::preset::{BgMode, PageBg};
-    let mode = match look.app.page_bg {
+    match look.app.page_bg {
         PageBg::Same => look.background.mode,
         PageBg::Static => BgMode::CoverStatic,
         PageBg::Accent => BgMode::AccentGradient,
         PageBg::Solid => BgMode::Solid,
-    };
-    // The artwork mesh is a now-playing backdrop; pages fall back to its still blur.
-    if mode == BgMode::ArtworkMesh { BgMode::CoverStatic } else { mode }
+    }
 }
 
 /// Whether the pages' background moves while music plays (static themes need no frames).
