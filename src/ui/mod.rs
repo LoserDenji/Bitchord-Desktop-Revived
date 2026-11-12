@@ -243,6 +243,16 @@ type ProxyTest = Option<Option<(bool, String)>>;
 /// (there and usable, or the reason it isn't) once it's in.
 type SourceTest = Option<Option<(bool, String)>>;
 
+/// What the one-button custom provider add learned about a link: each format's verdict
+/// once its probe answers (`None` while it runs), so both show on their own lines.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ProviderVerdicts {
+    /// The Bitchord addon format (manifest + search + stream).
+    pub bitchord: Option<(bool, String)>,
+    /// The Monochrome protocol (search + track streamer or relay).
+    pub mono: Option<(bool, String)>,
+}
+
 /// A thing opened from a search, shown on the search landing with its artwork.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecentSearch {
@@ -462,19 +472,32 @@ pub struct App {
     hires_tests: HashMap<String, Arc<std::sync::Mutex<SourceTest>>>,
     /// Ask the addons for Dolby Atmos renditions.
     prefer_atmos: bool,
+    /// Settings › Music sources: whether the whole Bitchord addons row is on, and the
+    /// providers ported from Mochy-Music. Monochrome's built-in streamer and the servers
+    /// the listener added are separate rows in the sources' priority list.
+    addons_on: bool,
+    mono_servers_on: bool,
+    youtube_on: bool,
+    /// The sources' priority: which is tried before which, as the rows list them.
+    source_order: Vec<crate::backend::MusicSource>,
     /// Settings › Music sources: the providers ported from Mochy-Music are on, and the
     /// stream quality JioSaavn's row picked.
     jiosaavn: bool,
     jiosaavn_quality: crate::providers::SaavnQuality,
     monochrome: bool,
+    /// The "+ Add a custom provider" row is open.
+    provider_adding: bool,
+    /// What's typed in that row, before it's added.
+    provider_draft: String,
+    /// Focus the draft row as soon as it opens.
+    provider_focus: bool,
+    /// Each link's add-probe (both formats at once), by the link as typed: a slot the
+    /// check's threads fill while the page draws.
+    provider_tests: HashMap<String, Arc<std::sync::Mutex<Option<Option<ProviderVerdicts>>>>>,
+    /// What the last add found, so it stays on the page after the row closes.
+    provider_last: Option<ProviderVerdicts>,
     /// Monochrome's added servers, one link per line (the built-in streamer isn't here).
     mono_servers: Vec<String>,
-    /// The "+ Add a server" row is open.
-    mono_adding: bool,
-    /// What's typed in that row, before it's added.
-    mono_draft: String,
-    /// Focus the draft row as soon as it opens.
-    mono_focus: bool,
     /// Each Monochrome server's Test (by the link as typed), the way the hi-res sources'
     /// run: a slot the check's thread fills while the page draws. JioSaavn has one too.
     mono_tests: HashMap<String, Arc<std::sync::Mutex<SourceTest>>>,
@@ -697,13 +720,41 @@ impl App {
         let prefer_atmos = get("prefer_atmos").is_some_and(|v| v == "1");
         backend.set_prefer_atmos(prefer_atmos);
         // Before any request: a song started at launch must see the music sources too.
-        let jiosaavn = get("jiosaavn").is_none_or(|v| v == "1");
+        let jiosaavn = get("jiosaavn").is_some_and(|v| v == "1");
         let jiosaavn_quality = crate::providers::SaavnQuality::from_key(&get("jiosaavn_quality").unwrap_or_default());
-        let monochrome = get("monochrome").is_none_or(|v| v == "1");
+        let monochrome = get("monochrome").is_some_and(|v| v == "1");
+        let addons_on = get("addons_on").is_none_or(|v| v == "1");
+        let mono_servers_on = get("mono_servers_on").is_some_and(|v| v == "1");
+        let youtube_on = get("youtube_on").is_none_or(|v| v == "1");
         let mono_source = get("mono_servers").unwrap_or_default();
         let mono_servers: Vec<String> = mono_source.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
-        backend.set_jiosaavn(jiosaavn, jiosaavn_quality);
-        backend.set_monochrome(monochrome, &mono_servers.join("\n"));
+        // The sources' saved order, with any row a new version added at its default place.
+        let source_order = {
+            let mut order: Vec<crate::backend::MusicSource> = get("source_priority").unwrap_or_default().lines().filter_map(crate::backend::MusicSource::from_key).collect();
+            for kind in crate::backend::MusicSource::ALL {
+                if !order.contains(&kind) {
+                    order.push(kind);
+                }
+            }
+            order.truncate(crate::backend::MusicSource::ALL.len());
+            order
+        };
+        let source_cfg: Vec<(crate::backend::MusicSource, bool)> = source_order
+            .iter()
+            .map(|kind| {
+                let on = match kind {
+                    crate::backend::MusicSource::Addons => addons_on,
+                    crate::backend::MusicSource::MonoServers => mono_servers_on,
+                    crate::backend::MusicSource::Monochrome => monochrome,
+                    crate::backend::MusicSource::JioSaavn => jiosaavn,
+                    crate::backend::MusicSource::Youtube => youtube_on,
+                };
+                (*kind, on)
+            })
+            .collect();
+        backend.set_monochrome_servers(&mono_servers.join("\n"));
+        backend.set_saavn_quality(jiosaavn_quality);
+        backend.set_sources(&source_cfg);
         backend.request(Req::Home(None));
         if logged_in {
             backend.request(Req::Library);
@@ -845,15 +896,21 @@ impl App {
             hires_focus: false,
             hires_tests: Default::default(),
             prefer_atmos,
+            addons_on,
+            mono_servers_on,
+            youtube_on,
+            source_order,
             jiosaavn,
             jiosaavn_quality,
             monochrome,
             mono_servers,
-            mono_adding: false,
-            mono_draft: String::new(),
-            mono_focus: false,
             mono_tests: Default::default(),
             saavn_test: Default::default(),
+            provider_adding: false,
+            provider_draft: String::new(),
+            provider_focus: false,
+            provider_tests: Default::default(),
+            provider_last: None,
             audio_info: None,
             art_changed: -10.0,
             accent: theme::RED,
@@ -1214,6 +1271,26 @@ impl App {
         self.signature_images.clear();
         self.signature_missed.clear();
         self.signature_waiting.clear();
+    }
+
+    /// The sources' priority as Settings has it now, handed to the backend: the rows'
+    /// order with each one's switch.
+    pub(super) fn apply_sources(&self) {
+        let cfg = self
+            .source_order
+            .iter()
+            .map(|kind| {
+                let on = match kind {
+                    crate::backend::MusicSource::Addons => self.addons_on,
+                    crate::backend::MusicSource::MonoServers => self.mono_servers_on,
+                    crate::backend::MusicSource::Monochrome => self.monochrome,
+                    crate::backend::MusicSource::JioSaavn => self.jiosaavn,
+                    crate::backend::MusicSource::Youtube => self.youtube_on,
+                };
+                (*kind, on)
+            })
+            .collect::<Vec<_>>();
+        self.backend.set_sources(&cfg);
     }
 
     /// The newest frame of a motion clip, started the first time it's seen. The decoders
@@ -1665,6 +1742,10 @@ impl eframe::App for App {
         storage.set_string("jiosaavn_quality", self.jiosaavn_quality.key().to_owned());
         storage.set_string("monochrome", b(self.monochrome));
         storage.set_string("mono_servers", self.mono_servers.join("\n"));
+        storage.set_string("addons_on", b(self.addons_on));
+        storage.set_string("mono_servers_on", b(self.mono_servers_on));
+        storage.set_string("youtube_on", b(self.youtube_on));
+        storage.set_string("source_priority", self.source_order.iter().map(|k| k.key()).collect::<Vec<_>>().join("\n"));
         storage.set_string("sponsorblock", b(self.sponsorblock));
         storage.set_string("crossfade", b(self.crossfade));
         storage.set_string("automix", b(self.automix));

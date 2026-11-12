@@ -1314,7 +1314,7 @@ const SETTINGS_SECTIONS: &[(&str, &[&str])] = &[
         "Playback",
         &["Autoplay", "Volume normalization", "Logarithmic volume", "Play songs, not music videos", "Output device", "Automix", "Crossfade", "Crossfade length", "Skip non-music parts", "SponsorBlock", "Equalizer", "Preset", "Bass boost", "Vocal", "Late night", "Prevent clipping", "bands"],
     ),
-    ("Music sources", &["JioSaavn", "Monochrome", "provider", "AAC", "FLAC", "320", "160", "96", "server", "stream", "Test", "Add a server", "Bitchord addons", "addon", "Hi-Res", "hires", "lossless", "Dolby Atmos", "Add a source"]),
+    ("Music sources", &["JioSaavn", "Monochrome", "provider", "AAC", "FLAC", "320", "160", "96", "server", "stream", "Test", "Add a custom provider", "Bitchord addons", "addon", "Hi-Res", "hires", "lossless", "Dolby Atmos", "Add a source", "Source priority", "YouTube Music"]),
     ("Downloads", &["Download folder", "Change", "Open", "offline"]),
     ("Lyrics", &["Romanization", "Translation", "Translate into", "Text size", "Intensive glow", "Glow strength", "Timing offset", "Word-synced trim", "Line-synced trim", "Lyrics sources", "translate"]),
     ("Artist pages", &["Signature service", "signature"]),
@@ -1761,28 +1761,219 @@ fn live_sources(app: &App) -> String {
 fn settings_sources(app: &mut App, ui: &mut Ui) {
     section_label(ui, "Music sources", None);
     ui.label(
-        RichText::new("Other catalogs that can stand in for YouTube's stream when they have the song: a source holding the song plays its own copy, and when none does, YouTube plays as usual.")
+        RichText::new("Other catalogs that can stand in for YouTube's stream when they have the song: the first source in the priority list that holds the song plays its own copy, and when none does, YouTube plays as usual.")
             .font(theme::regular(13.0))
             .color(theme::text_dim()),
     );
     ui.add_space(12.0);
+    settings_sources_priority(app, ui);
+    ui.add_space(14.0);
+    settings_provider_add(app, ui);
+    ui.add_space(14.0);
+    settings_sources_lists(app, ui);
+    ui.add_space(14.0);
+    settings_saavn(app, ui);
+}
+
+/// The sources' priority: one row each, with its switch, in the order a song asks them.
+/// The arrows move a row, the switch turns it off; YouTube is the fallback everything
+/// ends at.
+fn settings_sources_priority(app: &mut App, ui: &mut Ui) {
+    section_label(ui, "Source priority", None);
     settings_card(ui, |ui| {
-        setting_row(ui, "Monochrome", Some("Lossless FLAC for every song Monochrome has, from its track streamer or a server you add below. No account needed."), |ui| {
-            if toggle(ui, &mut app.monochrome, "Monochrome").changed() {
-                app.backend.set_monochrome(app.monochrome, &live_mono_servers(app));
+        for i in 0..app.source_order.len() {
+            let kind = app.source_order[i];
+            if i > 0 {
+                divider(ui);
+            }
+            ui.horizontal(|ui| {
+                setting_row(ui, kind.label(), Some(source_blurb(kind)), |ui| {
+                    let mut on = match kind {
+                        crate::backend::MusicSource::Addons => app.addons_on,
+                        crate::backend::MusicSource::MonoServers => app.mono_servers_on,
+                        crate::backend::MusicSource::Monochrome => app.monochrome,
+                        crate::backend::MusicSource::JioSaavn => app.jiosaavn,
+                        crate::backend::MusicSource::Youtube => app.youtube_on,
+                    };
+                    if toggle(ui, &mut on, kind.label()).changed() {
+                        match kind {
+                            crate::backend::MusicSource::Addons => app.addons_on = on,
+                            crate::backend::MusicSource::MonoServers => app.mono_servers_on = on,
+                            crate::backend::MusicSource::Monochrome => app.monochrome = on,
+                            crate::backend::MusicSource::JioSaavn => app.jiosaavn = on,
+                            crate::backend::MusicSource::Youtube => app.youtube_on = on,
+                        }
+                        app.apply_sources();
+                    }
+                    ui.add_space(8.0);
+                    // The arrows live beside the switch: up and down through the order.
+                    if widgets::icon_button(ui, icon::CHEVRON_UP, 11.0, "Move this source up", false).clicked()
+                        && i > 0
+                    {
+                        app.source_order.swap(i - 1, i);
+                        app.apply_sources();
+                    }
+                    if widgets::icon_button(ui, icon::CHEVRON_DOWN, 11.0, "Move this source down", false).clicked()
+                        && i + 1 < app.source_order.len()
+                    {
+                        app.source_order.swap(i, i + 1);
+                        app.apply_sources();
+                    }
+                });
+            });
+        }
+    });
+}
+
+/// One source's row: what it is and what turning it off means.
+fn source_blurb(kind: crate::backend::MusicSource) -> &'static str {
+    match kind {
+        crate::backend::MusicSource::Addons => "The Bitchord addon servers below: links that serve hi-res copies of songs, the same ones the BitChord Android app takes.",
+        crate::backend::MusicSource::MonoServers => "Monochrome-format servers you've added below. A link's kind is found when its first search runs.",
+        crate::backend::MusicSource::Monochrome => "Monochrome's own track streamer: lossless FLAC, no account needed, no setup.",
+        crate::backend::MusicSource::JioSaavn => "JioSaavn's catalog in AAC up to 320 kbps, no account needed. Strongest on Indian music; it misses many big international labels.",
+        crate::backend::MusicSource::Youtube => "YouTube Music itself, where every song ends up when the sources above it have no copy. Switching it off leaves only the sources above.",
+    }
+}
+
+/// Adding a custom provider, one button for both formats: whatever is pasted is asked in
+/// the Bitchord addon protocol and in the Monochrome protocol at the same time, and the
+/// link is added wherever it answered — both, if both speak it — with each format's
+/// verdict (its Test, which asks for real search results) on its own line. Which of them
+/// wins for a song is the priority list's say.
+fn settings_provider_add(app: &mut App, ui: &mut Ui) {
+    section_label(ui, "Add a custom provider", None);
+    settings_card(ui, |ui| {
+        setting_row(ui, "One link, both formats", Some("Paste an addon server's link and BitChord tries it as a Bitchord addon and as a Monochrome server at the same time, adding it to the formats that answer. Each verdict tells you whether search really works there."), |ui| {
+            if !app.provider_adding && pill(ui, "+  Add a custom provider", None, false).clicked() {
+                app.provider_adding = true;
+                app.provider_focus = true;
+                app.provider_draft.clear();
             }
         });
-        divider(ui);
-        ui.add_space(12.0);
-        mono_servers_editor(app, ui);
+        if app.provider_adding {
+            ui.add_space(6.0);
+            let resp = super::text_field(ui, "", &mut app.provider_draft, false, "https://your-provider.example");
+            if app.provider_focus {
+                resp.request_focus();
+                app.provider_focus = false;
+            }
+            let typed = app.provider_draft.trim().to_owned();
+            let slot = app.provider_tests.entry(typed.clone()).or_default().clone();
+            let state = slot.lock().unwrap().clone();
+            ui.horizontal(|ui| {
+                let running = matches!(state, Some(None));
+                if !typed.is_empty() && !running && pill(ui, "Add", None, true).clicked() {
+                    *slot.lock().unwrap() = Some(None);
+                    let (slot, http, link) = (slot, app.backend.http(), typed.clone());
+                    app.backend.spawn(async move {
+                        let (bitchord, mono) = tokio::join!(crate::hires::probe_link(&link, &http), crate::providers::probe_monochrome(&http, &link));
+                        *slot.lock().unwrap() = Some(Some(ProviderVerdicts { bitchord: Some((bitchord.good(), bitchord.message().to_owned())), mono: Some(mono) }));
+                    });
+                }
+                if typed.is_empty() {
+                    ui.label(RichText::new("Paste a link, then Add. Enter works too.").font(theme::regular(12.5)).color(theme::text_faint()));
+                } else if running {
+                    ui.label(RichText::new("Asking both formats…").font(theme::regular(12.5)).color(theme::text_faint()));
+                }
+            });
+            // Enter in the field adds, the same as the button.
+            if resp.lost_focus() {
+                let link = app.provider_draft.trim().to_owned();
+                if !link.is_empty() && !matches!(slot.lock().unwrap().as_ref(), Some(None)) {
+                    let running = matches!(slot.lock().unwrap().as_ref(), Some(None));
+                    if !running {
+                        *slot.lock().unwrap() = Some(None);
+                        let (slot, http, link) = (slot, app.backend.http(), link);
+                        app.backend.spawn(async move {
+                            let (bitchord, mono) = tokio::join!(crate::hires::probe_link(&link, &http), crate::providers::probe_monochrome(&http, &link));
+                            *slot.lock().unwrap() = Some(Some(ProviderVerdicts { bitchord: Some((bitchord.good(), bitchord.message().to_owned())), mono: Some(mono) }));
+                        });
+                    }
+                }
+            }
+            provider_verdicts(app, ui, &typed, &state);
+            ui.add_space(6.0);
+        }
+        if !app.provider_adding && let Some(v) = &app.provider_last {
+            ui.add_space(6.0);
+            if let Some((good, msg)) = &v.bitchord {
+                ui.label(RichText::new(verdict_line("Bitchord addon", *good, msg)).font(theme::regular(12.5)).color(if *good { theme::GREEN } else { theme::RED }));
+            }
+            if let Some((good, msg)) = &v.mono {
+                ui.label(RichText::new(verdict_line("Monochrome", *good, msg)).font(theme::regular(12.5)).color(if *good { theme::GREEN } else { theme::RED }));
+            }
+        }
+    });
+}
+
+/// A format's verdict, or how the ask went.
+fn verdict_line(format: &str, good: bool, msg: &str) -> String {
+    if good {
+        format!("{format}: {msg}")
+    } else {
+        format!("{format}: didn't work ({msg})")
+    }
+}
+
+/// The verdicts of the add-probe while the row is open — and the moment they're in, the
+/// link joins every format that answered, the row closes and the verdicts stay below.
+fn provider_verdicts(app: &mut App, ui: &mut Ui, typed: &str, state: &Option<Option<ProviderVerdicts>>) {
+    let Some(Some(v)) = state else { return };
+    let link = typed.to_owned();
+    let mut added = false;
+    if let Some((good, _)) = &v.bitchord
+        && *good
+        && !app.hires_sources.iter().any(|s| s.trim() == link)
+    {
+        app.hires_sources.push(link.clone());
+        app.hires_enabled.push(true);
+        added = true;
+    }
+    if let Some((good, _)) = &v.mono
+        && *good
+        && !app.mono_servers.iter().any(|s| s.trim() == link)
+    {
+        app.mono_servers.push(link.clone());
+        added = true;
+    }
+    if added {
+        app.backend.set_hires_source(&live_sources(app));
+        app.backend.set_monochrome_servers(&live_mono_servers(app));
+        app.apply_sources();
+    }
+    app.provider_last = Some(v.clone());
+    app.provider_adding = false;
+    app.provider_draft.clear();
+    if let Some((good, msg)) = &v.bitchord {
+        ui.label(RichText::new(verdict_line("Bitchord addon", *good, msg)).font(theme::regular(12.5)).color(if *good { theme::GREEN } else { theme::RED }));
+    }
+    if let Some((good, msg)) = &v.mono {
+        ui.label(RichText::new(verdict_line("Monochrome", *good, msg)).font(theme::regular(12.5)).color(if *good { theme::GREEN } else { theme::RED }));
+    }
+}
+
+/// The providers already added: the Bitchord addons, then the Monochrome servers, each
+/// row with its Test and its switch; removing is the ×. New ones come from the one
+/// button above, which asks both formats at once.
+fn settings_sources_lists(app: &mut App, ui: &mut Ui) {
+    section_label(ui, "Your providers", None);
+    settings_card(ui, |ui| {
+        setting_row(ui, "Bitchord addons", Some("Addon servers that serve hi-res copies of songs. A switched-off addon keeps its place in the list, but no song is looked up on it."), |_| {});
+        ui.add_space(10.0);
+        bitchord_addons_editor(app, ui);
         ui.add_space(10.0);
         divider(ui);
-        setting_row(ui, "JioSaavn", Some("JioSaavn's catalog in AAC up to 320 kbps, no account needed. Strongest on Indian music; it misses many big international labels."), |ui| {
-            if toggle(ui, &mut app.jiosaavn, "JioSaavn").changed() {
-                app.backend.set_jiosaavn(app.jiosaavn, app.jiosaavn_quality);
-            }
-        });
-        divider(ui);
+        setting_row(ui, "Monochrome servers", Some("Monochrome-format servers you've added, tried before Monochrome's own streamer — they were added for a reason. A site's link is read for the server it plays from."), |_| {});
+        ui.add_space(10.0);
+        mono_servers_editor(app, ui);
+    });
+}
+
+/// JioSaavn's stream quality, its Test, and the addons' Dolby Atmos switch.
+fn settings_saavn(app: &mut App, ui: &mut Ui) {
+    section_label(ui, "Streams", None);
+    settings_card(ui, |ui| {
         setting_row(ui, "JioSaavn stream", Some("How much data a JioSaavn copy uses. 320 is its best; songs that don't have it play 160."), |ui| {
             let btn = dropdown_button(ui, app.jiosaavn_quality.label(), 200.0, "JioSaavn stream");
             egui::Popup::menu(&btn).show(|ui| {
@@ -1792,7 +1983,7 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
                 for quality in crate::providers::SaavnQuality::ALL {
                     if option_row(ui, quality.label(), app.jiosaavn_quality == quality).clicked() {
                         app.jiosaavn_quality = quality;
-                        app.backend.set_jiosaavn(app.jiosaavn, quality);
+                        app.backend.set_saavn_quality(quality);
                         ui.close();
                     }
                 }
@@ -1818,11 +2009,6 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
             }
         });
         test_line(ui, &app.saavn_test.lock().unwrap().clone());
-        divider(ui);
-        setting_row(ui, "Bitchord addons", Some("Addon servers, shared as links, that serve hi-res copies of songs — the same ones the BitChord Android app takes. When one has the song, its copy plays instead of YouTube's, and its quality shows in the player."), |_| {});
-        divider(ui);
-        ui.add_space(12.0);
-        bitchord_addons_editor(app, ui);
         ui.add_space(10.0);
         divider(ui);
         setting_row(ui, "Prefer Dolby Atmos", Some("Ask the addons for a Dolby Atmos copy when they offer one. Falls back to the best stereo copy when the stream's codec can't be decoded."), |ui| {
@@ -1833,10 +2019,11 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// The Monochrome server list: one line per server with its Test, and "+ Add a server"
-/// below it. The built-in track streamer is always on and isn't listed. Test asks the
+/// The Monochrome server list: one line per server with its Test. The built-in track
+/// streamer has its own row in the priority list and isn't listed here. Test asks the
 /// link whether a server answers there — or, for a Monochrome site's link, reads the
-/// site for the server it plays from ([`crate::providers::probe_monochrome`]).
+/// site for the server it plays from ([`crate::providers::probe_monochrome`]). New
+/// servers come from "Add a custom provider" above, which asks both formats at once.
 fn mono_servers_editor(app: &mut App, ui: &mut Ui) {
     let mut edited = false;
     let mut remove = None;
@@ -1865,39 +2052,7 @@ fn mono_servers_editor(app: &mut App, ui: &mut Ui) {
         edited = true;
     }
     if edited {
-        app.backend.set_monochrome(app.monochrome, &live_mono_servers(app));
-    }
-    if app.mono_adding {
-        let resp = super::text_field(ui, "", &mut app.mono_draft, false, "https://monochrome.example");
-        if app.mono_focus {
-            resp.request_focus();
-            app.mono_focus = false;
-        }
-        // Test before the link is even saved: finding out here beats finding out the
-        // first time a song would have used it.
-        let typed = app.mono_draft.trim().to_owned();
-        ui.horizontal(|ui| {
-            mono_test_button(app, ui, &typed);
-            if typed.is_empty() {
-                ui.label(RichText::new("Enter a server or site link, then Test it or press Enter to add it.").font(theme::regular(12.5)).color(theme::text_faint()));
-            }
-        });
-        let state = app.mono_tests.get(&typed).and_then(|s| s.lock().unwrap().clone());
-        test_line(ui, &state);
-        if resp.lost_focus() {
-            let link = app.mono_draft.trim().to_owned();
-            if !link.is_empty() && !app.mono_servers.iter().any(|s| s.trim() == link) {
-                app.mono_servers.push(link);
-                app.backend.set_monochrome(app.monochrome, &live_mono_servers(app));
-            }
-            app.mono_draft.clear();
-            app.mono_adding = false;
-        }
-        ui.add_space(6.0);
-    } else if pill(ui, "+  Add a server", None, false).clicked() {
-        app.mono_adding = true;
-        app.mono_focus = true;
-        app.mono_draft.clear();
+        app.backend.set_monochrome_servers(&live_mono_servers(app));
     }
 }
 

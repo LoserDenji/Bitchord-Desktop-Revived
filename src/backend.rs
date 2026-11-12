@@ -496,9 +496,9 @@ pub struct Backend {
     /// Music providers, ported from Mochy-Music: Monochrome's FLAC and JioSaavn's AAC.
     monochrome: Arc<providers::Monochrome>,
     jiosaavn: Arc<providers::JioSaavn>,
-    /// Whether each provider is on (Settings › Music sources).
-    monochrome_on: Arc<std::sync::atomic::AtomicBool>,
-    jiosaavn_on: Arc<std::sync::atomic::AtomicBool>,
+    /// The sources before YouTube, in the order Settings › Music sources lists them,
+    /// with each one's switch: the first one that has the song plays its copy.
+    sources: Arc<std::sync::RwLock<Vec<(MusicSource, bool)>>>,
     /// Ask the addons for Dolby Atmos renditions when they offer one.
     atmos: Arc<std::sync::atomic::AtomicBool>,
     /// Songs the listener sent back to YouTube audio: no addon copy until they leave.
@@ -533,7 +533,7 @@ impl Backend {
         {
             log::warn!("proxy relay: {e:#}");
         }
-        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), hires: Default::default(), monochrome: Arc::new(providers::Monochrome::new()), jiosaavn: Arc::new(providers::JioSaavn::new()), monochrome_on: Default::default(), jiosaavn_on: Default::default(), atmos: Default::default(), reverted: Default::default(), songs: Default::default() };
+        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), hires: Default::default(), monochrome: Arc::new(providers::Monochrome::new()), jiosaavn: Arc::new(providers::JioSaavn::new()), sources: Arc::new(std::sync::RwLock::new(DEFAULT_SOURCES.to_vec())), atmos: Default::default(), reverted: Default::default(), songs: Default::default() };
         backend.keep_signed_in();
         Ok(backend)
     }
@@ -1386,50 +1386,52 @@ impl Backend {
         tokio::task::spawn_blocking(move || crate::downloads::save(&t, &audio, duration_ms, loudness, cover, for_video)).await?
     }
 
-    /// Find a stream URL, trying the fastest source that can play the song. `best`
-    /// (downloads) takes the high quality stream whatever the setting, and waits for
-    /// the solver it needs. Playback without Premium takes Opus where there is one;
-    /// downloads stay AAC, which saves as a tagged .m4a. `allow_hires`: try the listener's
-    /// addon source first (playback only).
+    /// Find a stream URL, trying the sources in the order Settings › Music sources
+    /// lists them: the first one that has the song plays its copy, and when none does
+    /// (or the song was sent back to YouTube audio), YouTube plays. `best` (downloads)
+    /// takes the high quality stream whatever the setting, and waits for the solver it
+    /// needs, and downloads always come from YouTube. Playback without Premium takes
+    /// Opus where there is one; downloads stay AAC, which saves as a tagged .m4a.
+    /// `allow_hires`: the sources before YouTube are tried (playback only).
     async fn resolve(&self, video_id: &str, best: bool, track: Option<&Track>, allow_hires: bool) -> anyhow::Result<(Source, ResolvedStream)> {
-        // The listener's addons answer for the songs they have; when they miss, YouTube plays.
         let reverted = self.reverted.lock().unwrap().contains(video_id);
-        let hires = if allow_hires && !reverted { self.hires.read().unwrap().clone() } else { Vec::new() };
-        if let Some(track) = track
-            && !hires.is_empty()
-        {
-            let started = std::time::Instant::now();
-            match tokio::time::timeout(HIRES_WAIT, self.from_hires(&hires, track)).await {
-                Ok(Some(s)) => {
-                    if let Some(info) = s.info.as_ref() {
-                        log::info!("{video_id}: {} audio from {}", info.badge(), info.source);
-                    }
-                    return Ok((Source::HiRes, s));
-                }
-                Ok(None) => log::info!("{video_id}: no hi-res source has a copy ({:.1}s)", started.elapsed().as_secs_f32()),
-                Err(_) => log::info!("{video_id}: the hi-res sources gave no answer in {HIRES_WAIT:?}"),
-            }
-        }
-        let hq = best || self.hq.load(Ordering::Relaxed);
-        // The music providers (Monochrome, JioSaavn) answer for the songs they have, too;
-        // when neither has it, YouTube plays. A song sent back to YouTube audio skips
-        // them the same as it skips the addons.
         if allow_hires
             && !reverted
-            && (self.monochrome_on.load(Ordering::Relaxed) || self.jiosaavn_on.load(Ordering::Relaxed))
             && let Some(track) = track
         {
-            let started = std::time::Instant::now();
-            match tokio::time::timeout(HIRES_WAIT, self.from_providers(track)).await {
-                Ok(Some(s)) => {
-                    if let Some(info) = s.info.as_ref() {
-                        log::info!("{video_id}: {} audio from {}", info.badge(), info.source);
-                    }
-                    return Ok((Source::Provider, s));
+            for (kind, on) in self.sources.read().unwrap().clone() {
+                if !on || kind == MusicSource::Youtube {
+                    continue;
                 }
-                Ok(None) => log::info!("{video_id}: no music provider has a copy ({:.1}s)", started.elapsed().as_secs_f32()),
-                Err(_) => log::info!("{video_id}: the music providers gave no answer in {HIRES_WAIT:?}"),
+                let started = std::time::Instant::now();
+                let found = match kind {
+                    MusicSource::Addons => {
+                        let sources = self.hires.read().unwrap().clone();
+                        if sources.is_empty() {
+                            continue;
+                        }
+                        tokio::time::timeout(HIRES_WAIT, self.from_hires(&sources, track)).await.ok().flatten().map(|s| (Source::HiRes, s))
+                    }
+                    MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                    MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                    MusicSource::JioSaavn => tokio::time::timeout(HIRES_WAIT, self.from_jiosaavn(track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                    MusicSource::Youtube => continue,
+                };
+                if let Some((source, s)) = found {
+                    match s.info.as_ref() {
+                        Some(info) => log::info!("{video_id}: {} audio from {}", info.badge(), info.source),
+                        None => log::info!("{video_id}: played from {} ({:.1}s)", kind.label(), started.elapsed().as_secs_f32()),
+                    }
+                    return Ok((source, s));
+                }
+                log::info!("{video_id}: {} had nothing ({:.1}s)", kind.label(), started.elapsed().as_secs_f32());
             }
+        }
+        // YouTube, the fallback everything ends at. Downloads always come from here;
+        // playback can be sent back to it per song, and switching it off in Settings
+        // leaves only the sources above.
+        if !best && !self.source_on(MusicSource::Youtube) {
+            anyhow::bail!("YouTube Music is switched off in Settings \u{203a} Music sources, and no source before it has the song");
         }
         if best
             && !self.jsc.ready()
@@ -1523,7 +1525,7 @@ impl Backend {
             }
             Source::Provider => {
                 let track = track.ok_or_else(|| anyhow::anyhow!("no song to look up"))?;
-                self.from_providers(track).await.ok_or_else(|| anyhow::anyhow!("no music provider has a copy"))?
+                self.from_providers_ordered(track).await.ok_or_else(|| anyhow::anyhow!("no music provider has a copy"))?
             }
         })
     }
@@ -1564,20 +1566,36 @@ impl Backend {
         None
     }
 
-    /// The first music provider that holds `track`: Monochrome's lossless FLAC first,
-    /// then JioSaavn's AAC. `None`: none is on, or none of them has it — which is a miss
-    /// rather than a fault, so the caller plays the song from YouTube.
-    async fn from_providers(&self, track: &Track) -> Option<ResolvedStream> {
+    /// Monochrome's copy of `track` from the servers `which` names: the ones the
+    /// listener added, or its own track streamer. `None`: it has none — a miss rather
+    /// than a fault.
+    async fn from_mono(&self, which: providers::Which, track: &Track) -> Option<ResolvedStream> {
         let http = self.http();
-        if self.monochrome_on.load(Ordering::Relaxed)
-            && let Ok(Some(found)) = self.monochrome.find(&http, &providers::Query::of(track)).await
-        {
-            return Some(provider_stream(found));
-        }
-        if self.jiosaavn_on.load(Ordering::Relaxed)
-            && let Ok(Some(found)) = self.jiosaavn.find(&http, &providers::Query::of(track)).await
-        {
-            return Some(provider_stream(found));
+        self.monochrome.find_on(&http, which, &providers::Query::of(track)).await.ok().flatten().map(provider_stream)
+    }
+
+    /// JioSaavn's copy of `track`, `None` when it has none (a miss, not a fault).
+    async fn from_jiosaavn(&self, track: &Track) -> Option<ResolvedStream> {
+        let http = self.http();
+        self.jiosaavn.find(&http, &providers::Query::of(track)).await.ok().flatten().map(provider_stream)
+    }
+
+    /// The first provider that holds `track`, in the order Settings › Music sources
+    /// lists them: the re-resolve a download whose URL expired takes.
+    async fn from_providers_ordered(&self, track: &Track) -> Option<ResolvedStream> {
+        for (kind, on) in self.sources.read().unwrap().clone() {
+            if !on {
+                continue;
+            }
+            let found = match kind {
+                MusicSource::MonoServers => self.from_mono(providers::Which::Added, track).await,
+                MusicSource::Monochrome => self.from_mono(providers::Which::Builtin, track).await,
+                MusicSource::JioSaavn => self.from_jiosaavn(track).await,
+                _ => continue,
+            };
+            if found.is_some() {
+                return found;
+            }
         }
         None
     }
@@ -1674,17 +1692,43 @@ impl Backend {
         self.reverted.lock().unwrap().remove(video_id);
     }
 
-    /// Turn JioSaavn on or off, and set the stream quality its Settings row picked.
-    pub fn set_jiosaavn(&self, on: bool, quality: providers::SaavnQuality) {
-        self.jiosaavn_on.store(on, Ordering::Relaxed);
+    /// Turn JioSaavn's stream quality to what its Settings row picked; its switch
+    /// lives in the sources list (`set_sources`).
+    pub fn set_saavn_quality(&self, quality: providers::SaavnQuality) {
         self.jiosaavn.set_quality(quality);
     }
 
-    /// Turn Monochrome on or off, and point it at the servers saved as
-    /// `url|kind|name` lines (empty: just the built-in streamer).
-    pub fn set_monochrome(&self, on: bool, servers: &str) {
-        self.monochrome_on.store(on, Ordering::Relaxed);
+    /// Point Monochrome at the servers saved as `url|kind|name` lines (empty: just the
+    /// built-in streamer); its switch lives in the sources list.
+    pub fn set_monochrome_servers(&self, servers: &str) {
         self.monochrome.set_servers(servers);
+    }
+
+    /// The sources before YouTube, in the order their Settings rows list them, each with
+    /// its switch. Replaces whatever was set before.
+    pub fn set_sources(&self, sources: &[(MusicSource, bool)]) {
+        let known = |k: &MusicSource| sources.iter().any(|(kind, _)| kind == k);
+        // Every source gets a row, even if the list came in short of one.
+        let mut cfg: Vec<(MusicSource, bool)> = sources.to_vec();
+        for (kind, on) in DEFAULT_SOURCES {
+            if !known(&kind) {
+                cfg.push((kind, on));
+            }
+        }
+        cfg.retain(|(kind, _)| MusicSource::ALL.contains(kind));
+        let set: Vec<String> = cfg.iter().map(|(k, on)| format!("{}={}", k.label(), if *on { "on" } else { "off" })).collect();
+        log::info!("music sources: {}", set.join(", "));
+        *self.sources.write().unwrap() = cfg;
+    }
+
+    /// Whether a source's row is on, as the last `set_sources` set it. YouTube counts as
+    /// on while nothing has been set (a fresh backend, before its Settings arrive).
+    fn source_on(&self, kind: MusicSource) -> bool {
+        let cfg = self.sources.read().unwrap();
+        if cfg.is_empty() {
+            return kind == MusicSource::Youtube || matches!(kind, MusicSource::Addons);
+        }
+        cfg.iter().find(|(k, _)| *k == kind).is_some_and(|(_, on)| *on)
     }
 
     /// Point the hi-res sources at the links in `links`, one per line (empty: none). The
@@ -1771,6 +1815,58 @@ enum Source {
     /// A music provider (see `providers`): Monochrome or JioSaavn.
     Provider,
 }
+
+/// The music sources a song can play from before YouTube, as Settings › Music sources
+/// orders them. The first one that has the song plays its own copy; when none does,
+/// YouTube plays as usual.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MusicSource {
+    /// The listener's Bitchord addon servers, shared as links (see `hires`).
+    Addons,
+    /// Monochrome-format servers the listener added (see `providers::Monochrome`).
+    MonoServers,
+    /// Monochrome's own track streamer, which needs no setup.
+    Monochrome,
+    /// JioSaavn's catalog, AAC up to 320 kbps.
+    JioSaavn,
+    /// YouTube Music itself: the fallback everything ends at.
+    Youtube,
+}
+
+impl MusicSource {
+    pub const ALL: [MusicSource; 5] = [Self::Addons, Self::MonoServers, Self::Monochrome, Self::JioSaavn, Self::Youtube];
+
+    /// The row's saved key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Addons => "addons",
+            Self::MonoServers => "mono_servers",
+            Self::Monochrome => "mono",
+            Self::JioSaavn => "jiosaavn",
+            Self::Youtube => "youtube",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.key() == key)
+    }
+
+    /// The row's name, as Settings shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Addons => "Bitchord addons",
+            Self::MonoServers => "Monochrome servers",
+            Self::Monochrome => "Monochrome",
+            Self::JioSaavn => "JioSaavn",
+            Self::Youtube => "YouTube Music",
+        }
+    }
+}
+
+/// The order and switches a fresh install starts with: the addons on, Monochrome and
+/// JioSaavn off until they're wanted, YouTube under everything.
+pub const DEFAULT_SOURCES: [(MusicSource, bool); 5] =
+    [(MusicSource::Addons, true), (MusicSource::MonoServers, false), (MusicSource::Monochrome, false), (MusicSource::JioSaavn, false), (MusicSource::Youtube, true)];
 
 /// A provider's answer, as the playback pipeline takes it: their CDN takes byte ranges
 /// by header, and the quality the player shows comes from the `Info` they build.

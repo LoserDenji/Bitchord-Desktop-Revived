@@ -687,6 +687,14 @@ pub enum Kind {
     Relay,
 }
 
+/// Which of Monochrome's servers a lookup asks: the ones the listener added, or its own
+/// track streamer. Settings › Music sources lists them as separate sources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Added,
+    Builtin,
+}
+
 impl Kind {
     fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -709,9 +717,9 @@ impl Monochrome {
         Self { inner: Mutex::new(MonoInner { memory: Memory::default(), outage: Outage::default(), added: Vec::new() }) }
     }
 
-    /// The servers to try, saved as `url|kind|name` lines (the built-in streamer is
-    /// always there and never saved). Kinds start out unknown and are asked for when a
-    /// search needs one.
+    /// The servers people added, saved as `url|kind|name` lines (the built-in streamer
+    /// is always there and never saved). Kinds start out unknown and are asked for when
+    /// a search needs one.
     pub fn set_servers(&self, saved: &str) {
         let mut added = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -729,27 +737,31 @@ impl Monochrome {
         self.inner.lock().unwrap().added = added;
     }
 
-    /// The servers a song is tried on: the added ones first (as their known kind, and as
-    /// a relay too when it isn't sure yet, since a pasted link may be either), then the
-    /// built-in streamer.
-    fn all(&self) -> Vec<Server> {
+    /// The servers `which` names. The added ones run as their known kind, and as a relay
+    /// too when it isn't sure yet, since a pasted link may be either.
+    fn servers_for(&self, which: Which) -> Vec<Server> {
         let inner = self.inner.lock().unwrap();
-        let mut all = Vec::new();
-        for server in &inner.added {
-            all.push(server.clone());
-            if server.kind == Kind::Streamer {
-                all.push(Server { url: server.url.clone(), kind: Kind::Relay, name: server.name.clone() });
-            }
+        match which {
+            Which::Added => inner
+                .added
+                .iter()
+                .flat_map(|server| {
+                    let mut all = vec![server.clone()];
+                    if server.kind == Kind::Streamer {
+                        all.push(Server { url: server.url.clone(), kind: Kind::Relay, name: server.name.clone() });
+                    }
+                    all
+                })
+                .collect(),
+            Which::Builtin => vec![Server { url: MONO_STREAMER.to_owned(), kind: Kind::Streamer, name: host_of(MONO_STREAMER) }],
         }
-        all.push(Server { url: MONO_STREAMER.to_owned(), kind: Kind::Streamer, name: host_of(MONO_STREAMER) });
-        all
     }
 
-    /// Monochrome's copy of the song, `None` when no server has it. A server that just
-    /// failed waits its turn, unless every one of them did.
-    pub async fn find(&self, http: &reqwest::Client, query: &Query<'_>) -> anyhow::Result<Option<Found>> {
-        let servers = self.all();
-        for server in &servers {
+    /// Monochrome's copy of the song from the servers `which` names, `None` when none
+    /// of them has it. A server that just failed waits its turn, unless every one of
+    /// them did.
+    pub async fn find_on(&self, http: &reqwest::Client, which: Which, query: &Query<'_>) -> anyhow::Result<Option<Found>> {
+        for server in &self.servers_for(which) {
             if let Some(found) = self.resolve_on(http, server, query).await {
                 return Ok(Some(found));
             }
@@ -1298,12 +1310,17 @@ mod tests {
     fn saved_servers_round_trip() {
         let mono = Monochrome::new();
         mono.set_servers("https://relay.example|Relay|\nhttps://tracks.other.example|Streamer|other\nhttps://tracks.monochrome.st|Streamer|builtin");
-        let all = mono.all();
+        let added = mono.servers_for(Which::Added);
         // The saved servers come back with their kinds and names, the built-in one is
-        // never saved (it's always on), and an unknown-kind streamer gets a relay try.
-        assert_eq!(all.iter().filter(|s| s.url == "https://relay.example").count(), 1);
-        assert_eq!(all.iter().filter(|s| s.url == "https://tracks.other.example").count(), 2);
-        assert_eq!(all.iter().filter(|s| s.url == MONO_STREAMER).count(), 1);
-        assert_eq!(all.iter().find(|s| s.url == "https://tracks.other.example").map(|s| s.name.as_str()), Some("other"));
+        // never saved (it has its own source), and an unknown-kind streamer gets a relay
+        // try.
+        assert_eq!(added.iter().filter(|s| s.url == "https://relay.example").count(), 1);
+        assert_eq!(added.iter().filter(|s| s.url == "https://tracks.other.example").count(), 2);
+        assert_eq!(added.iter().filter(|s| s.url == MONO_STREAMER).count(), 0);
+        assert_eq!(added.iter().find(|s| s.url == "https://tracks.other.example").map(|s| s.name.as_str()), Some("other"));
+        let builtin = mono.servers_for(Which::Builtin);
+        assert_eq!(builtin.len(), 1);
+        assert_eq!(builtin[0].url, MONO_STREAMER);
+        assert_eq!(builtin[0].kind, Kind::Streamer);
     }
 }
