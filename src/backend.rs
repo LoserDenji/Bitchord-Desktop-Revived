@@ -1394,12 +1394,15 @@ impl Backend {
     /// Opus where there is one; downloads stay AAC, which saves as a tagged .m4a.
     /// `allow_hires`: the sources before YouTube are tried (playback only).
     async fn resolve(&self, video_id: &str, best: bool, track: Option<&Track>, allow_hires: bool) -> anyhow::Result<(Source, ResolvedStream)> {
+        let hq = best || self.hq.load(Ordering::Relaxed);
         let reverted = self.reverted.lock().unwrap().contains(video_id);
         if allow_hires
             && !reverted
             && let Some(track) = track
         {
-            for (kind, on) in self.sources.read().unwrap().clone() {
+            // Snapshotted first: the read guard must not live across the awaits below.
+            let sources = self.sources.read().unwrap().clone();
+            for (kind, on) in sources {
                 if !on || kind == MusicSource::Youtube {
                     continue;
                 }
@@ -1583,7 +1586,11 @@ impl Backend {
     /// The first provider that holds `track`, in the order Settings › Music sources
     /// lists them: the re-resolve a download whose URL expired takes.
     async fn from_providers_ordered(&self, track: &Track) -> Option<ResolvedStream> {
-        for (kind, on) in self.sources.read().unwrap().clone() {
+        // Snapshotted first: this future has to stay Send (a download's refresher calls it
+        // through resolve_from), and a for loop keeps its iterator expression's guard alive
+        // for the whole loop — over every await in the body.
+        let sources = self.sources.read().unwrap().clone();
+        for (kind, on) in sources {
             if !on {
                 continue;
             }

@@ -1306,9 +1306,11 @@ impl App {
             }
             self.apple_motion.insert(key.clone(), MotionView::new(crate::motion::play(ctx, url, max_width), max_width));
         }
-        let view = self.apple_motion.get_mut(&key)?;
         // The clip's clock follows the music: paused, the sleeve holds still.
-        view.set_playing(self.playing() || self.buffering);
+        // Read before the borrow of `apple_motion`: `playing` wants all of `self`.
+        let playing = self.playing() || self.buffering;
+        let view = self.apple_motion.get_mut(&key)?;
+        view.set_playing(playing);
         let tex = view.texture(ctx)?;
         Some(widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() })
     }

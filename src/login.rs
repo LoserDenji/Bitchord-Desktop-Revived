@@ -272,7 +272,7 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                     *flow = ControlFlow::Exit;
                 }
             },
-            Event::NewEvents(StartCause::ResumeWaitUntil) => {
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 // The store's turn again: the session cookie, or one more wait.
                 if let Some(n) = rechecking {
                     match cookies_for(&webview, site.home()) {

@@ -1865,7 +1865,7 @@ fn settings_provider_add(app: &mut App, ui: &mut Ui) {
                 let running = matches!(state, Some(None));
                 if !typed.is_empty() && !running && pill(ui, "Add", None, true).clicked() {
                     *slot.lock().unwrap() = Some(None);
-                    let (slot, http, link) = (slot, app.backend.http(), typed.clone());
+                    let (slot, http, link) = (slot.clone(), app.backend.http(), typed.clone());
                     app.backend.spawn(async move {
                         let (bitchord, mono) = tokio::join!(crate::hires::probe_link(&link, &http), crate::providers::probe_monochrome(&http, &link));
                         *slot.lock().unwrap() = Some(Some(ProviderVerdicts { bitchord: Some((bitchord.good(), bitchord.message().to_owned())), mono: Some(mono) }));
