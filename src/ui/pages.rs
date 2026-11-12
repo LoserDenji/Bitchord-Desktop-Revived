@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use egui::{Align2, Color32, Rect, RichText, Sense, Ui, Vec2, pos2, vec2};
 
 use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, track_row};
-use super::{Action, App, LibTab, Page, Selection};
+use super::{Action, App, LibTab, Page, ProviderVerdicts, Selection};
 use crate::backend::compact;
 use crate::model::{Card, ShelfKind, Target, Track};
 use crate::theme::{self, icon};

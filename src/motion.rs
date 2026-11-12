@@ -370,9 +370,10 @@ fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max
     }
     log::info!("apple: motion clip has {} frame(s)", samples.len());
     let side = max_width.max(64);
-    let mut clock = 0.0_f64;
     let mut last = Instant::now();
     'laps: for _lap in 0u64.. {
+        // Each lap runs the clock from the top: the frame times start over with it.
+        let mut clock = 0.0_f64;
         // A fresh decoder each lap: the clip starts on a key frame, with nothing held over.
         let mut decoder = match new_decoder(&track) {
             Ok(d) => d,
