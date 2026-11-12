@@ -1318,7 +1318,7 @@ const SETTINGS_SECTIONS: &[(&str, &[&str])] = &[
     ("Downloads", &["Download folder", "Change", "Open", "offline"]),
     ("Lyrics", &["Romanization", "Translation", "Translate into", "Text size", "Intensive glow", "Glow strength", "Timing offset", "Word-synced trim", "Line-synced trim", "Lyrics sources", "translate"]),
     ("Artist pages", &["Signature service", "signature"]),
-    ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Now playing backdrop", "Font", "Hidden playlists", "theme"]),
+    ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Animated covers", "motion sleeve", "Now playing backdrop", "Font", "Hidden playlists", "theme"]),
     ("Window", &["Close to tray", "Collapse sidebar", "Draw with", "Restart to apply", "renderer", "OpenGL", "wgpu"]),
     ("Connections", &["Discord", "Last.fm", "scrobble", "rich presence"]),
     ("Network", &["Proxy", "System proxy", "Test connection", "Restart to apply", "socks"]),
@@ -2141,6 +2141,10 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
         divider(ui);
         setting_row(ui, "Pulse with the music", Some("The background swells with the beat."), |ui| {
             toggle(ui, &mut app.reactive_bg, "Pulse with the music");
+        });
+        divider(ui);
+        setting_row(ui, "Animated covers", Some("Where Apple Music has a clip for a song or its album, the cover moves in Now playing (and on artist pages), looping while the music plays and holding still when it's paused. Finding them sends each song's title and artist to Apple Music."), |ui| {
+            toggle(ui, &mut app.animated_covers, "Animated covers");
         });
         divider(ui);
         setting_row(ui, "Now playing backdrop", Some("What plays behind the full-screen player: the theme's own, or one of the alternatives without editing the theme."), |ui| {

@@ -22,6 +22,8 @@ env_logger = { version = "0.11.11", default-features = false, features = ["human
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 # Dolby Atmos from hi-res addons: E-AC-3 JOC decoded to stereo (dash.rs).
 filmcraft-ac3 = "0.9.0"
+# Apple's motion sleeves (motion.rs): their H.264, decoded on the CPU on every platform.
+openh264 = "0.8"
 localzone = "0.3.1"
 log = "0.4.34"
 memmap2 = "0.9.11"

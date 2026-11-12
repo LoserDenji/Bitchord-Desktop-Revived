@@ -51,10 +51,6 @@ use dev::{dev_pace, dev_screenshot, dev_var};
 use dialogs::text_field;
 pub use queue::Repeat;
 
-/// Animated sleeves are off until the decoder is fixed: the surfacing call sites stay
-/// in place, so turning this back on is all it takes to try again.
-const MOTION_COVERS: bool = false;
-
 #[derive(Clone, PartialEq, Hash, Debug)]
 pub enum Page {
     Home,
@@ -275,6 +271,11 @@ pub struct MotionView {
 impl MotionView {
     fn new(motion: std::sync::Arc<crate::motion::Motion>, width: u32) -> Self {
         Self { motion, tex: None, seen: 0, width }
+    }
+
+    /// Whether the clip's clock runs: paused, the sleeve holds its last frame.
+    fn set_playing(&self, on: bool) {
+        self.motion.set_playing(on);
     }
 
     /// The newest frame as a texture, once one has been decoded.
@@ -535,6 +536,9 @@ pub struct App {
     np_bg: Option<crate::preset::BgMode>,
     /// A queue row being dragged to a new place (see `row_drag`).
     row_drag: Option<row_drag::RowDrag>,
+    /// Settings › Appearance: the covers Apple Music moves (where it has a clip for the
+    /// song or its album) move here too, in Now playing and on artist pages.
+    animated_covers: bool,
     /// The keyboard shortcuts, and one being picked in Settings (see `keybinds`).
     keybinds: keybinds::State,
     queue_open: bool,
@@ -883,6 +887,7 @@ impl App {
             np_open: false,
             np_tab: if get("np_art").is_some_and(|v| v == "1") { NpTab::Art } else { NpTab::Lyrics },
             np_bg: get("np_bg").and_then(|v| crate::preset::BgMode::from_name(&v)),
+            animated_covers: get("animated_covers").is_none_or(|v| v == "1"),
             row_drag: None,
             keybinds: keybinds::State::load(&get),
             queue_open: false,
@@ -1136,7 +1141,7 @@ impl App {
 
     /// Ask Apple, once, for the release's motion sleeve.
     fn apple_cover(&mut self, album: &str, artist: &str, title: Option<&str>) {
-        if !MOTION_COVERS || album.is_empty() || artist.is_empty() {
+        if !self.animated_covers || album.is_empty() || artist.is_empty() {
             return;
         }
         let key = format!("{album}\u{1}{artist}");
@@ -1160,7 +1165,7 @@ impl App {
     /// The newest frame of the release's motion sleeve, started the first time it's seen.
     /// `None` until Apple has answered (or if it has no clip for the release).
     fn apple_sprite(&mut self, ctx: &egui::Context, album: &str, artist: &str, max_width: u32) -> Option<widgets::MotionSprite> {
-        if !MOTION_COVERS {
+        if !self.animated_covers {
             return None;
         }
         let key = format!("{album}\u{1}{artist}");
@@ -1224,7 +1229,10 @@ impl App {
             }
             self.apple_motion.insert(key.clone(), MotionView::new(crate::motion::play(ctx, url, max_width), max_width));
         }
-        let tex = self.apple_motion.get_mut(&key)?.texture(ctx)?;
+        let view = self.apple_motion.get_mut(&key)?;
+        // The clip's clock follows the music: paused, the sleeve holds still.
+        view.set_playing(self.playing() || self.buffering);
+        let tex = view.texture(ctx)?;
         Some(widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() })
     }
 
@@ -1647,6 +1655,7 @@ impl eframe::App for App {
         }
         storage.set_string("anim_bg", b(self.anim_bg));
         storage.set_string("reactive_bg", b(self.reactive_bg));
+        storage.set_string("animated_covers", b(self.animated_covers));
         storage.set_string("signature_api", self.signature_api.clone());
         storage.set_string("hires_source", self.hires_sources.join("\n"));
         let hires_disabled: Vec<&str> = self.hires_sources.iter().enumerate().filter(|(i, _)| !self.hires_enabled.get(*i).copied().unwrap_or(true)).map(|(_, s)| s.trim()).filter(|s| !s.is_empty()).collect();
