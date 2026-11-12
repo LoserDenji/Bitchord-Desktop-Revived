@@ -757,6 +757,110 @@ impl Monochrome {
         Ok(None)
     }
 
+    /// Same as `find`, but without outage checks or per-server miss caching — used by
+    /// addons that *might* speak the Monochrome protocol so a single bad minute doesn't
+    /// poison the Bitchord addon cache. If this also returns `None`, the caller falls
+    /// through to the addon protocol (search + `/stream`).
+    pub async fn resolve_addon_as_mono(http: &reqwest::Client, server: &Server, query: &Query<'_>) -> Option<Found> {
+        // Identify the kind first (unknown streamers are also tried as relays below).
+        let kind = match server.kind {
+            Kind::Streamer => Kind::Streamer,
+            _ => server.kind,
+        };
+        let identified = identify(http, &server.url).await.unwrap_or(kind);
+        let try_kinds = match identified {
+            Kind::Relay => vec![Kind::Relay],
+            Kind::Streamer => vec![Kind::Streamer, Kind::Relay],
+        };
+        for k in try_kinds {
+            let server = Server { url: server.url.clone(), kind: k, name: server.name.clone() };
+            if let Some(found) = Self::resolve_one_direct(http, &server, query).await {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The bare “try this server and query” path with no outage/skip bookkeeping —
+    /// `resolve_addon_as_mono` uses it after identifying the endpoint’s kind.
+    async fn resolve_one_direct(http: &reqwest::Client, server: &Server, query: &Query<'_>) -> Option<Found> {
+        let key = format!("{}|{}", server.url, query.cache_key());
+        // Reuse the shared cache so repeat finds don't re-search.
+        let cached = {
+            let inner = Self::new().inner.lock().unwrap();
+            (inner.memory.missed(&key), inner.memory.hit(&key))
+        };
+        let catalog = match cached.1 {
+            Some(c) => c,
+            None => {
+                let search = format!("{} {}", query.first_artist(), core(query.title)).trim().to_owned();
+                let url = search_url(server, &search);
+                let text = match get_text(http, &url, &search_headers(server.kind)).await {
+                    Ok(text) => text,
+                    Err(_) => return None,
+                };
+                let tracks = tracks_in(server.kind, &text);
+                let Some(best) = ranked(query, tracks).into_iter().next() else { return None };
+                drop(text);
+                // Write into a fresh instance's memory (the one the real callers use too).
+                let mono = Self::new();
+                mono.inner.lock().unwrap().memory.remember(&key, best.clone());
+                best
+            }
+        };
+        log::info!("monochrome {}: “{}” by {}{}", server.name, catalog.title, catalog.artist, catalog.album.as_ref().map(|a| format!(" ({a})")).unwrap_or_default());
+
+        // The head of the file: it should open as FLAC, and its STREAMINFO says how fine
+        // it is. The relay finds the file on the first ask and hands back a link of its
+        // own, which plays without the relay's header.
+        let ask = stream_ask(server, &catalog.id);
+        let head_headers: Vec<(&str, &str)> = match server.kind {
+            Kind::Streamer => vec![("User-Agent", MONOCHROME_UA)],
+            Kind::Relay => vec![("User-Agent", MONOCHROME_UA), ("X-Relay-Client", RELAY_CLIENT)],
+        };
+        let (total, head, response_headers) = match head_bytes(http, &ask, &head_headers).await {
+            Ok(answer) => answer,
+            Err(_) => return None,
+        };
+        let url = match server.kind {
+            Kind::Streamer => ask.clone(),
+            Kind::Relay => match response_headers.get("X-Relay-Stream").and_then(|v| v.to_str().ok()).map(str::to_owned) {
+                Some(link) if link.starts_with(&format!("{}/", origin_of(&server.url))) => link,
+                _ => return None,
+            },
+        };
+        let Some((bits, rate)) = flac_info(&head) else {
+            return None;
+        };
+        let hi_res = bits > 16 || rate > 48_000;
+        let duration_ms = catalog.duration_ms.unwrap_or(0);
+        let info = Info {
+            source: "Monochrome".to_owned(),
+            host: host_of(&url),
+            codec: "FLAC".to_owned(),
+            quality: if hi_res { "Hi-Res FLAC".to_owned() } else { "FLAC".to_owned() },
+            bitrate_kbps: None,
+            sample_rate: Some(rate),
+            bit_depth: Some(bits),
+            channels: None,
+            atmos: false,
+            size: total.unwrap_or(0),
+            duration_ms,
+        };
+        let mut found = Found {
+            url,
+            size: total.unwrap_or(0),
+            duration_ms,
+            format: Format::File { hint: "flac", mime: Some("audio/flac".to_owned()) },
+            info,
+            user_agent: MONOCHROME_UA,
+        };
+        if found.size == 0 {
+            found.size = SIZE_PLACEHOLDER;
+        }
+        Some(found)
+    }
+
     async fn resolve_on(&self, http: &reqwest::Client, server: &Server, query: &Query<'_>) -> Option<Found> {
         if self.inner.lock().unwrap().outage.reason(&server.url).is_some() {
             return None;
@@ -969,6 +1073,7 @@ fn relay_artists(line: &str) -> Vec<String> {
     parts.push(current.trim().to_owned());
     parts.into_iter().filter(|p| !p.is_empty()).collect()
 }
+
 
 /// What a FLAC file's STREAMINFO says: `(bits per sample, sample rate)`. `None` when the
 /// bytes aren't a FLAC file at all.

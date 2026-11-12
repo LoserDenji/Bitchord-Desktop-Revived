@@ -161,6 +161,26 @@ impl Client {
     /// not a fault), so the caller plays it from YouTube. `atmos`: prefer a Dolby Atmos
     /// rendition when the addon offers one, but still accept lossless/hi-res copies.
     pub async fn find(&self, http: &reqwest::Client, track: &crate::model::Track, atmos: bool) -> anyhow::Result<Option<Stream>> {
+        // Try the Monochrome protocol first for this addon link.
+        let query = crate::providers::Query::of(track);
+        let mono_server = crate::providers::Server {
+            url: self.base.clone(),
+            kind: crate::providers::Kind::Streamer,
+            name: self.host(),
+        };
+        // resolve_on handles its own caching (separate from Bitchord addon cache)
+        // and identifying the kind if needed.
+        if let Some(found) = crate::providers::Monochrome::resolve_addon_as_mono(http, &mono_server, &query).await {
+            return Ok(Some(Stream {
+                url: found.url,
+                size: found.size,
+                duration_ms: found.duration_ms,
+                format: found.format,
+                info: found.info,
+                data: None,
+            }));
+        }
+
         let manifest = self.manifest(http).await?;
         if manifest.auth {
             anyhow::bail!("{}", AUTH_DESKTOP_MSG);
