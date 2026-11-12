@@ -1108,7 +1108,7 @@ fn link_parts(link: &str) -> Option<(String, String)> {
 
 /// Which kind of server answers a search at `base`, if either does: a real search
 /// answer of that kind, not a web page or some other api that happens to say 200.
-async fn identify(http: &reqwest::Client, base: &str) -> Option<Kind> {
+pub async fn identify(http: &reqwest::Client, base: &str) -> Option<Kind> {
     for kind in [Kind::Streamer, Kind::Relay] {
         let base_server = Server { url: base.to_owned(), kind, name: host_of(base) };
         let url = search_url(&base_server, "test");

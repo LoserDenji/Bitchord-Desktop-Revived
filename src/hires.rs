@@ -380,19 +380,9 @@ impl Client {
     /// search, and is healthy the moment it does — which is why a failed manifest read
     /// is given the second opinion before it's called a fault.
     pub async fn probe(&self, http: &reqwest::Client) -> Health {
-        // First try Monochrome protocol (same as find does for playback)
-        let query = crate::providers::Query {
-            title: PROBE_QUERY,
-            artists: vec![],
-            duration_ms: None,
-        };
-        let mono_server = crate::providers::Server {
-            url: self.base.clone(),
-            kind: crate::providers::Kind::Streamer,
-            name: self.host(),
-        };
-        if crate::providers::Monochrome::resolve_addon_as_mono(http, &mono_server, &query).await.is_some() {
-            return Health::Ok(format!("{} · Monochrome FLAC works", self.host()));
+        // First try Monochrome protocol detection (same as probe_monochrome does)
+        if let Some(kind) = crate::providers::identify(http, &self.base).await {
+            return Health::Ok(format!("{} · Monochrome {} · search works", self.host(), if kind == crate::providers::Kind::Streamer { "track streamer" } else { "relay" }));
         }
 
         let url = format!("{}/manifest.json", self.base);
