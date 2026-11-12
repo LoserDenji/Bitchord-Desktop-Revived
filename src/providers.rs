@@ -787,7 +787,8 @@ impl Monochrome {
         let key = format!("{}|{}", server.url, query.cache_key());
         // Reuse the shared cache so repeat finds don't re-search.
         let cached = {
-            let inner = Self::new().inner.lock().unwrap();
+            let mono = Self::new();
+            let inner = mono.inner.lock().unwrap();
             (inner.memory.missed(&key), inner.memory.hit(&key))
         };
         let catalog = match cached.1 {
