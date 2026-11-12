@@ -461,11 +461,19 @@ pub async fn probe_link(raw: &str, http: &reqwest::Client) -> Health {
 }
 
 /// The base URL with a trailing slash or a pasted `…/manifest.json` taken off.
+/// A query string or fragment (e.g. `…/manifest.json?sources=tidal`)
+/// no longer defeats the suffix check, and is preserved on the returned
+/// base so per-request query params keep working.
 pub fn normalize_base(raw: &str) -> String {
     let trimmed = raw.trim().trim_end_matches('/');
-    let last = trimmed.rsplit('/').next().unwrap_or("");
-    if last.to_ascii_lowercase().ends_with(".json") && trimmed.contains("://") {
-        trimmed[..trimmed.len() - last.len()].trim_end_matches('/').to_owned()
+    // Split off any `?...` / `#...` tail before inspecting the last path
+    // segment; otherwise `manifest.json?sources=…` never matches `.json`
+    // and every endpoint built from the base 404s.
+    let cut = trimmed.find(|c| c == '?' || c == '#').unwrap_or(trimmed.len());
+    let (head, tail) = trimmed.split_at(cut);
+    let last = head.rsplit('/').next().unwrap_or("");
+    if last.to_ascii_lowercase().ends_with(".json") && head.contains("://") {
+        format!("{}{}", head[..head.len() - last.len()].trim_end_matches('/'), tail)
     } else {
         trimmed.to_owned()
     }
@@ -954,6 +962,26 @@ mod tests {
         assert_eq!(normalize_base("https://music.example/addon/manifest.json"), "https://music.example/addon");
         assert_eq!(normalize_base("https://music.example/addon/MANIFEST.JSON"), "https://music.example/addon");
         assert_eq!(normalize_base("https://music.example"), "https://music.example");
+    }
+
+    #[test]
+    fn base_keeps_query_when_manifest_is_stripped() {
+        // Install URLs like `…/manifest.json?sources=tidal` must still
+        // normalize: without the split below, the suffix never matches
+        // and every endpoint built from the base 404s.
+        assert_eq!(
+            normalize_base("https://music.example/<token>/quality/manifest.json?sources=tidal"),
+            "https://music.example/<token>/quality?sources=tidal"
+        );
+        assert_eq!(
+            normalize_base("https://music.example/addon/manifest.json?foo=1#frag"),
+            "https://music.example/addon?foo=1#frag"
+        );
+        // No manifest suffix: untouched, query included.
+        assert_eq!(
+            normalize_base("https://music.example/addon?x=1"),
+            "https://music.example/addon?x=1"
+        );
     }
 
     #[test]
