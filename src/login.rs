@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use tao::event::{Event, WindowEvent};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::WindowBuilder;
@@ -87,6 +87,13 @@ pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send
             let res = std::env::current_exe().and_then(|exe| {
                 let mut cmd = std::process::Command::new(exe);
                 crate::proxy::pass_to(&mut cmd);
+                // WebKitGTK renders a blank page (or none) on some Linux drivers, NVIDIA
+                // and Wayland most of all, unless its accelerated path is switched off.
+                // The sign-in page needs no speed, so the safe path is always the one.
+                #[cfg(target_os = "linux")]
+                {
+                    cmd.env("WEBKIT_DISABLE_DMABUF_RENDERER", "1").env("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+                }
                 cmd.arg(site.flag())
                     .arg(&profile_dir)
                     .stdin(std::process::Stdio::null())
@@ -236,6 +243,12 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
         .build_in(&window)?;
 
     let mut outcome = Outcome::Cancelled;
+    // The session cookie isn't always in the store the moment the page lands there:
+    // WKWebView hands its cookies over asynchronously, so Spotify's `sp_dc` (set well
+    // after the page's own cookies) could miss the first check and the window would
+    // sit there looking broken. After landing, the store is asked again for a few
+    // seconds before the flow is left alone.
+    let mut rechecking: Option<u32> = None;
     event_loop.run_return(|event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
@@ -249,6 +262,9 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                             Site::Google => cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; "),
                         });
                         *flow = ControlFlow::Exit;
+                    } else {
+                        rechecking = Some(0);
+                        *flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_millis(300));
                     }
                 }
                 Err(e) => {
@@ -256,6 +272,33 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                     *flow = ControlFlow::Exit;
                 }
             },
+            Event::NewEvents(StartCause::ResumeWaitUntil) => {
+                // The store's turn again: the session cookie, or one more wait.
+                if let Some(n) = rechecking {
+                    match cookies_for(&webview, site.home()) {
+                        Ok(cookies) => {
+                            if let Some(c) = cookies.iter().find(|c| c.name() == site.session_cookie()) {
+                                outcome = Outcome::Cookie(match site {
+                                    Site::Spotify => c.value().to_owned(),
+                                    Site::Google => cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; "),
+                                });
+                                *flow = ControlFlow::Exit;
+                            } else if n < 30 {
+                                rechecking = Some(n + 1);
+                                *flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_millis(300));
+                            } else {
+                                // Still signed out, whatever the page says: the user can
+                                // keep trying in the window, or close it.
+                                rechecking = None;
+                            }
+                        }
+                        Err(e) => {
+                            outcome = Outcome::Failed(format!("could not read cookies: {e}"));
+                            *flow = ControlFlow::Exit;
+                        }
+                    }
+                }
+            }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *flow = ControlFlow::Exit,
             _ => {}
         }
