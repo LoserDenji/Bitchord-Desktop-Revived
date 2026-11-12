@@ -373,6 +373,10 @@ impl App {
         self.audio.set_crossfade(if self.crossfade || self.automix { self.crossfade_secs } else { 0 });
     }
 
+    pub(crate) fn set_eq(&self) {
+        self.audio.set_eq(self.eq_on, &self.eq_gains, self.eq_no_clip);
+    }
+
     /// Ask SponsorBlock about the playing song, when that's switched on.
     pub(super) fn request_segments(&mut self) {
         if !self.sponsorblock || self.segments.is_some() {

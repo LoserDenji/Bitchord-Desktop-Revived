@@ -497,6 +497,10 @@ pub struct App {
     /// DJ-style handoff: the next song eases in under the last one (see `audio::Ramp`).
     automix: bool,
     crossfade_secs: u32,
+    /// The equalizer: whether it's on, its bands (dB) and whether it keeps clear of clipping.
+    eq_on: bool,
+    eq_gains: crate::audio::eq::Gains,
+    eq_no_clip: bool,
     /// The next song starts because this one is ending: crossfade into it.
     handoff: bool,
     /// The handoff just begun, for the play that starts the next song to pick up.
@@ -627,6 +631,16 @@ pub struct App {
 
 /// Longest crossfade offered, in seconds.
 pub(super) const CROSSFADE_MAX: u32 = 12;
+
+/// The equalizer's bands as saved: ten comma-separated dB values.
+fn parse_gains(s: &str) -> Option<crate::audio::eq::Gains> {
+    let mut out = [0.0; 10];
+    let mut parts = s.split(',');
+    for g in &mut out {
+        *g = parts.next()?.trim().parse::<f32>().ok().filter(|v| v.is_finite())?.clamp(-crate::audio::eq::MAX_DB, crate::audio::eq::MAX_DB);
+    }
+    parts.next().is_none().then_some(out)
+}
 
 /// The song an Automix handoff came from. Its last stretch is still what you hear
 /// while the next one eases in, so the player keeps showing it (with its art and
@@ -852,6 +866,9 @@ impl App {
             pending_mix: None,
             mix_from: None,
             crossfade_secs: get("crossfade_secs").and_then(|v| v.parse().ok()).unwrap_or(5).clamp(1, CROSSFADE_MAX),
+            eq_on: get("eq").is_some_and(|v| v == "1"),
+            eq_gains: get("eq_gains").and_then(|v| parse_gains(&v)).unwrap_or_default(),
+            eq_no_clip: get("eq_no_clip").is_none_or(|v| v == "1"),
             segments: None,
             segment_skipped: f64::NEG_INFINITY,
             bg_time: 0.0,
@@ -954,6 +971,7 @@ impl App {
         jam::dev_hooks(&mut app);
         app.audio.set_normalize(app.normalize);
         app.set_crossfade();
+        app.set_eq();
         app
     }
 
@@ -1642,6 +1660,9 @@ impl eframe::App for App {
         storage.set_string("crossfade", b(self.crossfade));
         storage.set_string("automix", b(self.automix));
         storage.set_string("crossfade_secs", self.crossfade_secs.to_string());
+        storage.set_string("eq", b(self.eq_on));
+        storage.set_string("eq_gains", self.eq_gains.map(|g| g.to_string()).join(","));
+        storage.set_string("eq_no_clip", b(self.eq_no_clip));
         storage.set_string("show_roman", b(self.show_roman));
         storage.set_string("show_trans", b(self.show_trans));
         // Background test runs mustn't change the listener's sources or per-song picks.

@@ -16,6 +16,8 @@ use crate::stream::{self, Shared};
 
 pub use crate::stream::TrackDecoder;
 
+pub mod eq;
+
 pub enum AudioCmd {
     /// A decoder is ready for playback generation `generation`; stale generations are dropped.
     /// A decoder started mid-song (`at` > 0) is the seekable kind.
@@ -78,6 +80,8 @@ pub struct AudioStatus {
     latency_ms: AtomicU32,
     /// Crossfade length in ms; 0 = off.
     crossfade_ms: AtomicU32,
+    /// The equalizer's settings, applied to everything on its way to the device.
+    eq: Arc<eq::EqParams>,
     /// DJ-style handoff rather than a straight-line crossfade (see `Ramp`).
     automix: AtomicBool,
     /// Tempo estimate of the playing song in BPM (f32 bits); 0 until one is heard.
@@ -556,6 +560,12 @@ impl AudioHandle {
         self.status.crossfade_ms.store(secs * 1000, Ordering::Relaxed);
     }
 
+    /// Takes effect at once, gliding there. `no_clip` turns everything down by the
+    /// curve's highest boost, leaving room for it in loud songs.
+    pub fn set_eq(&self, on: bool, gains: &eq::Gains, no_clip: bool) {
+        self.status.eq.set(on, gains, no_clip);
+    }
+
     /// Automix's handoff shape for the crossfade (see `Ramp::MixIn`).
     pub fn set_automix(&self, on: bool) {
         self.status.automix.store(on, Ordering::Relaxed);
@@ -761,7 +771,10 @@ impl Output {
         let mut sink = sink;
         sink.log_on_drop(false);
         let channels = rodio::Source::channels(&source).get();
-        sink.mixer().add(Bridge { inner: Some(source), slot: self.slot.clone(), channels, n: 0 });
+        // Here, after the mixer, so one equalizer covers both songs in a crossfade and
+        // a new song or a seek doesn't restart it.
+        let eq = eq::Eq::new(status.eq.clone(), rodio::Source::sample_rate(&source).get(), channels);
+        sink.mixer().add(Bridge { inner: Some(source), slot: self.slot.clone(), channels, n: 0, eq });
         // The position counts samples handed to the device; it plays them a buffer later
         // (rodio asks for ~50 ms), plus the shared-mode device period (~10 ms).
         let rate = sink.config().sample_rate().get().max(1);
@@ -829,13 +842,17 @@ struct Bridge {
     /// Samples handed out, to give the mixer back on a frame boundary (else the next
     /// device would get the channels swapped).
     n: u64,
+    /// The equalizer, shaping every sample on its way to the device.
+    eq: eq::Eq,
 }
 
 impl Iterator for Bridge {
     type Item = rodio::Sample;
     fn next(&mut self) -> Option<Self::Item> {
+        let channel = (self.n % self.channels.max(1) as u64) as usize;
         self.n += 1;
-        Some(self.inner.as_mut().and_then(Iterator::next).unwrap_or(0.0))
+        let s = self.inner.as_mut().and_then(Iterator::next).unwrap_or(0.0);
+        Some(self.eq.process(s, channel))
     }
 }
 
