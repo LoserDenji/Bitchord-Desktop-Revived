@@ -295,18 +295,13 @@ impl App {
         }
         // F opens and closes the now playing view; Shift+F is the player full screen
         // (opening now playing first when it isn't up, since the full screen is its view).
-        // Now playing coming up folds the island's card away: same thing, full size.
         if np && self.current().is_some() {
             self.np_open = !self.np_open;
-            if self.np_open {
-                self.island.lock().unwrap().collapse();
-            }
             if self.fullscreen && !self.np_open {
                 self.set_fullscreen(ctx, false);
             }
         }
         if full && self.current().is_some() {
-            self.island.lock().unwrap().collapse();
             if !self.np_open {
                 self.np_open = true;
                 self.set_fullscreen(ctx, true);

@@ -10,7 +10,6 @@ mod dev;
 mod dialogs;
 mod glyphs;
 mod integrations;
-mod island;
 mod jam;
 mod karaoke;
 mod keybinds;
@@ -538,14 +537,6 @@ pub struct App {
     fullscreen: bool,
     /// The mini player: the window shrunk to a strip.
     mini: mini::Mini,
-    /// The dynamic island: the floating pill that lives in its own always-on-top
-    /// window while the app isn't looked at (see `island`).
-    island: island::Shared,
-    /// Settings › Window: the island shows itself while something plays.
-    island_on: bool,
-    /// What the island window asks for (restore, transport), and where it asks.
-    island_tx: crossbeam_channel::Sender<island::Cmd>,
-    island_rx: crossbeam_channel::Receiver<island::Cmd>,
     /// Every source's lyrics for the current song (by video ID).
     lyrics: Option<(String, LyricsSet)>,
     /// Romanization/translation for one source's lines: (video ID, source key, language, extras).
@@ -705,8 +696,6 @@ impl App {
             let b = backend.clone();
             crate::transfer::Transfer::new(backend.data_dir(), Arc::new(move || b.wake()))
         };
-        // What the island window asks for lands here; the app carries it out each pass.
-        let (island_tx, island_rx) = crossbeam_channel::unbounded();
         let mut app = Self {
             backend,
             audio,
@@ -882,10 +871,6 @@ impl App {
             queue_open: false,
             fullscreen: false,
             mini: mini::Mini::load(get),
-            island: Arc::new(std::sync::Mutex::new(island::Island::default())),
-            island_on: get("island").is_none_or(|v| v != "0"),
-            island_tx,
-            island_rx,
             lyrics: None,
             lyrics_extras: None,
             extras_asked: None,
@@ -1273,8 +1258,7 @@ impl App {
 
 impl eframe::App for App {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // The island's own window shows through wherever its pill doesn't paint. The
-        // app paints every pixel of its own windows, so the root never sees this.
+        // The app paints every pixel of its own windows, so the root never sees this.
         [0.0, 0.0, 0.0, 0.0]
     }
 
@@ -1304,18 +1288,6 @@ impl eframe::App for App {
         for code in crate::deeplink::take() {
             self.show_window(ctx);
             jam::open_link(self, code);
-        }
-        // What the island window asks for (restore, transport): the app carries it out
-        // here, where logic runs even while the window is hidden or minimized.
-        let cmds: Vec<island::Cmd> = self.island_rx.try_iter().collect();
-        for cmd in cmds {
-            match cmd {
-                island::Cmd::Restore => self.show_window(ctx),
-                island::Cmd::Toggle => self.toggle(),
-                island::Cmd::Next => self.next(),
-                island::Cmd::Prev => self.prev(),
-                island::Cmd::Seek(at) => self.actions.push(Action::Seek(at)),
-            }
         }
         for a in std::mem::take(&mut self.actions) {
             self.apply(a);
@@ -1361,15 +1333,6 @@ impl eframe::App for App {
         self.mini.tick(ctx, now);
         self.tray_window(ctx);
         self.window_hidden = self.tray.is_some() || ctx.input(|i| i.viewport().minimized == Some(true));
-        // The island lives in its own always-on-top window: while this one is hidden
-        // (in the tray, or minimized) and the island is up, the app's own passes must
-        // keep running — the island needs the pass that re-declares it each frame.
-        if self.window_hidden {
-            let want = self.island.lock().map(|s| s.visible).unwrap_or(false);
-            if want {
-                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
-            }
-        }
         self.sync_discord();
         self.sync_lastfm();
         self.sync_server_queue(ctx, now);
@@ -1419,11 +1382,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.window_hidden {
-            // Nothing shows while the window is hidden (tray, minimized): the only
-            // thing a pass here is for is the island's own window, which needs it to
-            // keep its viewport declared and its state fresh. Skip everything else.
-            let now = ctx.input(|i| i.time);
-            island::window(self, &ctx, now);
+            // Nothing shows while the window is hidden (tray, minimized).
             return;
         }
         self.shortcuts(&ctx);
@@ -1542,10 +1501,6 @@ impl eframe::App for App {
             nowplaying::overlay(self, &ctx, now);
             theme::set_mode(&ctx, pages);
         }
-        // The dynamic island: its own window now, not an overlay in here — it stands
-        // out over the system while the app isn't looked at (see `island::window`).
-        // From a pass while the window is hidden it keeps the island's viewport alive.
-        island::window(self, &ctx, now);
         self.draw_dialog(&ctx);
         notes::card(self, &ctx);
         notes::dialog(self, &ctx);
@@ -1644,7 +1599,6 @@ impl eframe::App for App {
             self.good_window = Some(w);
         }
         storage.set_string("close_to_tray", b(self.close_to_tray));
-        storage.set_string("island", b(self.island_on));
         storage.set_string("sidebar_collapsed", b(self.sidebar_collapsed));
         // The sidebar's playlist order, completed with any playlist that appeared since
         // it was last changed (so a drag can place them all).

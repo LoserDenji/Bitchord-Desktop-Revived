@@ -1319,7 +1319,7 @@ const SETTINGS_SECTIONS: &[(&str, &[&str])] = &[
     ("Lyrics", &["Romanization", "Translation", "Translate into", "Text size", "Intensive glow", "Glow strength", "Timing offset", "Word-synced trim", "Line-synced trim", "Lyrics sources", "translate"]),
     ("Artist pages", &["Signature service", "signature"]),
     ("Appearance", &["Mode", "light", "dark", "Animated background", "Pulse with the music", "Now playing backdrop", "Font", "Hidden playlists", "theme"]),
-    ("Window", &["Dynamic island", "Close to tray", "Collapse sidebar", "Draw with", "Restart to apply", "renderer", "OpenGL", "wgpu"]),
+    ("Window", &["Close to tray", "Collapse sidebar", "Draw with", "Restart to apply", "renderer", "OpenGL", "wgpu"]),
     ("Connections", &["Discord", "Last.fm", "scrobble", "rich presence"]),
     ("Network", &["Proxy", "System proxy", "Test connection", "Restart to apply", "socks"]),
     ("Import", &["Spotify", "Transfer", "account"]),
@@ -2077,10 +2077,6 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
 fn settings_window(app: &mut App, ui: &mut Ui) {
     section_label(ui, "Window", None);
     settings_card(ui, |ui| {
-        setting_row(ui, "Dynamic island", Some("While music plays and the app isn't looked at (another window has focus, or this one is minimized or hidden), a floating pill opens over the system: artwork, title and the time left, growing into a card with a scrubber and controls when you click it. Clicking its title brings the app back. It folds away the moment the app is in focus again, and a right-click puts it off until the song changes."), |ui| {
-            toggle(ui, &mut app.island_on, "Dynamic island");
-        });
-        divider(ui);
         setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. Click the tray icon to bring it back, or right-click it to quit. If the icon never shows up, launching BitChord again brings the window back; --no-tray starts a session where × quits for real."), |ui| {
             toggle(ui, &mut app.close_to_tray, "Close to tray");
         });
