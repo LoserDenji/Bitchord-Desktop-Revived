@@ -125,6 +125,16 @@ Bug reports and pull requests are welcome. Please open an issue with clear repro
 
 BitChord Desktop Revived is licensed under [GPL-3.0](LICENSE).
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=loserdenji%2Fbitchord-desktop-revived&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=loserdenji/bitchord-desktop-revived&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=loserdenji/bitchord-desktop-revived&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=loserdenji/bitchord-desktop-revived&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## Acknowledgements
 
 - [BitChord](https://github.com/kushagrasinghx/BitChord) for the the orignal android app
