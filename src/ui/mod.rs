@@ -1238,7 +1238,10 @@ impl App {
     /// the service has none for them.
     fn signature_texture(&mut self, ctx: &egui::Context, name: &str) -> Option<egui::TextureHandle> {
         let endpoint = crate::artist_signature::endpoint(&self.signature_api);
-        let canon = crate::artist_signature::key(name);
+        // The service keys by the artist: `Billie Eilish - Topic` must ask (and cache)
+        // as `Billie Eilish`.
+        let name = crate::artist_signature::canonical(name);
+        let canon = crate::artist_signature::key(&name);
         if endpoint.is_empty() || canon.is_empty() {
             return None;
         }
@@ -1262,7 +1265,7 @@ impl App {
             return None;
         }
         if self.signature_waiting.insert(key.clone()) {
-            self.backend.request(Req::ArtistSignature { key, endpoint, name: name.to_owned() });
+            self.backend.request(Req::ArtistSignature { key, endpoint, name });
         }
         None
     }

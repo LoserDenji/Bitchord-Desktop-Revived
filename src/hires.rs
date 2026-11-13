@@ -13,20 +13,27 @@
 //! endpoint is built so the path lands before that query, not after it.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::stream::Format;
 
-/// Addons key off this prefix; anything else is answered `403 UA_BLOCKED`.
-pub const USER_AGENT: &str = concat!("BitChord/v", env!("CARGO_PKG_VERSION"));
+/// Addons key off the desktop release line's agent (`BitChord/v1.x`); anything else is
+/// answered `403 UA_BLOCKED`. This build's own 2.x version isn't on that list, so it
+/// identifies as the desktop line the addons accept.
+pub const USER_AGENT: &str = "BitChord/v1.9";
 const TIER: &str = "LOSSLESS";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const SEARCH_LIMIT: usize = 25;
 /// How many of the search's candidates get a `/stream` call before giving up.
 const STREAM_TRIES: usize = 3;
+/// With Atmos on, a lossless copy already in hand waits this long for an Atmos answer
+/// before it plays; the whole race also stays inside the playback path's own budget.
+const ATMOS_GRACE: Duration = Duration::from_secs(5);
+const RACE_BUDGET: Duration = Duration::from_secs(11);
 
 /// What the player says about the stream it is playing.
 #[derive(Clone, Debug, PartialEq)]
@@ -132,7 +139,7 @@ struct Manifest {
 }
 
 #[derive(Clone)]
-struct Candidate {
+pub(crate) struct Candidate {
     id: String,
     title: String,
     artist: String,
@@ -159,30 +166,9 @@ impl Client {
         host_of(&self.base)
     }
 
-    /// The addon's copy of `track`, already probed for its size. `None`: a miss (which is
-    /// not a fault), so the caller plays it from YouTube. `atmos`: prefer a Dolby Atmos
-    /// rendition when the addon offers one, but still accept lossless/hi-res copies.
-    pub async fn find(&self, http: &reqwest::Client, track: &crate::model::Track, atmos: bool) -> anyhow::Result<Option<Stream>> {
-        // Try the Monochrome protocol first for this addon link.
-        let query = crate::providers::Query::of(track);
-        let mono_server = crate::providers::Server {
-            url: self.base.clone(),
-            kind: crate::providers::Kind::Streamer,
-            name: self.host(),
-        };
-        // resolve_on handles its own caching (separate from Bitchord addon cache)
-        // and identifying the kind if needed.
-        if let Some(found) = crate::providers::Monochrome::resolve_addon_as_mono(http, &mono_server, &query).await {
-            return Ok(Some(Stream {
-                url: found.url,
-                size: found.size,
-                duration_ms: found.duration_ms,
-                format: found.format,
-                info: found.info,
-                data: None,
-            }));
-        }
-
+    /// The rows that could be `track`, best first. `atmos` also asks the addon for its
+    /// Dolby Atmos renditions, so the caller can prefer one across every source.
+    pub async fn picks(&self, http: &reqwest::Client, track: &crate::model::Track, atmos: bool) -> anyhow::Result<Vec<Candidate>> {
         let manifest = self.manifest(http).await?;
         if manifest.auth {
             anyhow::bail!("{}", AUTH_DESKTOP_MSG);
@@ -198,10 +184,12 @@ impl Client {
                 queries.push(searchable);
             }
         }
-        // When Atmos is preferred, try Atmos-aware results first, then fall back to a
-        // normal lossless lookup so non-Atmos hi-res/lossless still works.
+        // The Atmos-aware search marks rows the plain one can't (an Atmos rendition is
+        // often a separate, low-bitrate lossy row), then the plain pass fills in the
+        // stereo lossless copies for when no Atmos row turns up.
         let passes: &[(bool, bool)] = if atmos { &[(true, true), (false, false)] } else { &[(false, false)] };
-        let mut tried: BTreeSet<String> = BTreeSet::new();
+        let mut out: Vec<Candidate> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut last_err = None;
         for &(search_atmos, prefer_atmos) in passes {
             for query in &queries {
@@ -209,27 +197,24 @@ impl Client {
                     Ok(c) => c,
                     Err(e) => { last_err = Some(e); continue; }
                 };
-                let ranked = rank(candidates, &title, &artist, track.duration, prefer_atmos);
-                for candidate in ranked.into_iter().filter(|c| tried.insert(c.id.clone())).take(STREAM_TRIES) {
-                    // Ask for the Atmos rendition only in the Atmos-preferred pass for
-                    // candidates that are actually Atmos; otherwise request normally so
-                    // lossless/hi-res copies resolve.
-                    let stream_atmos = prefer_atmos && candidate.atmos;
-                    match self.stream(http, &manifest, &candidate, stream_atmos).await {
-                        Ok(Some(s)) => return Ok(Some(s)),
-                        Ok(None) => {}
-                        Err(e) => {
-                            log::info!("hi-res: \"{}\" candidate {} skipped: {e:#}", track.title, candidate.id);
-                            last_err = Some(e);
-                        }
+                for candidate in rank(candidates, &title, &artist, track.duration, prefer_atmos) {
+                    if seen.insert(candidate.id.clone()) {
+                        out.push(candidate);
                     }
                 }
             }
         }
-        if let (true, Some(e)) = (tried.is_empty(), last_err) {
+        if let (true, Some(e)) = (out.is_empty(), last_err) {
             return Err(e);
         }
-        Ok(None)
+        Ok(out)
+    }
+
+    /// The playable stream behind one `picks` row, probed for its size (Dolby Atmos
+    /// included). A miss is `None`, not a fault.
+    pub async fn open(&self, http: &reqwest::Client, candidate: &Candidate, atmos: bool) -> anyhow::Result<Option<Stream>> {
+        let manifest = self.manifest(http).await?;
+        self.stream(http, &manifest, candidate, atmos).await
     }
 
     async fn manifest(&self, http: &reqwest::Client) -> anyhow::Result<Manifest> {
@@ -237,7 +222,7 @@ impl Client {
         if let Some(m) = slot.as_ref() {
             return Ok(Manifest { name: m.name.clone(), defaults: m.defaults.clone(), quality: m.quality.clone(), auth: m.auth });
         }
-        let url = base_url_with(&self.base, &["manifest.json"])?.into();
+        let url = self.endpoint(&["manifest.json"], &[])?;
         let json = get_json(http, &url).await?;
         let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
         anyhow::ensure!(!id.is_empty(), "that URL answered, but not with an addon manifest");
@@ -298,49 +283,27 @@ impl Client {
         let container = json.get("container").and_then(Value::as_str).or(json.get("containerFormat").and_then(Value::as_str)).unwrap_or("");
         let mime = json.get("mimeType").and_then(Value::as_str).unwrap_or("");
         if is_manifest(transport) {
-            // Streaming manifests: the whole rendition is fetched and reworked into
-            // something the player decodes like a file. Atmos arrives as a DASH E-AC-3
-            // rendition, decoded to stereo PCM; Tidal-style hi-res arrives as a DASH
-            // FLAC rendition, reassembled into one .flac byte stream.
+            // DASH arrives as an MPD, not a file: the Atmos E-AC-3 rendition (or the
+            // hi-res FLAC one) is fetched whole and decoded to PCM, so it plays and
+            // seeks like any other stream.
             let dash = matches!(transport.trim().to_ascii_lowercase().as_str(), "dash" | "mpd" | "application/dash+xml");
-            let codec_lc = codec.to_ascii_lowercase();
-            let dolby = ["eac3", "ec-3", "ac3", "ac-3", "dolby", "atmos"].iter().any(|w| codec_lc.contains(w)) || json_is_atmos(&json);
-            let flac = codec_lc.contains("flac");
-            anyhow::ensure!(dash && (dolby || flac), "the addon returned a streaming manifest, not a file");
-            if dolby {
-                let audio = crate::dash::fetch(http, &stated_url).await?;
-                let size = audio.pcm.len() as u64;
-                let info = Info {
-                    source: manifest.name.clone().unwrap_or_else(|| host_of(&self.base)),
-                    host: host_of(&stated_url),
-                    codec: "E-AC-3".to_owned(),
-                    quality: if quality.is_empty() { candidate.quality.clone() } else { quality },
-                    bitrate_kbps: Some(audio.bitrate_kbps).filter(|k| *k > 0),
-                    sample_rate: Some(audio.sample_rate),
-                    bit_depth: Some(16),
-                    channels: Some(2),
-                    atmos: true,
-                    size,
-                    duration_ms: audio.duration_ms,
-                };
-                return Ok(Some(Stream { url: stated_url, size, duration_ms: audio.duration_ms, format: Format::Pcm { rate: audio.sample_rate, channels: 2 }, info, data: Some(audio.pcm) }));
-            }
-            let flac = crate::dash::fetch_flac(http, &stated_url).await?;
-            let size = flac.bytes.len() as u64;
+            anyhow::ensure!(dash, "the addon returned a streaming manifest, not a file");
+            let audio = crate::dash::fetch(http, &stated_url).await?;
+            let size = audio.pcm.len() as u64;
             let info = Info {
                 source: manifest.name.clone().unwrap_or_else(|| host_of(&self.base)),
                 host: host_of(&stated_url),
-                codec: "FLAC".to_owned(),
+                codec: audio.codec.to_owned(),
                 quality: if quality.is_empty() { candidate.quality.clone() } else { quality },
-                bitrate_kbps: Some(flac.bitrate_kbps).filter(|k| *k > 0),
-                sample_rate: Some(flac.sample_rate),
-                bit_depth: Some(flac.bit_depth),
-                channels: Some(flac.channels),
-                atmos: false,
+                bitrate_kbps: Some(audio.bitrate_kbps).filter(|k| *k > 0),
+                sample_rate: Some(audio.sample_rate),
+                bit_depth: Some(audio.bit_depth).filter(|b| *b > 0),
+                channels: Some(2),
+                atmos: audio.atmos,
                 size,
-                duration_ms: flac.duration_ms,
+                duration_ms: audio.duration_ms,
             };
-            return Ok(Some(Stream { url: stated_url, size, duration_ms: flac.duration_ms, format: Format::File { hint: "flac", mime: Some("audio/flac".to_owned()) }, info, data: Some(flac.bytes) }));
+            return Ok(Some(Stream { url: stated_url, size, duration_ms: audio.duration_ms, format: Format::Pcm { rate: audio.sample_rate, channels: 2 }, info, data: Some(audio.pcm) }));
         }
         let Some(format) = format_of(&codec, container, mime, &stated_url, &label) else {
             anyhow::bail!("the addon's format isn't playable ({codec} {container} {mime})");
@@ -397,7 +360,10 @@ impl Client {
     /// search, and is healthy the moment it does — which is why a failed manifest read
     /// is given the second opinion before it's called a fault.
     pub async fn probe(&self, http: &reqwest::Client) -> Health {
-        let url = base_url_with(&self.base, &["manifest.json"])?.into();
+        let url = match self.endpoint(&["manifest.json"], &[]) {
+            Ok(url) => url,
+            Err(e) => return Health::Rejected(format!("{e:#}")),
+        };
         let manifest = async {
             let json = get_json(http, &url).await?;
             let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
@@ -432,9 +398,10 @@ impl Client {
                 }
                 match probe_search(http, &self.base).await {
                     Ok(n) => Health::Ok(format!("No manifest · search works · {n} result{}", if n == 1 { "" } else { "s" })),
-                    // Transport trouble (DNS, connect, timeout) is a server having a bad
+                    // Transport trouble (timeout, connect) is a server having a bad
                     // minute; anything the server itself answered is the addon being wrong.
-                    Err(_) if e.downcast_ref::<reqwest::Error>().is_some() => Health::Unreachable(reason),
+                    // get_json maps the transport errors to words, not reqwest types.
+                    Err(_) if transport_failure(&reason) => Health::Unreachable(reason),
                     Err(_) => Health::Rejected(reason),
                 }
             }
@@ -477,6 +444,127 @@ fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
         }
     }
     Ok(url)
+}
+
+/// The best copy across every source. Each source searches and opens its stream at the
+/// same time; with Atmos off the first usable (lossless) answer plays, and with Atmos on
+/// the first Atmos rendition wins — otherwise the first lossless copy is held for a short
+/// grace while the rest answer, then played. `None` means no source has a copy (YouTube plays).
+pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool) -> Option<Stream> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for client in sources.iter().cloned() {
+        let (http, track) = (http.clone(), track.clone());
+        tasks.spawn(async move {
+            let found = match find_on_monochrome(&http, &client, &track).await {
+                Some(s) => Ok(Some(s)),
+                None => match client.picks(&http, &track, atmos).await {
+                    Ok(picks) => open_first(&http, &client, &picks, atmos).await,
+                    Err(e) => Err(e),
+                },
+            };
+            (client, found)
+        });
+    }
+    let mut lossless: Option<Stream> = None;
+    let started = tokio::time::Instant::now();
+    let mut held_at: Option<tokio::time::Instant> = None;
+    loop {
+        // A lossless copy in hand: give Atmos a bounded grace, then play what's held
+        // rather than stall on a slow source (the playback path has its own outer wait).
+        let joined = match held_at {
+            Some(t) => {
+                let deadline = (t + ATMOS_GRACE).min(started + RACE_BUDGET);
+                match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+                    Ok(joined) => joined,
+                    Err(_) => break,
+                }
+            }
+            None => tasks.join_next().await,
+        };
+        let Some(joined) = joined else { break };
+        let (client, found) = match joined {
+            Ok(v) => v,
+            Err(e) => {
+                log::info!("hi-res: a lookup stopped: {e}");
+                continue;
+            }
+        };
+        match found {
+            Ok(Some(s)) if s.info.atmos => {
+                log::info!("hi-res: \"{}\" plays Atmos ({})", track.title, client.host());
+                tasks.abort_all();
+                return Some(s);
+            }
+            Ok(Some(s)) if usable(&s) => {
+                if !atmos {
+                    log::info!("hi-res: \"{}\" plays {} ({})", track.title, s.info.badge(), client.host());
+                    tasks.abort_all();
+                    return Some(s);
+                }
+                // No Atmos answer yet: keep the lossless copy in case none turns up.
+                held_at.get_or_insert_with(tokio::time::Instant::now);
+                lossless = lossless.or(Some(s));
+            }
+            Ok(_) => {}
+            Err(e) => log::info!("hi-res {}: \"{}\": {e:#}", client.host(), track.title),
+        }
+    }
+    if let Some(s) = &lossless {
+        log::info!("hi-res: \"{}\" plays {} ({})", track.title, s.info.badge(), s.info.host);
+    }
+    lossless
+}
+
+/// The best playable row of one source: Atmos rows first when the preference is on (a
+/// miss leaves the first lossless copy held), then the plain rows.
+async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candidate], atmos: bool) -> anyhow::Result<Option<Stream>> {
+    let rounds: &[bool] = if atmos { &[true, false] } else { &[false] };
+    let mut held: Option<Stream> = None;
+    for &round in rounds {
+        let mut tries = 0;
+        for candidate in candidates {
+            if atmos && candidate.atmos != round {
+                continue;
+            }
+            if tries >= STREAM_TRIES {
+                break;
+            }
+            tries += 1;
+            match client.open(http, candidate, atmos && candidate.atmos).await {
+                Ok(Some(s)) if s.info.atmos => return Ok(Some(s)),
+                Ok(Some(s)) if usable(&s) => {
+                    held.get_or_insert(s);
+                    if !atmos {
+                        return Ok(held);
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log::info!("hi-res {}: candidate {} skipped: {e:#}", client.host(), candidate.id),
+            }
+        }
+    }
+    Ok(held)
+}
+
+/// The chain is lossless or Atmos; a lossy copy from an addon isn't better than YouTube.
+fn usable(stream: &Stream) -> bool {
+    stream.info.atmos || stream.info.lossless()
+}
+
+/// The Monochrome protocol tried first against the same link: an addon server that
+/// speaks both gets its answer (which carries loudness data the addon protocol doesn't)
+/// ahead of the addon round-trips. `None` leaves the addon protocol to it.
+async fn find_on_monochrome(http: &reqwest::Client, client: &Client, track: &crate::model::Track) -> Option<Stream> {
+    let query = crate::providers::Query::of(track);
+    let server = crate::providers::Server {
+        url: client.base.clone(),
+        kind: crate::providers::Kind::Streamer,
+        name: client.host(),
+    };
+    // resolve_on handles its own caching (separate from the addon search cache) and
+    // identifying the kind if needed.
+    let found = crate::providers::Monochrome::resolve_addon_as_mono(http, &server, &query).await?;
+    Some(Stream { url: found.url, size: found.size, duration_ms: found.duration_ms, format: found.format, info: found.info, data: None })
 }
 
 /// Health-checks a pasted link, saved or not. A link that isn't http(s) can't be a
@@ -764,10 +852,14 @@ fn score(candidate: &Candidate, title: &str, artist: &str, duration: Option<u32>
     {
         return None;
     }
-    if let (Some(wanted), Some(got)) = (duration, candidate.duration)
-        && wanted.abs_diff(got) > 30
-    {
-        return None;
+    // Same recording, not a sped-up or slowed copy that kept the title: the length
+    // has to track the YouTube duration. Allow a few seconds for trailing silence and
+    // fades, and a small slice of the song for real edits, but reject a re-tempo'd one.
+    if let (Some(wanted), Some(got)) = (duration, candidate.duration) {
+        let slack = wanted.max(got).saturating_mul(8) / 100;
+        if wanted.abs_diff(got) > slack.max(12) {
+            return None;
+        }
     }
     let artist_score = match (target_artists.is_empty() || candidate_artists.is_empty(), target_artists == candidate_artists) {
         (true, _) => 0,
@@ -778,7 +870,9 @@ fn score(candidate: &Candidate, title: &str, artist: &str, duration: Option<u32>
         (Some(wanted), Some(got)) => (20 - wanted.abs_diff(got) as i32).max(0),
         _ => 0,
     };
-    let atmos_score = if prefer_atmos && candidate.atmos { 8 } else { 0 };
+    // With Atmos preferred, a marked Atmos copy always outranks a plain one: the
+    // listener asked for it, and every candidate here is already the same song.
+    let atmos_score = if prefer_atmos && candidate.atmos { 1000 } else { 0 };
     Some(100 + artist_score + duration_score + atmos_score)
 }
 
@@ -930,7 +1024,7 @@ const VERSION_WORDS: &[&str] = &[
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
 async fn get_json(http: &reqwest::Client, url: &str) -> anyhow::Result<Value> {
-    let response = http.get(url).timeout(REQUEST_TIMEOUT).header("Accept", "application/json").header("User-Agent", USER_AGENT).send().await?;
+    let response = http.get(url).timeout(REQUEST_TIMEOUT).header("Accept", "application/json").header("User-Agent", USER_AGENT).send().await.map_err(addon_err)?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         anyhow::bail!("not found");
@@ -950,9 +1044,27 @@ async fn get_json(http: &reqwest::Client, url: &str) -> anyhow::Result<Value> {
         }
         anyhow::bail!("HTTP {}", status.as_u16());
     }
-    let bytes = response.bytes().await?;
+    let bytes = response.bytes().await.map_err(addon_err)?;
     anyhow::ensure!(!bytes.is_empty(), "the addon answered with nothing");
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Addon links carry a token: a request failure names its kind, never the URL the
+/// reqwest error would print.
+fn addon_err(e: reqwest::Error) -> anyhow::Error {
+    if e.is_timeout() {
+        anyhow::anyhow!("the addon timed out")
+    } else if e.is_connect() {
+        anyhow::anyhow!("the addon didn't connect")
+    } else {
+        anyhow::anyhow!("the addon request failed")
+    }
+}
+
+/// Whether a mapped addon failure was the transport (timeout, connect) rather than the
+/// addon itself: those are a server having a bad minute, worth another try.
+fn transport_failure(reason: &str) -> bool {
+    reason.contains("timed out") || reason.contains("didn't connect") || reason.contains("request failed")
 }
 
 /// The reason a `401 {"error":"bitchord_auth",…}` answer gave, for the log line.
@@ -1082,6 +1194,50 @@ mod tests {
         assert_eq!(pick("Someone Else"), 0);
         assert_eq!(pick("Carly Rae Jepsen"), 1);
         assert_eq!(pick("Carly Jepsen"), 1);
+    }
+
+    #[test]
+    fn a_retempoed_copy_of_the_same_song_is_not_the_song() {
+        // Same title and artist, only the length differs: an unlabelled sped-up or
+        // slowed version must not replace the listener's stream.
+        let row = |secs: u32| Candidate {
+            id: "1".into(),
+            title: "Call Me Maybe".into(),
+            artist: "Carly Rae Jepsen".into(),
+            duration: Some(secs),
+            quality: String::new(),
+            format: String::new(),
+            atmos: false,
+            stream_url: None,
+        };
+        let pick = |secs: u32| rank(vec![row(secs)], "Call Me Maybe", "Carly Rae Jepsen", Some(202), false).len();
+        assert_eq!(pick(200), 1); // a couple of seconds of trailing silence: the same take
+        assert_eq!(pick(210), 1); // inside the 8% slice
+        assert_eq!(pick(160), 0); // sped-up: a shorter take of the same title
+        assert_eq!(pick(250), 0); // slowed: a longer one
+        // A short song keeps the few-second floor rather than a too-tight 8%.
+        assert_eq!(rank(vec![row(100)], "Call Me Maybe", "Carly Rae Jepsen", Some(90), false).len(), 1);
+        assert_eq!(rank(vec![row(105)], "Call Me Maybe", "Carly Rae Jepsen", Some(90), false).len(), 0);
+    }
+
+    #[test]
+    fn a_preferred_atmos_copy_leads_even_against_a_better_matched_plain_one() {
+        let row = |id: &str, artist: &str, atmos: bool| Candidate {
+            id: id.into(),
+            title: "Call Me Maybe".into(),
+            artist: artist.into(),
+            duration: Some(200),
+            quality: String::new(),
+            format: String::new(),
+            atmos,
+            stream_url: None,
+        };
+        let rows = vec![row("plain", "Carly Rae Jepsen", false), row("atmos", "Carly Jepsen", true)];
+        let ranked = rank(rows, "Call Me Maybe", "Carly Rae Jepsen", Some(202), true);
+        assert_eq!(ranked[0].id, "atmos");
+        // Without the preference the exact artist spelling still wins.
+        let rows = vec![row("plain", "Carly Rae Jepsen", false), row("atmos", "Carly Jepsen", true)];
+        assert_eq!(rank(rows, "Call Me Maybe", "Carly Rae Jepsen", Some(202), false)[0].id, "plain");
     }
 
     #[test]
