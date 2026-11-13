@@ -871,7 +871,7 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     // Apple's own photograph for the artist draws over YouTube's banner once it
     // arrives (paint_remote fades it in, like the web player's does).
     let w = ui.available_width();
-    let screen_h = ui.ctx().input(|i| i.raw.screen_rect.height());
+    let screen_h = ui.ctx().input(|i| i.raw.screen_rect.map_or(0.0, |r| r.height()));
     let hero_h = (w / 1.93).clamp(240.0, (screen_h * 0.7).max(380.0));
     let (hero, _) = ui.allocate_exact_size(vec2(w, hero_h), Sense::hover());
     let hero_apple = apple.as_ref().and_then(|x| x.hero.as_ref());

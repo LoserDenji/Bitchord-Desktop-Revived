@@ -13,11 +13,12 @@
 //! when it's real (twice in a row past 1.2 s, then left alone for 6 s).
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::{Align2, RichText, Sense, Ui, pos2, vec2};
 
-use super::pages::{divider, page_title, section_label, setting_row, settings_card, toggle};
+use super::pages::{divider, section_label, setting_row, settings_card, toggle};
 use super::widgets::{icon_at, pill};
 use super::{Action, App, Page};
 use crate::audio::AudioCmd;
@@ -49,7 +50,7 @@ const QUEUE_ECHO_TIMEOUT_MS: u64 = 5_000;
 /// set. The party's truth itself lives in the `Party` client.
 #[derive(Default)]
 pub struct Session {
-    conn: Option<Party>,
+    conn: Option<Arc<Party>>,
     /// The code typed on the page (a code, or a whole invite link).
     code_input: String,
     /// A custom party server (empty: BitChord's).
@@ -167,7 +168,7 @@ pub fn start(app: &mut App) {
     id.autoplay_enabled = Some(autoplay);
     app.party.error = None;
     // The server hands out the code; an empty one asks it to create.
-    app.party.conn = Some(Party::start(&app.backend, base, id, true, String::new()));
+    app.party.conn = Some(Arc::new(Party::start(&app.backend, base, id, true, String::new())));
 }
 
 /// Join `code_or_link` (a 6-letter code or a whole invite link), on the custom
@@ -197,7 +198,7 @@ pub fn join(app: &mut App, code_or_link: &str) {
         .map(|s| party::sanitize_server_url(&s).unwrap_or(s))
         .unwrap_or_else(|| party::idle_server(&app.party.server));
     app.party.error = None;
-    app.party.conn = Some(Party::start(&app.backend, base, identity(app), false, code));
+    app.party.conn = Some(Arc::new(Party::start(&app.backend, base, identity(app), false, code)));
 }
 
 /// An invite link (or a code from another launch) asked to join a party.
@@ -1251,11 +1252,11 @@ fn look_up(app: &mut App, code_or_link: &str) {
         .map(|s| party::sanitize_server_url(&s).unwrap_or(s))
         .unwrap_or_else(|| party::idle_server(&app.party.server));
     let http = app.backend.http();
-    let backend = app.backend.clone();
-    backend.spawn(async move {
+    let b = app.backend.clone();
+    app.backend.spawn(async move {
         let answer = party::preview(&http, &base, &code).await;
         *PREVIEWS.lock().unwrap() = Some((code, answer));
-        backend.wake();
+        b.wake();
     });
 }
 

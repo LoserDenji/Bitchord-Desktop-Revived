@@ -802,6 +802,7 @@ impl App {
             let b = backend.clone();
             crate::transfer::Transfer::new(backend.data_dir(), Arc::new(move || b.wake()))
         };
+        let data_dir = backend.data_dir().to_owned();
         let mut app = Self {
             backend,
             audio,
@@ -1705,7 +1706,7 @@ impl eframe::App for App {
             // The player: a frosted strip over the bottom of the main section, above the
             // pages, so their last rows fade under it instead of stopping at a seam.
             let strip = egui::Rect::from_min_max(egui::pos2(section.left(), screen.bottom() - self.bar_height()), egui::pos2(main_right, screen.bottom()));
-            egui::Area::new(egui::Id::new("player-bar"))
+            egui::Area::new(egui::Id::unique("player-bar"))
                 .fixed_pos(strip.min)
                 .order(egui::Order::Middle)
                 .show(&ctx, |ui| {

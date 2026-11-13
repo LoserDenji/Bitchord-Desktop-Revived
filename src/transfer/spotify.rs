@@ -45,7 +45,7 @@ const KNOWN_HASHES: [(&str, &str); 6] = [
     ("searchTracks", "b02683192a98dde7966b5e6655a79eeb62713eab703eda9902c932818dd52751"),
 ];
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Track {
     pub name: String,
     pub artists: Vec<String>,
@@ -714,7 +714,7 @@ mod tests {
             r#"{"data":{"searchV2":{"tracksV2":{"items":[
                 {"item":{"data":{"uri":"spotify:track:4uLU6hGCN0BvZ1MQf9SUmu","name":"Brat","__typename":"Track",
                     "artists":{"items":[{"profile":{"name":"Charli XCX"}}]},
-                    "trackDuration":{"totalMilliseconds":220000},"albumOfTrack":{"coverArt":{"sources":[{"url":"https://i.scdn.co/a.jpg","width":64}]}}}},
+                    "trackDuration":{"totalMilliseconds":220000},"albumOfTrack":{"coverArt":{"sources":[{"url":"https://i.scdn.co/a.jpg","width":64}]}}}}},
                 {"item":{"data":{"uri":"spotify:episode:abc","name":"A podcast"}}}
             ]}}}}"#,
         )

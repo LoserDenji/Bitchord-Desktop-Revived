@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use anyhow::Context;
 use crossbeam_channel::Sender;
 use tokio::runtime::Runtime;
 
@@ -673,8 +674,8 @@ impl Backend {
             .into_iter()
             .map(|h| crate::providers::Catalog {
                 id: h.id,
-                title: h.track.name,
                 artist: h.track.artist_line(),
+                title: h.track.name,
                 album: None,
                 duration_ms: h.track.duration.map(|s| s as u64 * 1000),
             })

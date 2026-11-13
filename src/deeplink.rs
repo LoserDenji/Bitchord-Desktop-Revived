@@ -7,7 +7,7 @@
 //! hands over its message and exits, and the running copy brings its window up. The
 //! channel is claimed within milliseconds of the process starting, so double-launching
 //! the shortcut can no longer open a second window: the second launch waits for the
-//! first one's channel and hands itself over. Codes queue in `PENDING` and the window
+//! first one's channel and hands itself over. Invites queue in `PENDING` and the window
 //! request in `SHOW`; the UI drains them with `take()`/`take_show()` (the same pattern
 //! as `tray.rs`), woken through the callback `set_wake` installs once the context exists.
 
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::jam::normalize_code as normalize;
 
-static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static PENDING: Mutex<Vec<Invite>> = Mutex::new(Vec::new());
 /// A plain later launch asked for the window (see `forward_show`).
 static SHOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Wakes the UI for what a later launch handed over; set once the context exists.
@@ -69,7 +69,7 @@ impl Invite {
     fn from_message(msg: &str) -> Option<Self> {
         if let Some(rest) = msg.strip_prefix("party:") {
             let (code, server) = rest.split_once('|').map(|(c, s)| (c, Some(s))).unwrap_or((rest, None));
-            return crate::party::clean_code(code).map(|code| Self::Party(code, server));
+            return crate::party::clean_code(code).map(|code| Self::Party(code, server.map(str::to_owned)));
         }
         crate::jam::normalize_code(msg).map(Self::Jam)
     }
@@ -95,7 +95,7 @@ pub fn parse(arg: &str) -> Option<Invite> {
         }
         return query_param(query, "c").and_then(normalize).map(Invite::Jam);
     }
-    if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") {
+    if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("bitchord") {
         let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
         let lower = path.to_ascii_lowercase();
         let path = lower.trim_end_matches('/').trim_end_matches("/index.html");
@@ -103,8 +103,8 @@ pub fn parse(arg: &str) -> Option<Invite> {
             return query_param(query, "c").and_then(normalize).map(Invite::Jam);
         }
         // A Listen Together invite: `…/invite/<CODE>` on the origin that hosts it,
-        // with the custom server it names, if any.
-        return crate::party::parse_invite(arg);
+        // or `bitchord://party/CODE`, with the custom server it names, if any.
+        return crate::party::parse_invite(arg).map(|(code, server)| Invite::Party(code, server));
     }
     None
 }

@@ -277,6 +277,9 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                         outcome = Outcome::Cookie(match site {
                             Site::Spotify => c.value().to_owned(),
                             Site::Google => cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; "),
+                            // Never reached: the Discord window has no session cookie and
+                            // `run` branches off to `run_discord` before this path.
+                            Site::Discord => String::new(),
                         });
                         *flow = ControlFlow::Exit;
                     } else {
@@ -298,6 +301,9 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                                 outcome = Outcome::Cookie(match site {
                                     Site::Spotify => c.value().to_owned(),
                                     Site::Google => cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; "),
+                                    // Never reached: the Discord window has no session cookie and
+                                    // `run` branches off to `run_discord` before this path.
+                                    Site::Discord => String::new(),
                                 });
                                 *flow = ControlFlow::Exit;
                             } else if n < 30 {
@@ -324,44 +330,59 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
     Ok(outcome)
 }
 
+/// The token grab, run in the page: Discord takes `localStorage` away from its own
+/// window, so a fresh same-origin iframe reads it every two seconds until it's there
+/// and posts it to the IPC handler (DiscordLoginScreen's TOKEN_SNIPPET, and the same
+/// trick ForkChord's agent shim plays).
+const DISCORD_TOKEN_SCRIPT: &str = concat!(
+    "(function(){var grab=function(){try{var f=document.createElement('iframe');",
+    "f.style.display='none';(document.body||document.documentElement).appendChild(f);",
+    "var t=f.contentWindow.localStorage.getItem('token');f.remove();",
+    "if(t&&t.length>20){window.ipc.postMessage(t);}}catch(e){}};",
+    "grab();window.addEventListener('load',grab);setInterval(grab,2000);})();"
+);
+
 /// The Discord window: there's no cookie to catch — the account token hides behind a
 /// fresh same-origin iframe once the app has booted (Discord takes `localStorage`
-/// away from its own window), so the page is quietly asked for it every two seconds
-/// until it's there, as ForkChord's agent shim does.
+/// away from its own window), so the page itself reads it back every two seconds and
+/// posts it through the webview's IPC channel, as ForkChord's agent shim does.
 fn run_discord(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
-    let mut event_loop = EventLoopBuilder::<()>::with_user_event().build();
+    let mut event_loop = EventLoopBuilder::<String>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title(site.title())
         .with_inner_size(tao::dpi::LogicalSize::new(480.0, 720.0))
         .build(&event_loop)?;
+    let proxy = event_loop.create_proxy();
     #[cfg(target_os = "macos")]
     let store = store_id(&profile_dir);
     let mut context = WebContext::new(Some(profile_dir));
     let builder = WebViewBuilder::new_with_web_context(&mut context);
     #[cfg(target_os = "macos")]
-    let builder = builder.with_data_store_identifier(store);
-    let webview = crate::proxy::webview(builder, false).with_url(site.start()).build_in(&window)?;
-    // DiscordLoginScreen.TOKEN_SNIPPET: the value is the JSON string with its quotes.
-    let script = concat!(
-        "(function(){try{var f=document.createElement('iframe');f.style.display='none';",
-        "(document.body||document.documentElement).appendChild(f);",
-        "var t=f.contentWindow.localStorage.getItem('token');f.remove();return t||'';}catch(e){return '';}})()"
-    );
+    let builder = {
+        use wry::WebViewBuilderExtDarwin;
+        builder.with_data_store_identifier(store)
+    };
+    let webview = crate::proxy::webview(builder, false)
+        .with_ipc_handler(move |req| {
+            // The script's answer: the token, still wrapped in its JSON quotes.
+            let token = req.body().trim().trim_matches('"');
+            // A real token is long; short answers are the page not signed in yet,
+            // or noise from something else posting on the channel.
+            if token.len() > 20 && token.bytes().all(|b| b.is_ascii_graphic()) {
+                let _ = proxy.send_event(token.to_owned());
+            }
+        })
+        .with_initialization_script(DISCORD_TOKEN_SCRIPT)
+        .with_url(site.start())
+        .build_in(&window)?;
+
     let mut outcome = Outcome::Cancelled;
     event_loop.run_return(|event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
-            Event::NewEvents(StartCause::ResumeTimeReached { .. }) | Event::NewEvents(StartCause::Poll) => {
-                let read = webview.evaluate_script(script).unwrap_or_default();
-                let token = read.trim().trim_matches('"').to_owned();
-                // A real token is long; short answers are the page not signed in yet,
-                // or an engine that didn't return the string.
-                if token.len() > 20 && token.bytes().all(|b| b.is_ascii_graphic()) {
-                    outcome = Outcome::Token(token);
-                    *flow = ControlFlow::Exit;
-                } else {
-                    *flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_secs(2));
-                }
+            Event::UserEvent(token) => {
+                outcome = Outcome::Token(token);
+                *flow = ControlFlow::Exit;
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *flow = ControlFlow::Exit,
             _ => {}

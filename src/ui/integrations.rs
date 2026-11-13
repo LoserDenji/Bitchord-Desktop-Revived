@@ -1,6 +1,7 @@
 //! Discord, Last.fm, the system media controls, the app icon, updates and the tray.
 
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::backend;
@@ -105,13 +106,14 @@ impl App {
         let profile = self.backend.data_dir().join("webview-discord");
         let backend = self.backend.clone();
         let done = move |outcome| {
+            let b = backend.clone();
             backend.spawn(async move {
                 match outcome {
                     crate::login::Outcome::Token(token) => {
-                        if let Err(e) = crate::vault::set("discord token", &backend.data_dir(), token.as_bytes()) {
+                        if let Err(e) = crate::vault::set("discord token", &b.data_dir(), token.as_bytes()) {
                             log::warn!("saving the Discord sign-in: {e}");
                         }
-                        let service = crate::discord_link::Service::new(&backend);
+                        let service = crate::discord_link::Service::new(&b);
                         let user = service.user_info(&token).await.ok();
                         *LINK_RESULT.lock().unwrap() = Some(Ok((token, user)));
                     }
@@ -121,7 +123,7 @@ impl App {
                     }
                     crate::login::Outcome::Cookie(_) => {}
                 }
-                backend.wake();
+                b.wake();
             });
         };
         crate::login::spawn(crate::login::Site::Discord, profile, done);

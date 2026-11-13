@@ -44,6 +44,8 @@ impl App {
         crate::login::spawn(crate::login::Site::Spotify, xfer.spotify_profile(), move |outcome| {
             match outcome {
                 crate::login::Outcome::Cookie(c) => xfer.set_cookie(Some(c), &backend),
+                // A token is the Discord window's outcome; this one never returns one.
+                crate::login::Outcome::Token(_) => {}
                 crate::login::Outcome::Cancelled => {}
                 crate::login::Outcome::Failed(e) => backend.report_error(format!("Spotify sign-in window failed: {e}")),
             }
@@ -60,6 +62,8 @@ impl App {
         crate::login::spawn(crate::login::Site::Google, self.backend.login_profile(), move |outcome| {
             match outcome {
                 crate::login::Outcome::Cookie(c) => backend.request(Req::SetCookie(c)),
+                // A token is the Discord window's outcome; this one never returns one.
+                crate::login::Outcome::Token(_) => {}
                 crate::login::Outcome::Cancelled => {}
                 crate::login::Outcome::Failed(e) => backend.report_error(format!("Sign-in window failed: {e}")),
             }

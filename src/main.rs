@@ -29,6 +29,7 @@ mod media;
 mod model;
 mod motion;
 mod opus;
+mod party;
 mod preset;
 mod providers;
 mod shader;
