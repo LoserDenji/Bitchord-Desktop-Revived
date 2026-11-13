@@ -50,8 +50,8 @@ CloseApplications=yes
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
+; The exe statically links the WebView2 loader, so there's no DLL to ship.
 Source: "{#BinDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#BinDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 

@@ -8,9 +8,11 @@
 //! put in place by `install.sh` (an `install.txt` beside the binary) downloads the new
 //! tarball and renames the new binary over itself as it closes. On macOS, the copy
 //! installed from the disk image downloads the new one and puts the app from it in
-//! place of its own as it closes. Every platform has a portable build too (a
-//! `portable.txt` marker; inside the app bundle on macOS), which updates from the
-//! portable download. Dev builds never update themselves.
+//! place of its own as it closes. A copy from the Linux .deb (a `deb.txt` beside the
+//! binary, in /usr/lib/bitchord) can't replace itself: it only says a new version is
+//! out ([`State::Available`]), and the new .deb installs over it. Every platform has a
+//! portable build too (a `portable.txt` marker; inside the app bundle on macOS), which
+//! updates from the portable download. Dev builds never update themselves.
 //!
 //! Release notes (the release's Markdown body) are kept per version: the one a check
 //! finds, and any other on request ([`Updater::notes`]), for the update dialog, the
@@ -36,6 +38,9 @@ pub enum State {
     Idle,
     Checking,
     UpToDate,
+    /// A newer version is out, for a copy that can't install it itself (the .deb):
+    /// `url` is its .deb download.
+    Available { version: String, url: String },
     Downloading { version: String, percent: u8 },
     /// `installer` is the setup exe, or for the portable build the new bitchord.exe.
     Ready { version: String, installer: PathBuf },
@@ -71,6 +76,16 @@ pub fn installed() -> bool {
     exe.parent().is_some_and(|d| d.join(marker).exists())
 }
 
+/// Whether this copy was installed from the .deb, which marks it with `deb.txt` beside
+/// the binary (/usr/lib/bitchord). Apt owns it, so it never replaces itself.
+pub fn deb() -> bool {
+    static DEB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEB.get_or_init(|| {
+        cfg!(target_os = "linux")
+            && std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("deb.txt").exists())).unwrap_or(false)
+    })
+}
+
 /// The `.app` bundle a binary is in (`bitchord.app/Contents/MacOS/bitchord`).
 fn bundle_of(exe: &Path) -> Option<&Path> {
     exe.ancestors().nth(3).filter(|a| a.extension().is_some_and(|x| x == "app"))
@@ -78,19 +93,26 @@ fn bundle_of(exe: &Path) -> Option<&Path> {
 
 /// The release asset this copy updates from. The release workflow names them
 /// `BitChord-<version>-<os>-<arch>[-kind]`: a setup exe and a portable zip on Windows
-/// (x64), a dmg on macOS (its arch is called arm64/x64 there, not aarch64/x86_64), and
-/// one tarball on Linux that both the installed copy (installed by `install.sh`) and
-/// the portable one update from. A release without this asset yet reads as up to date,
-/// so a platform the workflow doesn't build (ARM64 Linux, say) just never updates.
+/// (x64), one universal dmg on macOS, and on Linux an installer tarball (installed by
+/// `install.sh`) and a `-portable-` one; the .deb-installed copy instead points at the
+/// new .deb, which `apt` installs over it. A release without this asset yet reads as up
+/// to date, so a platform the workflow doesn't build (ARM64 Linux, say) just never
+/// updates.
 fn asset_name(version: &str) -> String {
-    let portable = portable_dir().is_some();
+    let arch = std::env::consts::ARCH;
+    if cfg!(target_os = "linux") && deb() {
+        let arch = if arch == "x86_64" { "amd64" } else if arch == "aarch64" { "arm64" } else { arch };
+        return format!("bitchord_{version}_{arch}.deb");
+    }
     if cfg!(target_os = "linux") {
-        return format!("BitChord-{version}-linux-{}.tar.gz", std::env::consts::ARCH);
+        let kind = if portable_dir().is_some() { "portable-" } else { "" };
+        return format!("BitChord-{kind}{version}-linux-{arch}.tar.gz");
     }
     if cfg!(target_os = "macos") {
-        let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
-        return format!("BitChord-{version}-macos-{arch}.dmg");
+        // The release ships one universal dmg for Apple Silicon and Intel.
+        return format!("BitChord-{version}-macos-universal.dmg");
     }
+    let portable = portable_dir().is_some();
     if portable { format!("BitChord-{version}-windows-x64-portable.zip") } else { format!("BitChord-{version}-windows-x64-setup.exe") }
 }
 
@@ -265,6 +287,12 @@ impl Updater {
             return Ok(State::UpToDate);
         };
         let url = asset["browser_download_url"].as_str().ok_or_else(|| anyhow::anyhow!("asset has no URL"))?;
+        // The .deb-installed copy: apt owns the files, so it doesn't download anything,
+        // it only points you at the new .deb to install over it.
+        if deb() {
+            log::info!("update: {version} is out");
+            return Ok(State::Available { version, url: url.to_owned() });
+        }
         let size = asset["size"].as_u64().unwrap_or(0);
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(&want);
@@ -459,7 +487,7 @@ fn open_dmg(dmg: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
 
 /// The new binary from a downloaded update (the portable zip, or on Linux the tarball),
 /// unpacked into `dir` with tar (on Windows, its own). Both downloads keep everything
-/// one folder down (`BitChord\` in the zip, `BitChord-<version>-linux-x86_64/` in the
+/// one folder down (`BitChord\` in the zip, `bitchord-<version>-linux-x86_64/` in the
 /// tarball), so the binary is looked for at the top level and one level in.
 fn unzip_exe(zip: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     let _ = std::fs::remove_dir_all(dir);

@@ -1,5 +1,10 @@
 name: Release
 
+# Builds the downloads from the tagged source and attaches them all to the GitHub
+# release: Windows (setup exe and portable zip), macOS (one universal dmg) and Linux
+# (an install.sh tarball, a portable tarball and a .deb — no AppImage; the updater on
+# Linux reads the tarballs, and a .deb-installed copy is only told that a new version
+# is out, for apt to install over it).
 on:
   push:
     tags: ["v*.*.*"]
@@ -56,8 +61,8 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item installer\Output\bitchord-setup-$v.exe "dist\BitChord-$v-windows-x64-setup.exe"
           New-Item -ItemType Directory -Force portable\BitChord | Out-Null
+          # The exe statically links the WebView2 loader, so there's no DLL to carry.
           Copy-Item target\release\bitchord.exe portable\BitChord\
-          if (Test-Path target\release\WebView2Loader.dll) { Copy-Item target\release\WebView2Loader.dll portable\BitChord\ }
           Copy-Item installer\portable.txt portable\BitChord\
           Copy-Item README.md, LICENSE portable\BitChord\
           Compress-Archive -Path portable\BitChord -DestinationPath "dist\BitChord-$v-windows-x64-portable.zip" -Force
@@ -67,6 +72,7 @@ jobs:
         with:
           name: windows-artifacts
           path: dist/*
+          if-no-files-found: error
 
   macos:
     name: macOS · universal dmg
@@ -118,9 +124,11 @@ jobs:
         with:
           name: macos-artifacts
           path: dist/*
+          if-no-files-found: error
 
   linux:
-    name: Linux · AppImage, deb, rpm
+    name: Linux · tarballs, deb
+    # The oldest supported Ubuntu, so the binary runs on older glibc too.
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -141,10 +149,8 @@ jobs:
             libayatana-appindicator3-dev \
             libdbus-1-dev \
             libssl-dev \
+            dpkg-dev \
             pkg-config
-
-      - name: Packaging tools (rpmbuild, desktop-file-validate, file)
-        run: sudo apt-get install -y rpm file desktop-file-utils
 
       - name: Work out the version
         id: version
@@ -160,15 +166,35 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: AppImage, deb and rpm
+      # The installer tarball: the binary, install.sh with the launcher and icon it
+      # installs, README and LICENSE. The portable one: the binary, the marker that makes
+      # it portable, README and LICENSE. The updater on Linux reads them too. And the
+      # .deb, which installs over the last one and only tells about new versions.
+      - name: Tarballs and .deb
         run: |
-          chmod +x linux/package.sh
-          linux/package.sh target/release/bitchord "${{ steps.version.outputs.value }}" dist
+          v="${{ steps.version.outputs.value }}"
+          dir="bitchord-$v-linux-x86_64"
+          mkdir -p out/"$dir"
+          cp target/release/bitchord linux/install.sh linux/bitchord.desktop README.md LICENSE "out/$dir/"
+          cp assets/icon/icon.png "out/$dir/bitchord.png"
+          chmod 755 "out/$dir/bitchord" "out/$dir/install.sh"
+          tar -czf "out/BitChord-$v-linux-x86_64.tar.gz" -C out "$dir"
+          dir="bitchord-portable-$v-linux-x86_64"
+          mkdir -p out/"$dir"
+          cp target/release/bitchord linux/portable.txt README.md LICENSE "out/$dir/"
+          chmod 755 "out/$dir/bitchord"
+          tar -czf "out/BitChord-portable-$v-linux-x86_64.tar.gz" -C out "$dir"
+          sh linux/deb.sh target/release/bitchord "$v" out
+          ls -lh out
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-artifacts
-          path: dist/*
+          path: |
+            out/BitChord-${{ steps.version.outputs.value }}-linux-x86_64.tar.gz
+            out/BitChord-portable-${{ steps.version.outputs.value }}-linux-x86_64.tar.gz
+            out/bitchord_*_amd64.deb
+          if-no-files-found: error
 
   release:
     name: Publish
@@ -196,7 +222,7 @@ jobs:
 
             - **Windows** — run the `-setup.exe`, or unzip the `-portable.zip`.
             - **macOS** — one universal build for Apple Silicon and Intel: open the `.dmg` and drag BitChord into Applications. The app is unsigned (no Apple Developer ID), so the first launch needs one extra step: right-click BitChord → **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.
-            - **Linux** — install the `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/openSUSE), or run the `.AppImage` directly (`chmod +x` it first). The AppImage carries its own libraries — nothing else to install.
+            - **Linux** — install the `.deb` (Debian, Ubuntu, Mint and friends), or download the other tarball, extract it and run `./install.sh` (installs into your user directory, with a menu entry and a `bitchord` command; it offers to install any missing libraries). For a run-anywhere copy, use the `-portable-` tarball. The installed and portable copies update themselves; a `.deb` install tells you when a new version is out, to install over it.
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

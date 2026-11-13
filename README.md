@@ -79,7 +79,7 @@ Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord
   <p><em>macOS installation walkthrough</em></p>
 </div>
 
-- **Linux** — install the `.deb` (Debian, Ubuntu, Mint) or `.rpm` (Fedora, openSUSE), or run the `.AppImage` directly: `chmod +x BitChord-<version>-linux-amd64.AppImage && ./BitChord-<version>-linux-amd64.AppImage`. The AppImage carries its own libraries (WebKitGTK, GTK, the tray's appindicator, ALSA) — nothing else to install.
+- **Linux** — install the `.deb` (Debian, Ubuntu, Mint and friends), or download the other tarball, extract it and run `./install.sh` (installs into your user directory, with a menu entry and a `bitchord` command; it offers to install any missing libraries). For a run-anywhere copy, use the `-portable-` tarball. The installed and portable copies update themselves; a `.deb` install tells you when a new version is out, to install over it.
 
 ## Building from source
 

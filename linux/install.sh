@@ -4,7 +4,9 @@
 # itself. Libraries it needs that are missing get installed with the system's package
 # manager (that step asks for your password).
 #
-# Run it from the extracted download.
+# Run it from the extracted download, or straight from the web, which fetches the
+# latest release first:
+#   curl -fsSL https://raw.githubusercontent.com/LoserDenji/Bitchord-Desktop-Revived/main/linux/install.sh | sh
 # `install.sh --uninstall` removes it again.
 set -e
 
@@ -29,8 +31,18 @@ if [ "$1" = "--uninstall" ]; then
 fi
 
 # The files to install: beside this script, or (run from the web) the latest release.
-here=$(cd "$(dirname "$0")" && pwd)
-[ -f "$here/bitchord" ] || { echo "Run install.sh from the extracted download."; exit 1; }
+here=$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)
+if [ ! -f "$here/bitchord" ]; then
+    repo=LoserDenji/Bitchord-Desktop-Revived
+    arch=$(uname -m)
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    url=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | grep -o "https://[^\"]*/BitChord-[0-9][^\"/]*-linux-$arch\.tar\.gz" | head -n 1)
+    [ -n "$url" ] || { echo "No Linux $arch download in the latest release."; exit 1; }
+    echo "Downloading $(basename "$url")"
+    curl -fL# "$url" | tar -xz -C "$tmp"
+    here=$(dirname "$(find "$tmp" -name bitchord -type f | head -n 1)")
+fi
 
 mkdir -p "$lib" "$bin" "$data/applications" "$(dirname "$icon")"
 # Put the new binary next to the old one and rename it over, so a copy that's

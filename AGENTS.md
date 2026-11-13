@@ -27,7 +27,7 @@ BitChord Desktop Revived (`bitchord`) is a high-performance native desktop music
 - `server/smoke/`: Integration/smoke test runner for the sync server.
 
 ### Packaging & OS Distribution
-- `linux/`: Linux desktop integration scripts (`bitchord.desktop`, `package.sh`, `install.sh`).
+- `linux/`: Linux desktop integration scripts (`bitchord.desktop`, `deb.sh`, `install.sh`).
 - `macos/`: macOS bundle configuration (`Info.plist`, `bundle.sh`).
 - `installer/`: Inno Setup installer script (`bitchord.iss`) for Windows.
 - `assets/`: Static fonts, SVG glyphs, theme presets, quality badges, and JS solver scripts.

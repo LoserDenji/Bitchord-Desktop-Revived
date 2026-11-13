@@ -619,6 +619,9 @@ pub struct App {
     /// When the last automatic update check ran (app time, s).
     update_checked: Option<f64>,
     update_announced: bool,
+    /// The newest .deb version whose "update is out" dialog was shown, so it isn't
+    /// re-announced on every check (the sidebar keeps saying so until it's installed).
+    update_seen: Option<String>,
     /// Release notes dialog (update ready, or "See all notes").
     notes_dialog: Option<notes::NotesDialog>,
     /// Version whose "Updated to" card is showing, on the first launch after an update.
@@ -905,6 +908,7 @@ impl App {
             coll_search: None,
             update_checked: None,
             update_announced: false,
+            update_seen: get("update_seen"),
             notes_dialog: None,
             // First launch of a newer version than last time: show what changed.
             // YTM_WHATS_NEW=1 shows the card for this version regardless.
@@ -1838,6 +1842,9 @@ impl eframe::App for App {
         if std::env::var_os("YTM_UPDATE_AS").is_none() {
             storage.set_string("last_version", crate::update::current_version());
         }
+        if let Some(v) = &self.update_seen {
+            storage.set_string("update_seen", v.clone());
+        }
         storage.set_string("discord_enabled", b(self.discord_enabled));
         storage.set_string("discord_options", serde_json::to_string(&self.discord_options).unwrap_or_default());
         storage.set_string("discord_user", self.discord_link_user.as_ref().and_then(|u| serde_json::to_string(u).ok()).unwrap_or_default());
@@ -2078,11 +2085,12 @@ pub fn system_device_label() -> &'static str {
     }
 }
 
-/// Whether this is the installed or the portable app (updates only apply there). It
+/// Whether this copy looks for updates at all: the installed or portable app (which
+/// update themselves), or the .deb (which is only told when a new version is out). It
 /// can't change while running, and the check touches the disk, so it runs once.
 fn updatable() -> bool {
     static UPDATABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *UPDATABLE.get_or_init(|| crate::update::installed() || crate::update::portable_dir().is_some())
+    *UPDATABLE.get_or_init(|| crate::update::installed() || crate::update::portable_dir().is_some() || crate::update::deb())
 }
 
 pub fn fmt_time(secs: u32) -> String {
