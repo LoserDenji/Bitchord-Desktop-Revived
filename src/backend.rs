@@ -1015,10 +1015,23 @@ impl Backend {
                 None => self.stream_duration(&t.id).await,
             },
         };
-        let mut set = self.lyrics.fetch(&query).await.unwrap_or_else(|e| {
+        // The playing video's own sources, alongside the outside ones: its captions
+        // and its Lyrics tab, straight from YouTube (ForkChord's YouTubeLyrics.kt).
+        let (res, caps, tab) = tokio::join!(self.lyrics.fetch(&query), crate::ytm::captions(&self.api, &t.id), crate::ytm::lyrics_tab(&self.api, &t.id));
+        let mut set = res.unwrap_or_else(|e| {
             log::warn!("lyrics failed: {e:#}");
             LyricsSet::default()
         });
+        let mut extra = caps;
+        extra.extend(tab);
+        extra.retain(|l| !set.sources.iter().any(|s| s.provider == l.provider));
+        if !extra.is_empty() {
+            set.sources.extend(extra.iter().cloned());
+            set.sources.sort_by_key(|l| lyrics::Provider::ALL.iter().position(|p| *p == l.provider));
+            // The sources arrived after `fetch` cached the song: fold them into
+            // that cache too, so replays keep them.
+            self.lyrics.merge_cached(&t.id, extra);
+        }
         // Dev hook: YTM_LYRICS_FAIL=<source key>[,<key>…] makes those sources come back empty.
         if let Ok(fail) = std::env::var("YTM_LYRICS_FAIL") {
             set.sources.retain(|l| !fail.split(',').any(|k| k.trim() == l.provider.key()));

@@ -11,9 +11,9 @@ use super::{App, dev_var, notes, updatable};
 /// (Reports have seen the window vanish into the tray within half a second of
 /// starting, behind an icon that was never drawn.)
 const TRAY_GRACE: Duration = Duration::from_secs(2);
-/// How often, while hidden, the tray icon is registered again. Shell_NotifyIcon can
-/// succeed and the icon still never show; a fresh registration heals that.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// How often the tray icon is registered again: Shell_NotifyIcon can succeed and
+/// the icon still never show (Windows), and a fresh registration heals that. Also
+/// how long a failed registration waits before trying again.
 const TRAY_REREGISTER: Duration = Duration::from_secs(15);
 /// How many frames a show is re-asserted over, for shells that drop the first one.
 const SHOW_ASSERTS: u8 = 8;
@@ -174,19 +174,23 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
-    /// "Close to tray": × hides the window behind a tray icon; the icon brings it
+    /// "Close to tray": × hides the window behind the tray icon; the icon brings it
     /// back or quits. eframe keeps running `logic` while the window is hidden.
     ///
-    /// The hidden window must never become unreachable, so three things hold here:
-    /// a close that arrives moments after launch is treated as stale (reports have
-    /// seen the window vanish into a tray whose icon was never drawn); the icon is
-    /// re-registered while hidden, because on Windows the shell can accept it and
-    /// then never display it (taskbar replacements, a busy tray cache); and if the
-    /// icon can't be had at all, the window comes back instead of staying hidden.
+    /// The icon itself is always up (ForkChord's tray: Open, transport, Launch at
+    /// login, Quit), from the first frame, so the transport buttons work with the
+    /// window open too. The hidden window must still never become unreachable, so
+    /// three things hold here: a close that arrives moments after launch is treated
+    /// as stale (reports have seen the window vanish into a tray whose icon was
+    /// never drawn); the icon is re-registered every so often, because on Windows
+    /// the shell can accept it and then never display it (taskbar replacements, a
+    /// busy tray cache); and if the icon can't be had at all, a close just quits
+    /// instead of hiding.
     pub(super) fn tray_window(&mut self, ctx: &egui::Context) {
         // Shells mid-refresh have been seen to drop a single show request: keep
         // re-asserting it for a few frames, focus last, once. (Before the early
-        // returns below: after a show, `tray` is None and the rest must not run.)
+        // returns below: after a show, `hidden_to_tray` is false and the rest of
+        // the hide bookkeeping must not run.)
         if self.show_asserts > 0 {
             if ctx.input(|i| i.viewport().minimized == Some(true)) {
                 // The user minimized it again meanwhile: their call wins.
@@ -200,6 +204,32 @@ impl App {
                 }
             }
         }
+        // The icon, from the first frame on (--no-tray sessions never get one).
+        // A failed registration isn't retried every frame; the next try comes at
+        // the re-register interval.
+        if self.tray.is_none() && !self.tray_off && !self.exiting && self.tray_retry_at.is_none_or(|t| t.elapsed() >= TRAY_REREGISTER) {
+            let c = ctx.clone();
+            match crate::tray::Tray::new(crate::appicon::get(self.app_icon), self.playing() || self.buffering, crate::autostart::enabled(), move || c.request_repaint()) {
+                Ok(t) => {
+                    log::info!("tray icon up (Open, transport, Launch at login, Quit)");
+                    self.tray = Some(t);
+                    self.tray_registered_at = Some(std::time::Instant::now());
+                    self.tray_retry_at = None;
+                }
+                Err(e) => {
+                    log::warn!("tray icon unavailable: {e:#}");
+                    self.tray_retry_at = Some(std::time::Instant::now());
+                }
+            }
+        }
+        // The tray's Play/Pause label follows the player; it only changes with it.
+        let playing = self.playing() || self.buffering;
+        if self.tray.is_some() && self.tray_play != Some(playing) {
+            if let Some(t) = &self.tray {
+                t.set_play(playing);
+            }
+            self.tray_play = Some(playing);
+        }
         if ctx.input(|i| i.viewport().close_requested()) && self.close_to_tray && !self.exiting {
             // A real click on × needs the app to have been up for a moment. The
             // upgrade/install path has been seen to deliver a close request right at
@@ -210,32 +240,23 @@ impl App {
                     self.started_at.elapsed().as_secs_f32()
                 );
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            } else {
-                let c = ctx.clone();
-                match crate::tray::Tray::new(crate::appicon::get(self.app_icon), move || c.request_repaint()) {
-                    Ok(t) => {
-                        log::info!("closing to the tray");
-                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                        self.tray = Some(t);
-                        self.tray_registered_at = Some(std::time::Instant::now());
-                    }
-                    // Without an icon there'd be no way back: just close.
-                    Err(e) => log::warn!("tray icon unavailable: {e:#}"),
-                }
+            } else if self.tray.is_some() {
+                log::info!("closing to the tray");
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.hidden_to_tray = true;
             }
+            // Without an icon there'd be no way back: the close runs as a quit.
         }
-        // While hidden, re-register the icon now and then: Shell_NotifyIcon can
+        // While the icon is up, re-register it now and then: Shell_NotifyIcon can
         // succeed and the icon still never show (the report behind this fix), and
         // a fresh registration is the only way to heal it. Windows only — macOS's
         // menu bar item and the GTK icon don't vanish like this, and re-creating
         // them would only flicker.
         #[cfg(windows)]
-        if self.tray.is_some()
-            && self.tray_registered_at.is_none_or(|t| t.elapsed() >= TRAY_REREGISTER)
-        {
+        if self.tray.is_some() && self.tray_registered_at.is_none_or(|t| t.elapsed() >= TRAY_REREGISTER) {
             let c = ctx.clone();
-            match crate::tray::Tray::new(crate::appicon::get(self.app_icon), move || c.request_repaint()) {
+            match crate::tray::Tray::new(crate::appicon::get(self.app_icon), playing, crate::autostart::enabled(), move || c.request_repaint()) {
                 Ok(t) => {
                     log::info!("re-registered the tray icon");
                     self.tray = Some(t);
@@ -250,20 +271,31 @@ impl App {
         if self.tray.is_none() {
             return;
         }
-        // The first click decides; the icon goes away with it.
-        match crate::tray::take().into_iter().next() {
-            Some(crate::tray::Cmd::Show) => self.show_window(ctx),
-            Some(crate::tray::Cmd::Quit) => {
-                self.tray = None;
-                self.quit(ctx);
+        // The tray's clicks, handled like the keyboard's own transport keys.
+        for cmd in crate::tray::take() {
+            match cmd {
+                crate::tray::Cmd::Show => self.show_window(ctx),
+                crate::tray::Cmd::PlayPause => self.toggle(),
+                crate::tray::Cmd::Next => self.next(),
+                crate::tray::Cmd::Prev => self.prev(),
+                crate::tray::Cmd::Autostart => {
+                    let on = crate::autostart::toggle();
+                    if let Some(t) = &self.tray {
+                        t.set_autostart(on);
+                    }
+                }
+                crate::tray::Cmd::Quit => {
+                    self.quit(ctx);
+                    break;
+                }
             }
-            None => {}
         }
     }
 
-    /// Bring the window back (from the tray, or minimized) and to the front.
+    /// Bring the window back (from the tray, or minimized) and to the front. The
+    /// tray icon stays up, transport buttons and all.
     pub(super) fn show_window(&mut self, ctx: &egui::Context) {
-        if self.tray.take().is_some() {
+        if std::mem::take(&mut self.hidden_to_tray) {
             log::info!("bringing the window back from the tray");
         }
         // Re-asserted over the next few frames (see `tray_window`), so one dropped

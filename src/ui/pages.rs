@@ -866,10 +866,15 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let Some(a) = &app.artist else { return };
     let acts = &mut app.actions;
     let top = &a.top;
-    // Hero banner fading into the page.
+    // The hero, full-bleed at Apple's header aspect (about 1.93:1, the shape the
+    // phone's and ForkChord's artist pages use), fading into the page at the bottom.
+    // Apple's own photograph for the artist draws over YouTube's banner once it
+    // arrives (paint_remote fades it in, like the web player's does).
     let w = ui.available_width();
-    let hero_h = (w * 0.34).clamp(240.0, 380.0);
+    let screen_h = ui.ctx().input(|i| i.screen_rect.height());
+    let hero_h = (w / 1.93).clamp(240.0, (screen_h * 0.7).max(380.0));
     let (hero, _) = ui.allocate_exact_size(vec2(w, hero_h), Sense::hover());
+    let hero_apple = apple.as_ref().and_then(|x| x.hero.as_ref());
     if let Some(t) = a.banner.iter().max_by_key(|t| t.width) {
         let img_ratio = if t.height > 0 { t.width as f32 / t.height as f32 } else { 16.0 / 9.0 };
         // Cover-fit: crop the image's top band to the hero's aspect.
@@ -877,8 +882,23 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, vis_h));
         ui.painter().rect_filled(hero, 14.0, theme::glass(0.07));
         widgets::paint_remote(ui, &t.url, hero, 14.0, uv, Color32::WHITE);
-    } else {
+    } else if hero_apple.is_none() {
         ui.painter().rect_filled(hero, 14.0, theme::with_alpha(accent, 0.25));
+    }
+    if let Some(h) = hero_apple {
+        let rect_ratio = w / hero_h;
+        // Cover-fit, centred like the web player's object-cover: a wider photo is
+        // cropped at its sides, a taller one keeps its top (faces stay in).
+        let img_ratio = h.aspect();
+        let uv = if img_ratio > rect_ratio {
+            let vis_w = (rect_ratio / img_ratio).min(1.0);
+            Rect::from_min_max(pos2((1.0 - vis_w) / 2.0, 0.0), pos2((1.0 + vis_w) / 2.0, 1.0))
+        } else {
+            let vis_h = (img_ratio / rect_ratio).min(1.0);
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, vis_h))
+        };
+        // 1200 px wide, like the phone's header fetch; sharp across a full-width hero.
+        widgets::paint_remote(ui, &h.at_width(1200), hero, 14.0, uv, Color32::WHITE);
     }
     super::shell::vgradient(ui.painter(), Rect::from_min_max(pos2(hero.left(), hero.center().y - 40.0), hero.max), Color32::TRANSPARENT, theme::shade(0.85));
     let base = hero.left_bottom() + vec2(28.0, -30.0);
@@ -2476,8 +2496,14 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
 /// Settings › Window.
 fn settings_window(app: &mut App, ui: &mut Ui) {
     settings_section(ui, "Window", None, None, |ui| {
-        setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. Click the tray icon to bring it back, or right-click it to quit. If the icon never shows up, launching BitChord again brings the window back; --no-tray starts a session where × quits for real."), |ui| {
+        setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. The tray icon is always up: left-click brings the window back, and its menu has the transport buttons, Launch at login and Quit. If the icon never shows up, launching BitChord again brings the window back; --no-tray starts a session without an icon, where × quits for real."), |ui| {
             toggle(ui, &mut app.close_to_tray, "Close to tray");
+        });
+        divider(ui);
+        setting_row(ui, "Launch at login", Some("Start BitChord when the computer does. The OS keeps this: the Run key on Windows, an autostart entry on Linux, a launch agent on macOS — and the tray menu's own Launch at login item flips the same switch."), |ui| {
+            if toggle(ui, &mut app.launch_at_login, "Launch at login").changed() {
+                crate::autostart::set(app.launch_at_login);
+            }
         });
         divider(ui);
         setting_row(ui, "Collapse sidebar", Some("Show only icons in the sidebar, for narrow windows. The menu button at its top does the same."), |ui| {

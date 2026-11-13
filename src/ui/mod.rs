@@ -620,15 +620,26 @@ pub struct App {
     // window
     /// Clicking × hides the window to the tray instead of quitting.
     close_to_tray: bool,
+    /// Launch at login, read from the OS once at startup and written through
+    /// `crate::autostart` (the OS keeps the truth; see `autostart.rs`).
+    launch_at_login: bool,
     /// Settings › Window: draw with wgpu (Vulkan) from the next start (renderer.rs).
     pub(super) wgpu_renderer: bool,
     /// The app icon (`appicon::ALL` id) shown on the window and in the tray.
     app_icon: &'static str,
-    /// The tray icon, while the window is hidden.
+    /// The tray icon, up from the first frame (ForkChord's tray: Open, transport,
+    /// Launch at login, Quit). None when it couldn't be had, or the session is --no-tray.
     tray: Option<crate::tray::Tray>,
-    /// When the tray icon was last registered, while hidden (Windows re-registers it).
+    /// When the tray icon was last registered (Windows re-registers it now and then).
     #[cfg_attr(not(windows), allow(dead_code))]
     tray_registered_at: Option<std::time::Instant>,
+    /// After a failed icon registration, don't try again until then (one attempt per
+    /// re-register interval, not per frame).
+    tray_retry_at: Option<std::time::Instant>,
+    /// What the tray's Play/Pause label last said, so it only changes with the player.
+    tray_play: Option<bool>,
+    /// This session runs without any tray icon (--no-tray): × quits for real.
+    tray_off: bool,
     /// Frames left to keep re-asserting a show (some shells drop the first one).
     show_asserts: u8,
     /// When this copy started, so a close that arrives moments later can be told
@@ -638,6 +649,8 @@ pub struct App {
     exiting: bool,
     /// Minimized, or hidden in the tray: the window's geometry isn't worth saving.
     window_hidden: bool,
+    /// The window is behind the tray icon (a close with "Close to tray" on).
+    hidden_to_tray: bool,
     /// eframe's saved window geometry ("window") from the last time it was visible.
     good_window: Option<String>,
     /// The sidebar is a narrow icon rail.
@@ -844,14 +857,19 @@ impl App {
             output_devices: Vec::new(),
             updater: None,
             close_to_tray: !no_tray && get("close_to_tray").is_none_or(|v| v == "1"),
+            launch_at_login: crate::autostart::enabled(),
             wgpu_renderer,
             app_icon,
             tray: None,
             tray_registered_at: None,
+            tray_retry_at: None,
+            tray_play: None,
+            tray_off: no_tray,
             show_asserts: 0,
             started_at: std::time::Instant::now(),
             exiting: false,
             window_hidden: false,
+            hidden_to_tray: false,
             good_window: get("window"),
             sidebar_collapsed: get("sidebar_collapsed").is_none_or(|v| v == "1"),
             playlist_order: get("playlist_order").map(|v| v.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default(),
@@ -1443,7 +1461,7 @@ impl eframe::App for App {
         }
         self.mini.tick(ctx, now);
         self.tray_window(ctx);
-        self.window_hidden = self.tray.is_some() || ctx.input(|i| i.viewport().minimized == Some(true));
+        self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
         self.sync_discord();
         self.sync_lastfm();
         self.sync_server_queue(ctx, now);

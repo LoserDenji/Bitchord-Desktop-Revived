@@ -1,4 +1,7 @@
-//! System tray icon, shown while "Close to tray" has hidden the window.
+//! System tray icon, always up from the first frame (ForkChord's tray: Open,
+//! transport buttons, Launch at login, Quit). Its Play/Pause label follows the
+//! player like a real desktop player's would, and it keeps working while the
+//! window is hidden behind it — the music goes on after a close.
 //!
 //! The icon must be created on the UI thread (it owns a Win32 message window), so
 //! the app creates and drops it from `logic`. Clicks arrive on that thread's message
@@ -7,22 +10,28 @@
 //! UI thread there).
 //!
 //! On Linux the icon is a GTK one, and GTK runs its own loop on one thread for the
-//! life of the process (it can't be started twice); the icon is made and dropped there.
+//! life of the process (it can't be started twice); the icon is made and dropped
+//! there, and its menu items are touched only on that thread — the label updates
+//! below hop over by way of the GTK main context.
 //!
 //! Note that on Windows the shell can accept the icon (so `Tray::new` succeeds) and
 //! then never draw it — taskbar replacements and a busy notification-area cache can
-//! both do that. Callers therefore re-create the icon every so often while hidden
-//! (see `ui::integrations::tray_window`), and recovery never depends on the icon
-//! alone: launching the app again (or `--show`) shows the window regardless.
+//! both do that. Callers therefore re-create the icon every so often (see
+//! `ui::integrations::tray_window`), and recovery never depends on the icon alone:
+//! launching the app again (or `--show`) shows the window regardless.
 
 use std::sync::{Mutex, Once};
 
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmd {
     Show,
+    PlayPause,
+    Next,
+    Prev,
+    Autostart,
     Quit,
 }
 
@@ -31,11 +40,18 @@ static PENDING: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
 pub struct Tray {
     #[cfg(not(target_os = "linux"))]
     _icon: TrayIcon,
+    /// The Play/Pause item, so its label can follow the player while the menu is up.
+    #[cfg(not(target_os = "linux"))]
+    play: MenuItem,
+    /// The Launch at login item, so the tick answers right after a click on it.
+    #[cfg(not(target_os = "linux"))]
+    autostart: CheckMenuItem,
 }
 
 impl Tray {
     /// `wake` is called (from the UI thread's message loop) after each click.
-    pub fn new(icon: &crate::appicon::Variant, wake: impl Fn() + Send + Sync + Clone + 'static) -> anyhow::Result<Self> {
+    /// `playing` and `autostart_on` are what the menu shows until the next update.
+    pub fn new(icon: &crate::appicon::Variant, playing: bool, autostart_on: bool, wake: impl Fn() + Send + Sync + Clone + 'static) -> anyhow::Result<Self> {
         // The handlers are process-wide and can only be set once.
         static HANDLERS: Once = Once::new();
         HANDLERS.call_once(|| {
@@ -47,6 +63,10 @@ impl Tray {
             }));
             MenuEvent::set_event_handler(Some(move |e: MenuEvent| match e.id.as_ref() {
                 "show" => push(Cmd::Show, &wake),
+                "play-pause" => push(Cmd::PlayPause, &wake),
+                "next" => push(Cmd::Next, &wake),
+                "previous" => push(Cmd::Prev, &wake),
+                "autostart" => push(Cmd::Autostart, &wake),
                 "quit" => push(Cmd::Quit, &wake),
                 _ => {}
             }));
@@ -54,12 +74,80 @@ impl Tray {
 
         let png = icon.rgba(32).ok_or_else(|| anyhow::anyhow!("icon doesn't decode"))?;
         #[cfg(not(target_os = "linux"))]
-        return Ok(Self { _icon: build(png)? });
+        return Self::non_linux(png, playing, autostart_on);
         #[cfg(target_os = "linux")]
         {
-            gtk_thread::show(png)?;
+            gtk_thread::show(png, playing, autostart_on)?;
             Ok(Self {})
         }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn non_linux(png: image::RgbaImage, playing: bool, autostart_on: bool) -> anyhow::Result<Self> {
+        let menu = TrayMenu::new(playing, autostart_on);
+        let (w, h) = png.dimensions();
+        let icon = TrayIconBuilder::new()
+            .with_icon(tray_icon::Icon::from_rgba(png.into_raw(), w, h)?)
+            .with_tooltip("BitChord")
+            .with_menu(Box::new(menu.menu))
+            .with_menu_on_left_click(false)
+            .build()?;
+        Ok(Self { _icon: icon, play: menu.play, autostart: menu.autostart })
+    }
+
+    /// Keeps the tray's Play/Pause label honest as the player changes state.
+    #[cfg(not(target_os = "linux"))]
+    pub fn set_play(&self, playing: bool) {
+        self.play.set_text(if playing { "Pause" } else { "Play" });
+    }
+
+    /// Flips the Launch at login tick after the app toggled the OS state itself.
+    #[cfg(not(target_os = "linux"))]
+    pub fn set_autostart(&self, on: bool) {
+        self.autostart.set_checked(on);
+    }
+
+    /// The menu item handles live on the GTK thread on Linux; these hop over.
+    #[cfg(target_os = "linux")]
+    pub fn set_play(&self, playing: bool) {
+        gtk_thread::set_play(playing);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_autostart(&self, on: bool) {
+        gtk_thread::set_autostart(on);
+    }
+}
+
+/// The tray menu, ForkChord's: Open, transport (Play/Pause named for the state it
+/// would switch to, like every desktop player's), Launch at login, Quit.
+struct TrayMenu {
+    menu: Menu,
+    play: MenuItem,
+    autostart: CheckMenuItem,
+}
+
+impl TrayMenu {
+    fn new(playing: bool, autostart_on: bool) -> Self {
+        let open = MenuItem::with_id("show", "Open BitChord", true, None);
+        let previous = MenuItem::with_id("previous", "Previous", true, None);
+        let play = MenuItem::with_id("play-pause", if playing { "Pause" } else { "Play" }, true, None);
+        let next = MenuItem::with_id("next", "Next", true, None);
+        let autostart = CheckMenuItem::with_id("autostart", "Launch at login", true, autostart_on, None);
+        let quit = MenuItem::with_id("quit", "Quit BitChord", true, None);
+        let menu = Menu::with_items(&[
+            &open,
+            &PredefinedMenuItem::separator(),
+            &previous,
+            &play,
+            &next,
+            &PredefinedMenuItem::separator(),
+            &autostart,
+            &PredefinedMenuItem::separator(),
+            &quit,
+        ])
+        .expect("tray menu");
+        Self { menu, play, autostart }
     }
 }
 
@@ -70,18 +158,17 @@ impl Drop for Tray {
     }
 }
 
-fn build(png: image::RgbaImage) -> anyhow::Result<TrayIcon> {
-    let menu = Menu::with_items(&[
-        &MenuItem::with_id("show", "Show BitChord", true, None),
-        &MenuItem::with_id("quit", "Quit", true, None),
-    ])?;
+#[cfg(target_os = "linux")]
+fn build(png: image::RgbaImage, playing: bool, autostart_on: bool) -> anyhow::Result<(TrayIcon, MenuItem, CheckMenuItem)> {
+    let menu = TrayMenu::new(playing, autostart_on);
     let (w, h) = png.dimensions();
-    Ok(TrayIconBuilder::new()
+    let icon = TrayIconBuilder::new()
         .with_icon(tray_icon::Icon::from_rgba(png.into_raw(), w, h)?)
         .with_tooltip("BitChord")
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(menu.menu))
         .with_menu_on_left_click(false)
-        .build()?)
+        .build()?;
+    Ok((icon, menu.play, menu.autostart))
 }
 
 #[cfg(target_os = "linux")]
@@ -94,6 +181,9 @@ mod gtk_thread {
 
     thread_local! {
         static ICON: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
+        /// The menu items that follow the player and the login setting; kept so
+        /// their labels can be set from this thread alone.
+        static LABELS: RefCell<Option<(tray_icon::menu::MenuItem, tray_icon::menu::CheckMenuItem)>> = const { RefCell::new(None) };
     }
 
     /// Start GTK's thread once; an error if GTK can't start (no display).
@@ -120,11 +210,14 @@ mod gtk_thread {
             .map_err(|e| anyhow::anyhow!("GTK: {e}"))
     }
 
-    pub fn show(png: image::RgbaImage) -> anyhow::Result<()> {
+    pub fn show(png: image::RgbaImage, playing: bool, autostart_on: bool) -> anyhow::Result<()> {
         start()?;
         let (tx, rx) = std::sync::mpsc::channel();
         gtk::glib::MainContext::default().invoke(move || {
-            let res = super::build(png).map(|icon| ICON.with(|i| *i.borrow_mut() = Some(icon)));
+            let res = super::build(png, playing, autostart_on).map(|(icon, play, autostart)| {
+                ICON.with(|i| *i.borrow_mut() = Some(icon));
+                LABELS.with(|l| *l.borrow_mut() = Some((play, autostart)));
+            });
             let _ = tx.send(res.map_err(|e| e.to_string()));
         });
         rx.recv_timeout(Duration::from_secs(5))?.map_err(|e| anyhow::anyhow!(e))
@@ -132,6 +225,26 @@ mod gtk_thread {
 
     pub fn hide() {
         gtk::glib::MainContext::default().invoke(|| ICON.with(|i| drop(i.borrow_mut().take())));
+    }
+
+    pub fn set_play(playing: bool) {
+        gtk::glib::MainContext::default().invoke(move || {
+            LABELS.with(|l| {
+                if let Some((play, _)) = l.borrow().as_ref() {
+                    play.set_text(if playing { "Pause" } else { "Play" });
+                }
+            });
+        });
+    }
+
+    pub fn set_autostart(on: bool) {
+        gtk::glib::MainContext::default().invoke(move || {
+            LABELS.with(|l| {
+                if let Some((_, autostart)) = l.borrow().as_ref() {
+                    autostart.set_checked(on);
+                }
+            });
+        });
     }
 }
 

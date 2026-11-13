@@ -6,14 +6,21 @@
 //!   (Apple-style TTML), BiniLyrics (TTML), Musixmatch (word-by-word and line LRC), LRCLib
 //!   (LRC and plain), Legato (KuGou LRC) and Portato (QQ QRC).
 //! - Unison, the community lyrics service, answers a plain GET.
+//! - lrc.red answers a plain GET of its own.
+//! - The app's own, fetched like ForkChord's do: PaxSenix (Apple Music's timings),
+//!   LyricsPlus (community mirrors) and Genius (plain text fallback), plus the two
+//!   YouTube sources read straight off the playing video (its captions and its
+//!   Lyrics tab, see `ytm.rs`).
 //!
 //! The API needs a JWT, obtained by exchanging a Cloudflare Turnstile token (see
 //! turnstile.rs). JWTs last 24 h and are cached on disk.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use regex::Regex;
 use serde_json::Value;
 
 const API: &str = "https://lyrics.api.dacubeking.com/";
@@ -24,7 +31,8 @@ const LRCRED_API: &str = "https://lrc.red/";
 const LRCRED_UA: &str = concat!("BitChord/", env!("CARGO_PKG_VERSION"), " (+https://github.com/LoserDenji/Bitchord-Desktop-Revived)");
 
 /// One source of lyrics, in the extension's default priority order (its
-/// `PROVIDER_CONFIGS`, without the two YouTube sources).
+/// `PROVIDER_CONFIGS`, without the two YouTube sources; the ones past the stream
+/// are fetched by the app itself, like ForkChord's own providers fetch them).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Provider {
     BLyricsRich,
@@ -32,6 +40,8 @@ pub enum Provider {
     BinimumRich,
     UnisonWord,
     PortatoRich,
+    PaxsenixRich,
+    LyricsPlusRich,
     MusixmatchRich,
     LrcredRich,
     BLyricsSynced,
@@ -42,7 +52,10 @@ pub enum Provider {
     MusixmatchSynced,
     LrcredSynced,
     UnisonPlain,
+    YoutubeCaptions,
+    YoutubePlain,
     LrclibPlain,
+    GeniusPlain,
 }
 
 /// How finely a provider's lyrics are timed.
@@ -55,12 +68,14 @@ pub enum SyncKind {
 }
 
 impl Provider {
-    pub const ALL: [Provider; 16] = [
+    pub const ALL: [Provider; 21] = [
         Provider::BLyricsRich,
         Provider::UnisonRich,
         Provider::BinimumRich,
         Provider::UnisonWord,
         Provider::PortatoRich,
+        Provider::PaxsenixRich,
+        Provider::LyricsPlusRich,
         Provider::MusixmatchRich,
         Provider::LrcredRich,
         Provider::BLyricsSynced,
@@ -71,7 +86,10 @@ impl Provider {
         Provider::MusixmatchSynced,
         Provider::LrcredSynced,
         Provider::UnisonPlain,
+        Provider::YoutubeCaptions,
+        Provider::YoutubePlain,
         Provider::LrclibPlain,
+        Provider::GeniusPlain,
     ];
 
     /// The extension's key for it (also how the order is stored).
@@ -82,6 +100,8 @@ impl Provider {
             Provider::BinimumRich => "binimum-richsynced",
             Provider::UnisonWord => "unison-wordsynced",
             Provider::PortatoRich => "portato-richsynced",
+            Provider::PaxsenixRich => "paxsenix-richsynced",
+            Provider::LyricsPlusRich => "lyricsPlus-richsynced",
             Provider::MusixmatchRich => "musixmatch-richsync",
             Provider::LrcredRich => "lrcred-richsynced",
             Provider::BLyricsSynced => "bLyrics-synced",
@@ -92,7 +112,10 @@ impl Provider {
             Provider::MusixmatchSynced => "musixmatch-synced",
             Provider::LrcredSynced => "lrcred-synced",
             Provider::UnisonPlain => "unison-plain",
+            Provider::YoutubeCaptions => "youtube-captions",
+            Provider::YoutubePlain => "youtube-music",
             Provider::LrclibPlain => "lrclib-plain",
+            Provider::GeniusPlain => "genius-plain",
         }
     }
 
@@ -106,25 +129,31 @@ impl Provider {
             Provider::UnisonRich | Provider::UnisonWord | Provider::UnisonSynced | Provider::UnisonPlain => "Unison",
             Provider::BinimumRich | Provider::BinimumSynced => "BiniLyrics",
             Provider::PortatoRich => "Better Lyrics Portato",
+            Provider::PaxsenixRich => "PaxSenix",
+            Provider::LyricsPlusRich => "LyricsPlus",
             Provider::MusixmatchRich | Provider::MusixmatchSynced => "Musixmatch",
             Provider::LrclibSynced | Provider::LrclibPlain => "LRCLib",
             Provider::LrcredRich | Provider::LrcredSynced => "lrc.red",
             Provider::LegatoSynced => "Better Lyrics Legato",
+            Provider::YoutubeCaptions => "YouTube captions",
+            Provider::YoutubePlain => "YouTube Music",
+            Provider::GeniusPlain => "Genius",
         }
     }
 
     pub fn sync(self) -> SyncKind {
         match self {
-            Provider::BLyricsRich | Provider::UnisonRich | Provider::BinimumRich => SyncKind::Syllable,
-            Provider::UnisonWord | Provider::PortatoRich | Provider::MusixmatchRich | Provider::LrcredRich => SyncKind::Word,
+            Provider::BLyricsRich | Provider::UnisonRich | Provider::BinimumRich | Provider::LyricsPlusRich => SyncKind::Syllable,
+            Provider::UnisonWord | Provider::PortatoRich | Provider::PaxsenixRich | Provider::MusixmatchRich | Provider::LrcredRich => SyncKind::Word,
             Provider::BLyricsSynced
             | Provider::UnisonSynced
             | Provider::BinimumSynced
             | Provider::LrclibSynced
             | Provider::LegatoSynced
             | Provider::MusixmatchSynced
-            | Provider::LrcredSynced => SyncKind::Line,
-            Provider::UnisonPlain | Provider::LrclibPlain => SyncKind::Unsynced,
+            | Provider::LrcredSynced
+            | Provider::YoutubeCaptions => SyncKind::Line,
+            Provider::UnisonPlain | Provider::YoutubePlain | Provider::LrclibPlain | Provider::GeniusPlain => SyncKind::Unsynced,
         }
     }
 }
@@ -182,7 +211,7 @@ pub struct Lyrics {
 }
 
 impl Lyrics {
-    fn new(provider: Provider, lines: Vec<Line>, language: Option<String>, songwriters: Vec<String>) -> Option<Self> {
+    pub(crate) fn new(provider: Provider, lines: Vec<Line>, language: Option<String>, songwriters: Vec<String>) -> Option<Self> {
         if lines.is_empty() {
             return None;
         }
@@ -226,6 +255,9 @@ pub struct Client {
     challenge_failed: std::sync::Mutex<Option<std::time::Instant>>,
     /// The last few songs' lyrics, for replays and going back.
     recent: std::sync::Mutex<std::collections::VecDeque<(String, LyricsSet)>>,
+    /// Apple's web-player token, scraped once per session for PaxSenix's Apple
+    /// lyrics (cleared when it stops working, so the next song tries again).
+    apple_jwt: tokio::sync::Mutex<Option<String>>,
 }
 
 const CHALLENGE_RETRY: Duration = Duration::from_secs(15 * 60);
@@ -250,15 +282,24 @@ impl Client {
             jwt: tokio::sync::Mutex::new(cached),
             challenge_failed: Default::default(),
             recent: Default::default(),
+            apple_jwt: tokio::sync::Mutex::new(None),
         }
     }
 
-    /// Every source's lyrics for a song: the Better Lyrics stream, Unison and lrc.red, together.
+    /// Every source's lyrics for a song: the Better Lyrics stream, Unison, lrc.red,
+    /// and the app's own providers (PaxSenix, LyricsPlus, Genius), together.
     pub async fn fetch(&self, q: &Query<'_>) -> anyhow::Result<LyricsSet> {
         if let Some((_, l)) = self.recent.lock().unwrap().iter().find(|(id, _)| id == q.video_id) {
             return Ok(l.clone());
         }
-        let (stream, unison, lrcred) = tokio::join!(self.fetch_stream(q), self.fetch_unison(q), self.fetch_lrcred(q));
+        let (stream, unison, lrcred, paxsenix, lyricsplus, genius) = tokio::join!(
+            self.fetch_stream(q),
+            self.fetch_unison(q),
+            self.fetch_lrcred(q),
+            self.fetch_paxsenix(q),
+            self.fetch_lyricsplus(q),
+            self.fetch_genius(q)
+        );
         let mut sources = Vec::new();
         match stream {
             Ok(s) => sources.extend(s),
@@ -272,6 +313,9 @@ impl Client {
             Ok(s) => sources.extend(s),
             Err(e) => log::info!("lrc.red: {e:#}"),
         }
+        sources.extend(paxsenix);
+        sources.extend(lyricsplus);
+        sources.extend(genius);
         if sources.is_empty() {
             return Ok(LyricsSet::default());
         }
@@ -421,6 +465,736 @@ fn jwt_seconds_left(jwt: &str) -> i64 {
     let exp = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["exp"].as_i64()).unwrap_or(0);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     exp - now
+}
+
+// ------------------------------------------------------------------- the app's own providers
+//
+// The sources past the Better Lyrics stream, fetched the way ForkChord's providers
+// fetch them (PaxSenix.kt, LyricsPlus.kt, Genius.kt): Apple's timings through
+// PaxSenix's keyless API, LyricsPlus's community mirrors, and Genius as the plain
+// fallback. Each answers at most one Lyrics, or nothing.
+
+const APPLE_WEB: &str = "https://music.apple.com";
+const PAXSENIX: &str = "https://lyrics.paxsenix.org";
+const APPLE_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
+
+/// Apple's web-player token, the same shape apple.rs scrapes for its catalog reads.
+static APPLE_TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap());
+
+/// LyricsPlus's mirrors (atomix.one, prjktla.workers.dev and two vercel.app
+/// deployments died on 2026-10-17, like ForkChord's list says).
+const LYRICSPLUS_MIRRORS: &[&str] = &["https://lyricsplus.prjktla.my.id", "https://lyricsplus.binimum.org"];
+
+/// A YouTube title as the lyrics databases indexed it: credits and packaging off,
+/// version words kept (`forLyricsSearch`).
+static CREDITS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    vec![
+        Regex::new(r"(?i)\s*[(\[]\s*(feat|ft|featuring|with)\b[^)\]]*[)\]]").unwrap(),
+        Regex::new(r"(?i)\s+(feat|ft|featuring)\.?\s+.*$").unwrap(),
+        Regex::new(r"(?i)\s*[(\[]\s*(official\s*)?(music\s*)?(video|audio|visuali[sz]er|lyrics?\s*video|lyrics?|m/?v|hd|hq|4k|full\s*song)\s*[)\]]").unwrap(),
+        Regex::new(r"(?i)\s*[(\[]\s*official\s*[)\]]").unwrap(),
+    ]
+});
+
+/// What Genius itself leaves in its titles (Genius.kt's `GENIUS_NOISE`, plus the
+/// music-note characters its pages sprinkle in).
+static GENIUS_NOISE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\s*[(\[]\s*(?:from|feat\.?|ft\.?|featuring|with|prod\.?|produced by|official|lyrical|video|audio|remix|music video|visualizer|mv|hd|4k|hq|full song)[^)\]]*[)\]]|\s*\b(?:official\s+(?:music\s+)?(?:video|audio)|lyrical(?:\s+video)?|full\s+song|4k\s+video|hd\s+video|music\s+video)\b").unwrap()
+});
+
+/// The cleaned title and artist the outside providers are asked with.
+fn lyrics_search_terms(q: &Query<'_>) -> (String, String) {
+    let mut title = q.song.to_owned();
+    for r in CREDITS.iter() {
+        title = r.replace_all(&title, " ").into_owned();
+    }
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ").trim_end_matches([',', '-', '–', '—']).trim().to_owned();
+    let title = if title.is_empty() { q.song.trim().to_owned() } else { title };
+    let artist = q.artist.trim().strip_suffix(" - Topic").unwrap_or(q.artist.trim()).trim().to_owned();
+    (title, artist)
+}
+
+impl Client {
+    /// PaxSenix: Apple Music's own syllable timings through its keyless API. The
+    /// recording is found on Apple first (its catalog search, with the web player's
+    /// scraped token), then PaxSenix is asked for that recording's lyrics.
+    async fn fetch_paxsenix(&self, q: &Query<'_>) -> Vec<Lyrics> {
+        if q.song.trim().is_empty() {
+            return vec![];
+        }
+        match self.paxsenix_inner(q).await {
+            Ok(l) => l,
+            Err(e) => {
+                log::info!("paxsenix: {e:#}");
+                vec![]
+            }
+        }
+    }
+
+    async fn paxsenix_inner(&self, q: &Query<'_>) -> anyhow::Result<Vec<Lyrics>> {
+        let (title, artist) = lyrics_search_terms(q);
+        let dur_ms = q.duration.unwrap_or(0) as i32 * 1000;
+        let Some(token) = self.apple_web_token().await else { return Ok(vec![]) };
+        let search: String = self
+            .http
+            .get("https://amp-api.music.apple.com/v1/catalog/us/search")
+            .query(&[("term", format!("{title} {artist}")), ("types", "songs"), ("limit", "10"), ("l", "en-US")])
+            .header("User-Agent", APPLE_UA)
+            .bearer_auth(&token)
+            .header("Origin", APPLE_WEB)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let v: Value = serde_json::from_str(&search)?;
+        let Some(id) = best_candidate(&v, &title, &artist, dur_ms) else { return Ok(vec![]) };
+        let body = self
+            .http
+            .get(format!("{PAXSENIX}/apple-music/lyrics"))
+            .query(&[("id", id.as_str()), ("ttml", "true")])
+            .timeout(Duration::from_secs(12))
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        Ok(pax_response(&body, dur_ms))
+    }
+
+    /// Apple's web-player token, read the way the browser gets it: load the player,
+    /// find the JS bundle it pulls in, take the token out. Cached for the session;
+    /// cleared on failure so the next song scrapes again.
+    async fn apple_web_token(&self) -> Option<String> {
+        if let Some(t) = self.apple_jwt.lock().await.clone() {
+            return Some(t);
+        }
+        let page = self.http.get(format!("{APPLE_WEB}/us/new")).header("User-Agent", APPLE_UA).timeout(Duration::from_secs(12)).send().await.ok()?.text().await.ok()?;
+        let at = page.find("/assets/index~")?;
+        let end = at + page[at..].find(['"', '\''])?;
+        let script = format!("{APPLE_WEB}{}", &page[at..end]);
+        let source = self.http.get(&script).header("User-Agent", APPLE_UA).timeout(Duration::from_secs(12)).send().await.ok()?.text().await.ok()?;
+        let token = APPLE_TOKEN.find(&source)?.as_str().to_owned();
+        log::info!("lyrics: apple web token scraped");
+        *self.apple_jwt.lock().await = Some(token.clone());
+        Some(token)
+    }
+
+    /// LyricsPlus: syllable-timed lyrics from its community mirrors, all asked at
+    /// once and the first usable answer taken (LyricsPlus.kt races them too).
+    async fn fetch_lyricsplus(&self, q: &Query<'_>) -> Vec<Lyrics> {
+        if q.song.trim().is_empty() {
+            return vec![];
+        }
+        let (title, artist) = lyrics_search_terms(q);
+        let params = [
+            ("title", title),
+            ("artist", artist),
+            ("duration", q.duration.unwrap_or(0).to_string()),
+            ("album", q.album.unwrap_or_default().to_owned()),
+        ];
+        let asks = LYRICSPLUS_MIRRORS.iter().map(|host| {
+            let url = format!("{host}/v2/lyrics/get");
+            let params = params.clone();
+            async move { self.http.get(&url).query(&params).timeout(Duration::from_secs(12)).send().await.ok()?.error_for_status().ok()?.text().await }
+        });
+        let answers = futures_util::future::join_all(asks).await;
+        for body in answers.into_iter().flatten() {
+            let Ok(v) = serde_json::from_str::<Value>(&body) else { continue };
+            let lines = from_lyricsplus(&v, q.duration.unwrap_or(0) as i32 * 1000);
+            if let Some(l) = Lyrics::new(Provider::LyricsPlusRich, lines, None, vec![]) {
+                return vec![l];
+            }
+        }
+        vec![]
+    }
+
+    /// Genius: plain text from the biggest catalogue there is, as the last resort.
+    /// Its web search is scored like ForkChord's (translations and tracklists down),
+    /// then the song page's lyrics container is read out of its HTML.
+    async fn fetch_genius(&self, q: &Query<'_>) -> Vec<Lyrics> {
+        if q.song.trim().is_empty() {
+            return vec![];
+        }
+        match self.genius_inner(q).await {
+            Ok(l) => l,
+            Err(e) => {
+                log::info!("genius: {e:#}");
+                vec![]
+            }
+        }
+    }
+
+    async fn genius_inner(&self, q: &Query<'_>) -> anyhow::Result<Vec<Lyrics>> {
+        static BARE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*[\(\[].*?[\)\]]").unwrap());
+        let (title, artist) = {
+            let (t, a) = lyrics_search_terms(q);
+            (genius_clean(&t), genius_clean(&a))
+        };
+        // The title without its brackets and punctuation: Genius files songs under
+        // plainer names than YouTube's titles are (`Genius.kt`).
+        let bare = BARE.replace_all(&title, " ").into_owned();
+        let bare = bare.split(|c: char| !c.is_alphanumeric() && !c.is_whitespace()).collect::<Vec<_>>().join(" ");
+        let bare = bare.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut attempts: Vec<String> = vec![format!("{artist} {title}").trim().to_owned(), format!("{artist} {bare}").trim().to_owned()];
+        if !bare.is_empty() {
+            attempts.push(bare.clone());
+        }
+        attempts.dedup();
+        for query in attempts {
+            let body: String = match self
+                .http
+                .get("https://genius.com/api/search/multi")
+                .query(&[("q", query)])
+                .header("User-Agent", APPLE_UA)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+            {
+                Ok(r) => match r.error_for_status() {
+                    Ok(r) => r.text().await?,
+                    Err(e) => {
+                        log::info!("genius search: {e}");
+                        return Ok(vec![]);
+                    }
+                },
+                Err(e) => return Err(e.into()),
+            };
+            let v: Value = serde_json::from_str(&body)?;
+            let hits = v["response"]["sections"]
+                .as_array()
+                .and_then(|sections| sections.iter().find(|s| s["type"] == "song"))
+                .and_then(|s| s["hits"].as_array())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let t = (if bare.is_empty() { title.clone() } else { bare.clone() }).to_lowercase();
+            let a = artist.to_lowercase();
+            let mut scored: Vec<(i32, String)> = hits
+                .iter()
+                .filter_map(|hit| {
+                    let ht = hit["result"]["title"].as_str()?.trim().to_lowercase();
+                    let ha = hit["result"]["artist_names"].as_str()?.trim().to_lowercase();
+                    let title_match = !t.is_empty() && (ht == t || ht.contains(&t) || t.contains(&ht));
+                    let artist_match = !a.is_empty() && (ha == a || ha.contains(&a) || a.contains(&ha));
+                    if !title_match && !artist_match {
+                        return None;
+                    }
+                    let mut score = (ht == t) as i32 * 50 + title_match as i32 * 25 + artist_match as i32 * if ha == a { 40 } else { 20 };
+                    let path = hit["result"]["path"].as_str().unwrap_or_default();
+                    if path.to_lowercase().contains("translation") && !t.contains("translation") {
+                        score -= 30;
+                    }
+                    if path.to_lowercase().contains("tracklist") || path.to_lowercase().contains("album-art") {
+                        score -= 50;
+                    }
+                    (score > 0).then(|| {
+                        let url = hit["result"]["url"].as_str().unwrap_or_default();
+                        (score, url.to_owned())
+                    })
+                })
+                .collect();
+            scored.sort_by(|x, y| y.0.cmp(&x.0));
+            let Some((_, url)) = scored.first() else { continue };
+            if url.is_empty() {
+                continue;
+            }
+            let html = self.http.get(url).header("User-Agent", APPLE_UA).timeout(Duration::from_secs(15)).send().await?.error_for_status()?.text().await?;
+            let lines = parse_genius_html(&html);
+            if let Some(l) = Lyrics::new(Provider::GeniusPlain, lines, None, vec![]) {
+                return Ok(vec![l]);
+            }
+        }
+        Ok(vec![])
+    }
+
+    /// Songs fetched lately that came back since `fetch` cached them (YouTube's own
+    /// sources arrive after): fold them into the cached set too, so replays keep them.
+    pub fn merge_cached(&self, video_id: &str, extra: Vec<Lyrics>) {
+        if extra.is_empty() {
+            return;
+        }
+        let mut recent = self.recent.lock().unwrap();
+        if let Some((_, set)) = recent.iter_mut().find(|(id, _)| id == video_id) {
+            for l in extra {
+                if !set.sources.iter().any(|s| s.provider == l.provider) {
+                    set.sources.push(l);
+                }
+            }
+            set.sources.sort_by_key(|l| Provider::ALL.iter().position(|p| *p == l.provider));
+        }
+    }
+}
+
+/// PaxSenix's answer as lyrics: its structured Apple payload first, whatever shape
+/// it hands over second (`paxResponse`).
+fn pax_response(body: &str, dur_ms: i32) -> Vec<Lyrics> {
+    if let Some(lines) = parse_paxsenix_timed(body, dur_ms) {
+        if let Some(l) = Lyrics::new(Provider::PaxsenixRich, lines, None, vec![]) {
+            return vec![l];
+        }
+    }
+    match parse_provider_any(body, dur_ms) {
+        Some(lines) => Lyrics::new(Provider::PaxsenixRich, lines, None, vec![]).into_iter().collect(),
+        None => vec![],
+    }
+}
+
+/// The structured Apple payload PaxSenix answers with, keeping its syllable timings
+/// (`PaxSenix.parseTimedApple`): rows of `timestamp` plus `text` (word objects with
+/// their own timestamps), wherever the answer nests them.
+fn parse_paxsenix_timed(raw: &str, song_ms: i32) -> Option<Vec<Line>> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    let rows = find_timed_rows(&v)?;
+    let mut lines: Vec<Line> = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let Some(start) = row["timestamp"].as_i64().map(|t| t as i32) else { continue };
+        let Some(words) = row["text"].as_array().filter(|w| !w.is_empty()) else { continue };
+        let next_line = rows.get(index + 1).and_then(|r| r["timestamp"].as_i64()).map(|t| t as i32);
+        let mut parts: Vec<Part> = Vec::new();
+        let mut plain: Vec<&str> = Vec::new();
+        for (i, word) in words.iter().enumerate() {
+            let Some(t) = word["text"].as_str().map(str::trim).filter(|t| !t.is_empty()) else { continue };
+            plain.push(t);
+            let Some(ws) = word["timestamp"].as_i64() else { continue };
+            let end = word["endtime"]
+                .as_i64()
+                .or_else(|| words.get(i + 1).and_then(|w| w["timestamp"].as_i64()))
+                .or(next_line.map(|n| n as i64))
+                .unwrap_or(ws + 800);
+            // Apple's karaoke words carry their spacing in a trailing space; a
+            // `part: true` word is one half of a split word and keeps its own.
+            let text = if word["part"] == true { t.to_owned() } else { format!("{t} ") };
+            parts.push(Part { start: ws as i32, dur: ((end - ws).max(0)) as i32, text, bg: false });
+        }
+        let timed = !plain.is_empty() && parts.len() == plain.len();
+        let text = if timed {
+            collapse_spaces(&parts.iter().map(|p| p.text.clone()).collect::<String>())
+        } else {
+            plain.join(" ")
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let first = parts.first().map(|p| p.start).unwrap_or(start);
+        let line_start = start.min(first);
+        let dur = match (&next_line, parts.last()) {
+            (Some(n), _) => (*n - line_start).max(0),
+            (None, Some(p)) => (p.start + p.dur - line_start).max(0),
+            (None, None) => 0,
+        };
+        lines.push(Line { start: line_start, dur, text, parts: if timed { parts } else { vec![] }, ..Default::default() });
+    }
+    let last = lines.last().map(|l| l.end()).unwrap_or(0);
+    let out = insert_instrumentals(lines, song_ms.max(last));
+    out.is_empty().not().then_some(out)
+}
+
+/// Genius's own titles carry their own noise: music-note symbols, bracketed
+/// credits, packaging words and the producers tail (`geniusClean`).
+fn genius_clean(s: &str) -> String {
+    static CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u{266c}\u{266b}\u{2605}\u{2606}\u{3010}\u{3011}\u{300a}\u{300b}\u{300c}\u{300d}~_]").unwrap());
+    static PROD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:prod(?:uced)?\.?(?:\s+by)?)\s+.*$").unwrap());
+    let t = CHARS.replace_all(s, " ");
+    let t = GENIUS_NOISE.replace_all(&t, " ");
+    let t = PROD.replace_all(&t, " ");
+    collapse_spaces(t.split(" | ").next().unwrap_or(""))
+}
+
+/// The first array anywhere whose elements are timed rows (`timestamp` plus a
+/// `text` list), depth first.
+fn find_timed_rows(v: &Value) -> Option<&Vec<Value>> {
+    if let Some(items) = v.as_array() {
+        return items.iter().find_map(find_timed_rows);
+    }
+    let o = v.as_object()?;
+    if let Some(content) = o.get("content").and_then(Value::as_array) {
+        if content.iter().any(|c| c.as_object().is_some_and(|c| c.contains_key("timestamp"))) {
+            return Some(content);
+        }
+    }
+    o.values().find_map(find_timed_rows)
+}
+
+/// Whatever a provider answered that isn't its structured form, shaped like
+/// ForkChord's `parseProvider`: TTML when it looks like it, QQ's karaoke LRC when
+/// it's stamped like it, then enhanced LRC / LRC, then plain text.
+fn parse_provider_any(raw: &str, dur_ms: i32) -> Option<Vec<Line>> {
+    static TTML: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<tt(\s|>)").unwrap());
+    static KARAOKE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[\d{1,8},\d{1,8}\]").unwrap());
+    static KARAOKE_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\d{1,8},\d{1,8}(?:,\d{1,8})?\)").unwrap());
+    let content = unwrap_lyrics(raw)?;
+    if content.contains("http://www.w3.org/ns/ttml") || TTML.is_match(&content) {
+        let t = parse_ttml(&content, dur_ms);
+        return (!t.lines.is_empty()).then_some(t.lines);
+    }
+    if content.trim_start().starts_with('<') {
+        return None;
+    }
+    let looks_karaoke = content.contains("LyricContent=\"")
+        || content.split('\n').any(|l| KARAOKE_LINE.is_match(l.trim()) && KARAOKE_WORD.is_match(l));
+    let lines = if looks_karaoke {
+        parse_qrc(&content, dur_ms, None)
+    } else {
+        parse_lrc(&content, dur_ms)
+    };
+    if lines.iter().any(|l| !l.text.trim().is_empty()) {
+        return Some(lines);
+    }
+    let plain = parse_plain(&content);
+    plain.iter().any(|l| !l.text.trim().is_empty()).then_some(plain)
+}
+
+/// A provider answer that is a JSON wrapper around the lyrics (`unwrap`): the
+/// string under "lyrics", or the strings of an array, or the text itself.
+fn unwrap_lyrics(raw: &str) -> Option<String> {
+    let value = raw.trim().trim_start_matches('\u{feff}').trim();
+    if value.is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<Value>(value) {
+        Ok(v) => extract_lyrics(&v),
+        Err(_) => Some(value.to_owned()),
+    }
+}
+
+fn extract_lyrics(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => {
+            let t = s.trim();
+            // One more layer: providers wrap escaped JSON inside strings.
+            if (t.starts_with('{') || t.starts_with('[')) && serde_json::from_str::<Value>(t).is_ok() {
+                return serde_json::from_str::<Value>(t).ok().and_then(|n| extract_lyrics(&n)).or_else(|| Some(t.to_owned()));
+            }
+            (!t.is_empty()).then(|| t.to_owned())
+        }
+        Value::Array(items) => {
+            let joined = items.iter().filter_map(extract_lyrics).collect::<Vec<_>>().join("\n");
+            (!joined.is_empty()).then_some(joined)
+        }
+        Value::Object(o) => o.get("lyrics").and_then(extract_lyrics),
+        _ => None,
+    }
+}
+
+/// LyricsPlus's answer as lines (`parseLyricsPlus`): every timed row, its syllabus
+/// as parts when it has one, singers named v1/v2 in order of appearance.
+fn from_lyricsplus(v: &Value, song_ms: i32) -> Vec<Line> {
+    let rows = v["lyrics"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut singer_names: Vec<String> = Vec::new();
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .filter_map(|l| {
+            let Some(time) = l["time"].as_i64().map(|t| t as i32) else { return None };
+            let mut parts: Vec<Part> = l["syllabus"]
+                .as_array()
+                .map(|syll| {
+                    syll.iter()
+                        .filter_map(|s| {
+                            let text = s["text"].as_str()?;
+                            let st = s["time"].as_i64()?;
+                            let dur = s["duration"].as_i64().unwrap_or(0);
+                            Some(Part { start: st as i32, dur: dur.max(0) as i32, text: text.to_owned(), bg: false })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let text = if parts.is_empty() {
+                l["text"].as_str().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty())
+            } else {
+                let joined = collapse_spaces(&parts.iter().map(|p| p.text.clone()).collect::<String>());
+                (!joined.is_empty()).then_some(joined)
+            };
+            let text = text?;
+            let dur = l["duration"].as_i64().map(|d| d.max(0) as i32).unwrap_or(0);
+            let agent = l["element"].as_object().and_then(|e| e.get("singer")).and_then(Value::as_str).map(|singer| {
+                let at = match singer_names.iter().position(|n| n == singer) {
+                    Some(i) => i,
+                    None => {
+                        singer_names.push(singer.to_owned());
+                        singer_names.len() - 1
+                    }
+                };
+                format!("v{}", at + 1)
+            });
+            let line = if parts.is_empty() {
+                Line { start: time, dur: if dur > 0 { dur } else { 0 }, text, agent, ..Default::default() }
+            } else {
+                // Parts carry the line's clock: keep the row's start when it leads them.
+                let first = parts.iter().map(|p| p.start).min().unwrap_or(time);
+                Line { start: time.min(first), dur, text, parts, agent, ..Default::default() }
+            };
+            Some(line)
+        })
+        .collect();
+    lines.sort_by_key(|l| l.start);
+    collapse_zero(insert_instrumentals(lines, song_ms))
+}
+
+/// Genius's page HTML as plain lines (`parseGeniusHtml`): the lyrics containers,
+/// their tags off, `<br>`s as line breaks, section headers like "[Chorus]" kept
+/// and stanza breaks kept.
+fn parse_genius_html(html: &str) -> Vec<Line> {
+    const CONTAINER: &str = "data-lyrics-container=\"true\"";
+    if !html.contains(CONTAINER) {
+        // The legacy layout keeps the lyrics in one div.lyrics.
+        return genius_block(html, "<div class=\"lyrics\"");
+    }
+    let mut text = String::new();
+    // Every container: the attribute opens it, the matching `</div` closes it
+    // (its depth walked, however nested the bits Genius puts inside are).
+    let mut at = 0;
+    while let Some(found) = html[at..].find(CONTAINER) {
+        let Some((start, end)) = element_body(html, at + found) else { break };
+        text.push_str(&strip_genius_extras(&html[start..end]));
+        text.push('\n');
+        at = end;
+    }
+    genius_lines(&text)
+}
+
+/// The lyrics out of the container whose tag opens at `tag_at`, when the page
+/// serves the legacy `<div class="lyrics">` block instead.
+fn genius_block(html: &str, opener: &str) -> Vec<Line> {
+    let Some(at) = html.find(opener) else { return vec![] };
+    match element_body(html, at) {
+        Some((start, end)) => genius_lines(&strip_genius_extras(&html[start..end])),
+        None => vec![],
+    }
+}
+
+/// The inside of the element whose opening tag starts at `tag_at` (at the `<`):
+/// from after its own `>` to the matching close, its tag name and depth honoured.
+/// The element may hold more of itself; anything else inside is somebody else's.
+fn element_body(html: &str, tag_at: usize) -> Option<(usize, usize)> {
+    let after = &html[tag_at..];
+    let name: String = after[1..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    if name.is_empty() {
+        return None;
+    }
+    let gt = after.find('>')? + tag_at + 1;
+    let start = gt;
+    let open = format!("<{name}");
+    let close = format!("</{name}");
+    let mut depth = 1usize;
+    let mut scan = start;
+    while scan < html.len() {
+        let open_at = html[scan..].find(&open).map(|i| scan + i);
+        let close_at = html[scan..].find(&close).map(|i| scan + i);
+        match (open_at, close_at) {
+            (Some(o), Some(c)) if o < c => {
+                depth += 1;
+                scan = o + open.len();
+            }
+            (_, Some(c)) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((start, c.min(html.len())));
+                }
+                scan = c + close.len();
+            }
+            (Some(o), None) => {
+                depth += 1;
+                scan = o + open.len();
+            }
+            _ => break,
+        }
+    }
+    // Never closed: the rest of the page is the best there is.
+    Some((start, html.len()))
+}
+
+/// The bits Genius nests inside a lyrics container that aren't lyrics: scripts,
+/// styles, buttons, and the header/ad/footer blocks its classes and attributes
+/// name, all removed with their whole elements.
+fn strip_genius_extras(container: &str) -> String {
+    static BLOCKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<script\b.*?</script>|<style\b.*?</style>|<button\b.*?</button>").unwrap());
+    let mut out = BLOCKS.replace_all(container, "\n").into_owned();
+    for marker in ["data-exclude-from-selection=\"true\"", "LyricsHeader__Container", "SongBioPreview", "InreadAd", "LyricsFooter"] {
+        while let Some(i) = out.find(marker) {
+            let Some(tag_at) = out[..i].rfind('<') else { break };
+            if let Some((_content_start, close_at)) = element_body(&out, tag_at) {
+                // The whole element goes, closing tag and all.
+                let end = out[close_at..].find('>').map(|g| close_at + g + 1).unwrap_or(out.len());
+                out.replace_range(tag_at..end.min(out.len()), "\n");
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// A cleaned container's HTML as Genius's own text: `<br>`s and paragraph ends as
+/// newlines, every other tag off, entities decoded, the Embed, "You might also
+/// like" and ad tails off, stanza breaks kept as empty lines.
+fn genius_lines(container_html: &str) -> Vec<Line> {
+    static BR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<br\s*/?>|</p>|</h\d>|</blockquote>").unwrap());
+    static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
+    static EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\d*Embed\s*$").unwrap());
+    static ALSO_LIKE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\d*You might also like").unwrap());
+    let with_breaks = BR.replace_all(container_html, "\n").into_owned();
+    let no_tags = TAG.replace_all(&with_breaks, "").into_owned();
+    let decoded = decode_entities(&no_tags.replace('\u{feff}', " ").replace('\u{200b}', " "));
+    let mut out: Vec<Line> = Vec::new();
+    for raw in decoded.split('\n') {
+        let t = collapse_spaces(&ALSO_LIKE.replace_all(raw, " "));
+        let t = EMBED.replace_all(&t, "").trim().to_owned();
+        if t.is_empty() {
+            // Stanza breaks stay as one empty line between sung lines.
+            if out.last().is_some_and(|l| !l.text.is_empty()) {
+                out.push(Line { text: String::new(), ..Default::default() });
+            }
+        } else {
+            out.push(Line { text: t, ..Default::default() });
+        }
+    }
+    while out.first().is_some_and(|l| l.text.is_empty()) {
+        out.remove(0);
+    }
+    while out.last().is_some_and(|l| l.text.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
+/// The entities Genius's text carries: the named ones and the numeric forms.
+fn decode_entities(text: &str) -> String {
+    static NAMED: &[(&str, &str)] = &[("&quot;", "\""), ("&apos;", "'"), ("&#39;", "'"), ("&#x27;", "'"), ("&#039;", "'"), ("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", "\u{a0}"), ("&amp;", "&")];
+    static NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&#(x?)([0-9a-fA-F]+);").unwrap());
+    let mut out = text.to_owned();
+    for (from, to) in NAMED {
+        out = out.replace(from, to);
+    }
+    NUMERIC.replace_all(&out, |c: &regex::Captures| {
+        let (hex, digits) = (&c[1], &c[2]);
+        let code = u32::from_str_radix(digits, if hex.is_empty() { 10 } else { 16 }).ok().and_then(char::from_u32);
+        code.map(|c| c.to_string()).unwrap_or_default()
+    })
+}
+
+/// Any run of spaces down to one, spaces at both ends off.
+fn collapse_spaces(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Plain lines keep their stanza breaks; a run of empties is one empty.
+fn collapse_zero(lines: Vec<Line>) -> Vec<Line> {
+    let mut out: Vec<Line> = Vec::new();
+    for l in lines {
+        if l.text.trim().is_empty() && l.parts.is_empty() && out.last().is_some_and(|p| p.text.trim().is_empty() && p.parts.is_empty()) {
+            continue;
+        }
+        out.push(l);
+    }
+    out
+}
+
+/// A search answer's most likely recording (PaxSenix.bestCandidate): every object
+/// in the answer that names an id and a title is a candidate, scored by how its
+/// title and artist match and how close its length is.
+fn best_candidate(root: &Value, title: &str, artist: &str, dur_ms: i32) -> Option<String> {
+    let mut best: Option<(i32, String)> = None;
+    walk_candidates(root, &mut |id, c_title, c_artist, c_dur| {
+        let mut score = text_score(c_title, title, 20, 10) + text_score(c_artist, artist, 15, 5);
+        if dur_ms > 0 && c_dur > 0 {
+            let diff = (c_dur - dur_ms).abs();
+            score += if diff < 3000 { 10 } else if diff < 10_000 { 5 } else { 0 };
+        }
+        if best.as_ref().is_none_or(|(s, _)| score > *s) {
+            best = Some((score, id.to_owned()));
+        }
+    });
+    best.filter(|(s, _)| *s >= 10).map(|(_, id)| id)
+}
+
+fn walk_candidates(v: &Value, into: &mut impl FnMut(&str, &str, &str, i32)) {
+    match v {
+        Value::Array(items) => items.iter().for_each(|i| walk_candidates(i, into)),
+        Value::Object(o) => {
+            // The id may sit on the node or its attributes; the title always on the
+            // attributes (Apple) or the node itself (Spotify-shaped answers).
+            let attrs = o.get("attributes").filter(|a| a.is_object()).unwrap_or(v);
+            let id = first_string(v, &["id", "trackId", "track_id", "realId"]).or_else(|| first_string(attrs, &["id", "trackId", "track_id", "realId"]));
+            let title = first_string(attrs, &["name", "title", "trackName", "track_name"]);
+            if let (Some(id), Some(title)) = (id, title) {
+                let artist = first_string(attrs, &["artistName", "artist_name"]).or_else(|| artist_names(attrs)).unwrap_or_default();
+                let dur = first_number(attrs, &["durationInMillis", "durationMs", "duration_ms", "duration"]).map(to_duration_ms).unwrap_or(0);
+                into(&id, &title, &artist, dur);
+            }
+            o.values().for_each(|c| walk_candidates(c, into));
+        }
+        _ => {}
+    }
+}
+
+/// The first key of `keys` holding a non-blank string (numbers come as strings).
+fn first_string(o: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        match o.get(key) {
+            Some(Value::String(s)) if !s.trim().is_empty() => return Some(s.trim().to_owned()),
+            Some(Value::Number(n)) => return Some(n.to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn first_number(o: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|k| o.get(k).and_then(Value::as_i64))
+}
+
+/// Search answers give lengths in ms or in seconds; 9999 and under can only be
+/// seconds (`toDurationMs`).
+fn to_duration_ms(n: i64) -> i64 {
+    if n <= 0 {
+        0
+    } else if n < 10_000 {
+        n * 1000
+    } else {
+        n
+    }
+}
+
+/// The names of an answer's artists, however they are shaped: a string, an array
+/// of names or objects, or one object (`artistNames`).
+fn artist_names(o: &Value) -> Option<String> {
+    let artists = o.get("artists").or_else(|| o.get("artist"))?;
+    match artists {
+        Value::String(s) => (!s.trim().is_empty()).then(|| s.trim().to_owned()),
+        Value::Array(items) => {
+            let joined = items
+                .iter()
+                .filter_map(|a| match a {
+                    Value::String(s) => Some(s.trim().to_owned()),
+                    Value::Object(_) => first_string(a, &["name", "artistName", "title"]),
+                    _ => None,
+                })
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+            (!joined.is_empty()).then_some(joined)
+        }
+        Value::Object(_) => first_string(artists, &["name", "artistName", "title"]),
+        _ => None,
+    }
+}
+
+/// 0 when either text is blank, `exact` when they are the same, `partial` when one
+/// contains the other (`textScore`).
+fn text_score(candidate: &str, wanted: &str, exact: i32, partial: i32) -> i32 {
+    let c = candidate.trim().to_lowercase();
+    let w = wanted.trim().to_lowercase();
+    if c.is_empty() || w.is_empty() {
+        return 0;
+    }
+    if c == w {
+        exact
+    } else if c.contains(&w) || w.contains(&c) {
+        partial
+    } else {
+        0
+    }
 }
 
 // ------------------------------------------------------------------- provider results

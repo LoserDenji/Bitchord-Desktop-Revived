@@ -25,12 +25,47 @@ pub struct Motion {
     pub wide: Option<String>,
 }
 
-/// Apple's own page for an artist: their display name and wordmark.
+/// Apple's own page for an artist: their display name, wordmark and header photo.
 #[derive(Clone, Debug, Default)]
 pub struct Artwork {
     pub name: String,
     /// The custom wordmark Apple lettered for the artist, when they have one.
     pub logo: Option<LogoSrc>,
+    /// The photograph behind the artist's name on Apple's page, with Apple's
+    /// colour for it.
+    pub hero: Option<Hero>,
+}
+
+/// The artist's header photograph as Apple's CDN template, `{w}x{h}{c}.{f}` and
+/// all, with the colours Apple pairs with it (the phone reads the same blocks:
+/// `AppleArtistArt.kt`).
+#[derive(Clone, Debug, Default)]
+pub struct Hero {
+    pub template: String,
+    pub w: u32,
+    pub h: u32,
+    /// Apple's `bgColor` for the photo ("#rrggbb"), when the artist has one.
+    pub bg: Option<String>,
+    /// Apple's fill for the artist's Play button, absent for most artists.
+    pub key_color: Option<String>,
+}
+
+impl Hero {
+    /// The photo `width` px wide, keeping Apple's aspect, at the `bb` crop.
+    pub fn at_width(&self, width: u32) -> String {
+        let width = width.max(1);
+        let h = (self.h as u64 * width as u64 / self.w.max(1) as u64).max(1);
+        self.template
+            .replace("{w}", &width.to_string())
+            .replace("{h}", &h.to_string())
+            .replace("{c}", "bb")
+            .replace("{f}", "jpg")
+    }
+
+    /// Width over height of the photograph.
+    pub fn aspect(&self) -> f32 {
+        (self.w.max(1) as f32) / (self.h.max(1) as f32)
+    }
 }
 
 /// The artist's wordmark as Apple's CDN template, `{w}x{h}{c}.{f}` and all.
@@ -385,7 +420,7 @@ async fn album_by_id(http: &reqwest::Client, id: &str) -> Option<Motion> {
     album.pointer("/attributes/editorialVideo").map(motion_urls).filter(|m| m.square.is_some())
 }
 
-/// Apple's artist page: their display name and the hero motion clips.
+/// Apple's artist page: their display name, the hero photograph and the wordmark.
 pub async fn artist(http: &reqwest::Client, name: &str) -> Option<Artwork> {
     let q = format!("search?term={}&types=artists&limit=10", url_escape(name));
     let v = api(http, &q).await?;
@@ -399,7 +434,8 @@ pub async fn artist(http: &reqwest::Client, name: &str) -> Option<Artwork> {
     }
     let shown = page_title(&html).unwrap_or(page_name);
     let logo = artist_logo(&html);
-    Some(Artwork { name: shown, logo })
+    let hero = artist_hero(&html);
+    Some(Artwork { name: shown, logo, hero })
 }
 
 /// The search hit that is this artist: an exact name match first, then one whose
@@ -446,6 +482,49 @@ fn number_after(s: &str, key: &str) -> Option<u32> {
     let tail = s[i..].trim_start_matches(|c: char| c == ':' || c.is_whitespace());
     let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
     tail[..end].parse().ok()
+}
+
+/// Apple's header for an artist page, out of the page's hydration JSON (the
+/// `serialized-server-data` script): the photograph behind the name and the
+/// colours Apple pairs with it, as the phone reads them (`AppleArtistArt.kt`).
+/// The first object anywhere in the data that has an `artistLogo` key is the
+/// header; its `artwork` (or `colorBackdropArtwork`) carries the photo. Most
+/// artists have no key colour; the wordmark is read separately (`artist_logo`).
+fn artist_hero(html: &str) -> Option<Hero> {
+    let marker = html.find("id=\"serialized-server-data\"")?;
+    let start = marker + html[marker..].find('>')? + 1;
+    let end = start + html[start..].find("</script>")?;
+    let v: Value = serde_json::from_str(html[start..end].trim()).ok()?;
+    let header = find_obj(&v, "artistLogo")?;
+    // The photograph, preferring Apple's plain header artwork over the coloured
+    // backdrop (the phone's own order).
+    let art = if header["artwork"]["dictionary"].as_object().is_some_and(|a| a.contains_key("url")) {
+        &header["artwork"]["dictionary"]
+    } else {
+        &header["colorBackdropArtwork"]["dictionary"]
+    };
+    let template = art["url"].as_str()?.replace("\\/", "/");
+    let w = art["width"].as_u64()? as u32;
+    let h = art["height"].as_u64()? as u32;
+    if w == 0 || h == 0 || !template.contains("{w}") {
+        return None;
+    }
+    // Apple's colours are six hex digits.
+    let bg = art["bgColor"].as_str().filter(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_hexdigit())).map(|s| format!("#{s}"));
+    let key_color = header["keyColor"].as_str().filter(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_hexdigit())).map(|s| format!("#{s}"));
+    Some(Hero { template, w, h, bg, key_color })
+}
+
+/// The first object anywhere in `v` that has a `key` entry, depth first.
+fn find_obj<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    if let Some(items) = v.as_array() {
+        return items.iter().find_map(|i| find_obj(i, key));
+    }
+    let o = v.as_object()?;
+    if o.contains_key(key) {
+        return Some(v);
+    }
+    o.values().find_map(|c| find_obj(c, key))
 }
 
 fn page_title(html: &str) -> Option<String> {

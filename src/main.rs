@@ -3,6 +3,7 @@
 mod appicon;
 mod apple;
 mod artist_signature;
+mod autostart;
 mod fullscreen;
 mod proxy;
 mod renderer;
@@ -39,10 +40,10 @@ mod tray;
 mod turnstile;
 mod ui;
 mod update;
+mod vault;
 mod webmusic;
 mod ytdlp;
 mod ytm;
-mod vault;
 mod ytmapi;
 
 use std::sync::{Arc, OnceLock};

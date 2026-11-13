@@ -1567,6 +1567,136 @@ fn browse_id(run: &Value) -> Option<String> {
     run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str().map(str::to_owned)
 }
 
+// ------------------------------------------------------------- the playing video's own lyrics
+//
+// The two YouTube sources, fetched from the playing video itself like ForkChord's
+// do (YouTubeLyrics.kt): its captions, timed; and the plain text of its Lyrics tab.
+
+/// Timed captions for the exact playing video. `get_transcript` is asked with the
+/// tiny protobuf that names the video (field 1, its length, the id), and its cue
+/// renderers answer with a start and a line each.
+pub async fn captions(api: &Api, video_id: &str) -> Vec<crate::lyrics::Lyrics> {
+    if video_id.len() != 11 || !video_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return vec![];
+    }
+    let mut protobuf = vec![0x0au8, video_id.len() as u8];
+    protobuf.extend_from_slice(video_id.as_bytes());
+    use base64::Engine;
+    let params = base64::engine::general_purpose::STANDARD.encode(&protobuf);
+    let Ok(v) = api.call("get_transcript", json!({ "params": params }), false).await else {
+        return vec![];
+    };
+    let mut cues: Vec<&Value> = Vec::new();
+    collect_objects(&v, "transcriptSegmentRenderer", &mut cues);
+    collect_objects(&v, "transcriptCueRenderer", &mut cues);
+    let mut lines: Vec<crate::lyrics::Line> = cues
+        .into_iter()
+        .filter_map(|cue| {
+            let start = number_in(&cue["startMs"]).or_else(|| number_in(&cue["startOffsetMs"]))?;
+            let text = inner_text(&cue["cue"]).or_else(|| inner_text(&cue["snippet"])).unwrap_or_default();
+            let text = text.trim_matches(|c: char| c.is_whitespace() || c == '♪' || c == '♫').trim().to_owned();
+            (start >= 0 && !text.is_empty()).then(|| crate::lyrics::Line { start: start as i32, text, ..Default::default() })
+        })
+        .collect();
+    lines.sort_by_key(|l| l.start);
+    crate::lyrics::Lyrics::new(crate::lyrics::Provider::YoutubeCaptions, lines, None, vec![]).into_iter().collect()
+}
+
+/// Plain lyrics from the Lyrics tab of the exact playing video: the watch page's
+/// Lyrics tab names its own browse (an `MPADb…` one), whose description shelf is
+/// the lyrics.
+pub async fn lyrics_tab(api: &Api, video_id: &str) -> Vec<crate::lyrics::Lyrics> {
+    let Ok(v) = api.call("next", json!({ "videoId": video_id }), false).await else {
+        return vec![];
+    };
+    let Some(browse_id) = lyrics_browse(&v) else { return vec![] };
+    let Ok(page) = api.call("browse", json!({ "browseId": browse_id }), false).await else {
+        return vec![];
+    };
+    let Some(shelf) = find_key(&page, "musicDescriptionShelfRenderer") else { return vec![] };
+    let text = text(&shelf["description"]).unwrap_or_default();
+    if text.trim().is_empty() {
+        return vec![];
+    }
+    let lines = crate::lyrics::parse_plain(&text).into_iter().filter(|l| !l.text.trim().is_empty()).collect();
+    crate::lyrics::Lyrics::new(crate::lyrics::Provider::YoutubePlain, lines, None, vec![]).into_iter().collect()
+}
+
+/// The Lyrics tab's browse: the tab titled so carries it; failing a named tab, any
+/// browse whose id starts `MPADb` (the lyrics panel's prefix, unique to it).
+fn lyrics_browse(v: &Value) -> Option<String> {
+    let tabs = &find_key(v, "watchNextTabbedResultsRenderer")?["tabs"];
+    for tab in arr(tabs) {
+        let t = &tab["tabRenderer"];
+        if t["title"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("lyrics")) {
+            if let Some(id) = t["endpoint"]["browseEndpoint"]["browseId"].as_str().filter(|s| !s.is_empty()) {
+                return Some(id.to_owned());
+            }
+        }
+    }
+    browse_starting_with(v, "MPADb")
+}
+
+/// The first `browseId` anywhere in `v` that starts with `prefix`.
+fn browse_starting_with(v: &Value, prefix: &str) -> Option<String> {
+    match v {
+        Value::Object(m) => {
+            for (key, x) in m {
+                if key == "browseId" && x.as_str().is_some_and(|s| s.starts_with(prefix)) {
+                    return x.as_str().map(str::to_owned);
+                }
+                if let Some(found) = browse_starting_with(x, prefix) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(a) => a.iter().find_map(|x| browse_starting_with(x, prefix)),
+        _ => None,
+    }
+}
+
+/// Every object anywhere in `v` stored under `key`, depth first (`objectsNamed`).
+fn collect_objects<'a>(v: &'a Value, key: &str, out: &mut Vec<&'a Value>) {
+    match v {
+        Value::Array(a) => a.iter().for_each(|x| collect_objects(x, key, out)),
+        Value::Object(m) => {
+            for (k, x) in m {
+                if k == key && x.is_object() {
+                    out.push(x);
+                }
+                collect_objects(x, key, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A number from a JSON string or number, however YouTube writes it.
+fn number_in(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// The text of a YouTube text node: a string, `simpleText`, `text`, or its runs.
+fn inner_text(v: &Value) -> Option<String> {
+    if v.is_null() {
+        return None;
+    }
+    if let Some(s) = v.as_str() {
+        return (!s.trim().is_empty()).then(|| s.to_owned());
+    }
+    for key in ["simpleText", "text"] {
+        if let Some(s) = v[key].as_str().filter(|s| !s.trim().is_empty()) {
+            return Some(s.to_owned());
+        }
+    }
+    if let Some(runs) = v["runs"].as_array() {
+        let joined: String = runs.iter().filter_map(|r| r["text"].as_str()).collect();
+        return (!joined.trim().is_empty()).then_some(joined);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
