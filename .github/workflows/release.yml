@@ -57,6 +57,7 @@ jobs:
           Copy-Item installer\Output\bitchord-setup-$v.exe "dist\BitChord-$v-windows-x64-setup.exe"
           New-Item -ItemType Directory -Force portable\BitChord | Out-Null
           Copy-Item target\release\bitchord.exe portable\BitChord\
+          if (Test-Path target\release\WebView2Loader.dll) { Copy-Item target\release\WebView2Loader.dll portable\BitChord\ }
           Copy-Item installer\portable.txt portable\BitChord\
           Copy-Item README.md, LICENSE portable\BitChord\
           Compress-Archive -Path portable\BitChord -DestinationPath "dist\BitChord-$v-windows-x64-portable.zip" -Force

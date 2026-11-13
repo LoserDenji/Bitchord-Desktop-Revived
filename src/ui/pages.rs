@@ -1520,7 +1520,7 @@ fn settings_account(app: &mut App, ui: &mut Ui) {
             });
         }
     });
-    if busy {
+    if busy && filter_show(ui, "finish signing in in the window that opened") {
         ui.add_space(6.0);
         ui.label(RichText::new("Finish signing in in the window that opened.").font(theme::regular(12.5)).color(theme::text_dim()));
     }
@@ -1766,6 +1766,10 @@ fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
     let mut remove = None;
     for i in 0..app.hires_sources.len() {
         let link = app.hires_sources[i].trim().to_owned();
+        // One addon: switch, field, Test and × are one unit in a search.
+        if !filter_show(ui, &format!("Bitchord addon {link} test")) {
+            continue;
+        }
         ui.horizontal(|ui| {
             let mut on = app.hires_enabled.get(i).copied().unwrap_or(true);
             if toggle(ui, &mut on, "Addon on").changed() {
@@ -1802,33 +1806,35 @@ fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
         app.backend.set_hires_source(&live_sources(app));
     }
     if app.hires_adding {
-        let resp = super::text_field(ui, "", &mut app.hires_draft, false, "https://your-addon.example");
-        if app.hires_focus {
-            resp.request_focus();
-            app.hires_focus = false;
-        }
-        // Test before the link is even saved: finding out here beats finding out the
-        // first time a song would have used it (the editor's Test beside Save).
-        let typed = app.hires_draft.trim().to_owned();
-        ui.horizontal(|ui| {
-            hires_test_button(app, ui, &typed);
-            if typed.is_empty() {
-                ui.label(RichText::new("Enter a link, then Test it or press Enter to add it.").font(theme::regular(12.5)).color(theme::text_faint()));
+        if filter_show(ui, "Bitchord addon add a source link test") {
+            let resp = super::text_field(ui, "", &mut app.hires_draft, false, "https://your-addon.example");
+            if app.hires_focus {
+                resp.request_focus();
+                app.hires_focus = false;
             }
-        });
-        hires_test_line(app, ui, &typed);
-        if resp.lost_focus() {
-            let link = app.hires_draft.trim().to_owned();
-            if !link.is_empty() && !app.hires_sources.iter().any(|s| s.trim() == link) {
-                app.hires_sources.push(link);
-                app.hires_enabled.push(true);
-                app.backend.set_hires_source(&live_sources(app));
+            // Test before the link is even saved: finding out here beats finding out the
+            // first time a song would have used it (the editor's Test beside Save).
+            let typed = app.hires_draft.trim().to_owned();
+            ui.horizontal(|ui| {
+                hires_test_button(app, ui, &typed);
+                if typed.is_empty() {
+                    ui.label(RichText::new("Enter a link, then Test it or press Enter to add it.").font(theme::regular(12.5)).color(theme::text_faint()));
+                }
+            });
+            hires_test_line(app, ui, &typed);
+            if resp.lost_focus() {
+                let link = app.hires_draft.trim().to_owned();
+                if !link.is_empty() && !app.hires_sources.iter().any(|s| s.trim() == link) {
+                    app.hires_sources.push(link);
+                    app.hires_enabled.push(true);
+                    app.backend.set_hires_source(&live_sources(app));
+                }
+                app.hires_draft.clear();
+                app.hires_adding = false;
             }
-            app.hires_draft.clear();
-            app.hires_adding = false;
+            ui.add_space(6.0);
         }
-        ui.add_space(6.0);
-    } else if pill(ui, "+  Add a source", None, false).clicked() {
+    } else if filter_show(ui, "Bitchord addon add a source") && pill(ui, "+  Add a source", None, false).clicked() {
         app.hires_adding = true;
         app.hires_focus = true;
         app.hires_draft.clear();
@@ -1951,14 +1957,17 @@ fn source_blurb(kind: crate::backend::MusicSource) -> &'static str {
 /// wins for a song is the priority list's say.
 fn settings_provider_add(app: &mut App, ui: &mut Ui) {
     settings_section(ui, "Add a custom provider", None, None, |ui| {
-        setting_row(ui, "One link, both formats", Some("Paste an addon server's link and BitChord tries it as a Bitchord addon and as a Monochrome server at the same time, adding it to the formats that answer. Each verdict tells you whether search really works there."), |ui| {
+        let desc = "Paste an addon server's link and BitChord tries it as a Bitchord addon and as a Monochrome server at the same time, adding it to the formats that answer. Each verdict tells you whether search really works there.";
+        let adding_text = format!("One link, both formats {desc}");
+        setting_row(ui, "One link, both formats", Some(desc), |ui| {
             if !app.provider_adding && pill(ui, "+  Add a custom provider", None, false).clicked() {
                 app.provider_adding = true;
                 app.provider_focus = true;
                 app.provider_draft.clear();
             }
         });
-        if app.provider_adding {
+        // The field and its Add are that row's unit: they show exactly when it does.
+        if app.provider_adding && filter_hit(&adding_text) {
             ui.add_space(6.0);
             let resp = super::text_field(ui, "", &mut app.provider_draft, false, "https://your-provider.example");
             if app.provider_focus {
@@ -2002,7 +2011,10 @@ fn settings_provider_add(app: &mut App, ui: &mut Ui) {
             provider_verdicts(app, ui, &typed, &state);
             ui.add_space(6.0);
         }
-        if !app.provider_adding && let Some(v) = &app.provider_last {
+        if !app.provider_adding && let Some(v) = &app.provider_last
+            && filter_hit("Add a custom provider verdict")
+            && FILTER.with_borrow(|f| f.in_section > 0)
+        {
             ui.add_space(6.0);
             if let Some((good, msg)) = &v.bitchord {
                 ui.label(RichText::new(verdict_line("Bitchord addon", *good, msg)).font(theme::regular(12.5)).color(if *good { theme::GREEN } else { theme::RED }));
@@ -2091,26 +2103,29 @@ fn settings_saavn(app: &mut App, ui: &mut Ui) {
             });
         });
         divider(ui);
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            let slot = app.saavn_test.clone();
-            let state = slot.lock().unwrap().clone();
-            if matches!(state, Some(None)) {
-                ui.add_space(ui.available_width().min(76.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spinner();
-                });
-            } else if pill(ui, "Test", None, false).clicked() {
-                *slot.lock().unwrap() = Some(None);
-                let (slot, http) = (slot, app.backend.http());
-                app.backend.spawn(async move {
-                    let (good, msg) = crate::providers::probe_saavn(&http).await;
-                    *slot.lock().unwrap() = Some(Some((good, msg)));
-                });
-            }
-        });
-        test_line(ui, &app.saavn_test.lock().unwrap().clone());
-        ui.add_space(10.0);
+        // JioSaavn's own check is its own unit: searching "test" finds it alone.
+        if filter_show(ui, "JioSaavn test connection") {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let slot = app.saavn_test.clone();
+                let state = slot.lock().unwrap().clone();
+                if matches!(state, Some(None)) {
+                    ui.add_space(ui.available_width().min(76.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spinner();
+                    });
+                } else if pill(ui, "Test", None, false).clicked() {
+                    *slot.lock().unwrap() = Some(None);
+                    let (slot, http) = (slot, app.backend.http());
+                    app.backend.spawn(async move {
+                        let (good, msg) = crate::providers::probe_saavn(&http).await;
+                        *slot.lock().unwrap() = Some(Some((good, msg)));
+                    });
+                }
+            });
+            test_line(ui, &app.saavn_test.lock().unwrap().clone());
+            ui.add_space(10.0);
+        }
         divider(ui);
         setting_row(ui, "Prefer Dolby Atmos", Some("Ask the addons for a Dolby Atmos copy when they offer one. Falls back to the best stereo copy when the stream's codec can't be decoded."), |ui| {
             if toggle(ui, &mut app.prefer_atmos, "Prefer Dolby Atmos").changed() {
@@ -2130,6 +2145,10 @@ fn mono_servers_editor(app: &mut App, ui: &mut Ui) {
     let mut remove = None;
     for i in 0..app.mono_servers.len() {
         let link = app.mono_servers[i].trim().to_owned();
+        // One server: field, Test and × are one unit in a search.
+        if !filter_show(ui, &format!("Monochrome server {link} test")) {
+            continue;
+        }
         ui.horizontal(|ui| {
             let field_w = (ui.available_width() - 110.0).max(120.0);
             ui.allocate_ui_with_layout(vec2(field_w, 42.0), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -2303,53 +2322,62 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
             divider(ui);
         }
         // Source order: the first enabled source with lyrics for a song is shown; the
-        // lyrics toolbar can pick another for that song.
-        setting_row(ui, "Lyrics sources", Some("Tried in this order. Switch one off to skip it; the toolbar under the lyrics picks a different one for a single song."), |_| {});
-        let n = app.lyric_prefs.order.len();
-        let mut swap: Option<(usize, usize)> = None;
-        for i in 0..n {
-            let (p, on) = app.lyric_prefs.order[i];
-            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
-            let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            let mut enabled = on;
-            if toggle(&mut row, &mut enabled, p.name()).changed() {
-                app.lyric_prefs.order[i].1 = enabled;
+        // lyrics toolbar can pick another for that song. The row and the order rows
+        // with their arrows are one unit in a search.
+        let desc = "Tried in this order. Switch one off to skip it; the toolbar under the lyrics picks a different one for a single song.";
+        let names = app.lyric_prefs.order.iter().map(|(p, _)| p.name()).collect::<Vec<_>>().join(" ");
+        if filter_show(ui, &format!("Lyrics sources {desc} {names} order arrows")) {
+            setting_row_shown(ui, "Lyrics sources", Some(desc), |_| {});
+            let n = app.lyric_prefs.order.len();
+            let mut swap: Option<(usize, usize)> = None;
+            for i in 0..n {
+                let (p, on) = app.lyric_prefs.order[i];
+                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
+                let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                let mut enabled = on;
+                if toggle(&mut row, &mut enabled, p.name()).changed() {
+                    app.lyric_prefs.order[i].1 = enabled;
+                }
+                row.add_space(10.0);
+                let kind = match p.sync() {
+                    crate::lyrics::SyncKind::Syllable => "syllable",
+                    crate::lyrics::SyncKind::Word => "word",
+                    crate::lyrics::SyncKind::Line => "line",
+                    crate::lyrics::SyncKind::Unsynced => "plain",
+                };
+                row.label(egui::RichText::new(p.name()).font(theme::semibold(13.5)).color(if on { theme::text() } else { theme::text_dim() }));
+                row.label(egui::RichText::new(kind).font(theme::regular(12.0)).color(theme::text_dim()));
+                row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(i + 1 < n, egui::Button::new("↓").min_size(vec2(28.0, 24.0))).on_hover_text("Lower").clicked() {
+                        swap = Some((i, i + 1));
+                    }
+                    if ui.add_enabled(i > 0, egui::Button::new("↑").min_size(vec2(28.0, 24.0))).on_hover_text("Higher").clicked() {
+                        swap = Some((i, i - 1));
+                    }
+                });
             }
-            row.add_space(10.0);
-            let kind = match p.sync() {
-                crate::lyrics::SyncKind::Syllable => "syllable",
-                crate::lyrics::SyncKind::Word => "word",
-                crate::lyrics::SyncKind::Line => "line",
-                crate::lyrics::SyncKind::Unsynced => "plain",
-            };
-            row.label(egui::RichText::new(p.name()).font(theme::semibold(13.5)).color(if on { theme::text() } else { theme::text_dim() }));
-            row.label(egui::RichText::new(kind).font(theme::regular(12.0)).color(theme::text_dim()));
-            row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(i + 1 < n, egui::Button::new("↓").min_size(vec2(28.0, 24.0))).on_hover_text("Lower").clicked() {
-                    swap = Some((i, i + 1));
-                }
-                if ui.add_enabled(i > 0, egui::Button::new("↑").min_size(vec2(28.0, 24.0))).on_hover_text("Higher").clicked() {
-                    swap = Some((i, i - 1));
-                }
-            });
+            if let Some((a, b)) = swap {
+                app.lyric_prefs.order.swap(a, b);
+            }
+            ui.add_space(6.0);
         }
-        if let Some((a, b)) = swap {
-            app.lyric_prefs.order.swap(a, b);
-        }
-        ui.add_space(6.0);
     });
 }
 
 /// Settings › Artist pages: the listener's own signature service.
 fn settings_artists(app: &mut App, ui: &mut Ui) {
     settings_section(ui, "Artist pages", None, None, |ui| {
-        setting_row(ui, "Signature service", Some("A link to your own signature API. Artists get their handwritten signature, with “Signed by …” above it — beside About when Apple also letters them a wordmark; without a signature, their name is set in type."), |_| {});
-        divider(ui);
-        ui.add_space(12.0);
-        if super::text_field(ui, "Link", &mut app.signature_api, false, "https://your-signature-service.example").changed() {
-            app.signature_reset();
+        // The row and its link field are one unit in a search.
+        let desc = "A link to your own signature API. Artists get their handwritten signature, with “Signed by …” above it — beside About when Apple also letters them a wordmark; without a signature, their name is set in type.";
+        if filter_show(ui, &format!("Signature service {desc} link")) {
+            setting_row_shown(ui, "Signature service", Some(desc), |_| {});
+            divider(ui);
+            ui.add_space(12.0);
+            if super::text_field(ui, "Link", &mut app.signature_api, false, "https://your-signature-service.example").changed() {
+                app.signature_reset();
+            }
+            ui.add_space(12.0);
         }
-        ui.add_space(12.0);
     });
 }
 
@@ -2570,31 +2598,36 @@ fn network(app: &mut App, ui: &mut Ui) {
         }
         Setting::Custom(_) => {
             divider(ui);
-            ui.add_space(12.0);
-            super::text_field(ui, "Address", &mut app.proxy_url, false, "http://127.0.0.1:8080 or socks5://user:pass@host:1080");
-            ui.add_space(10.0);
-            let custom = Setting::Custom(app.proxy_url.trim().to_owned());
-            let saved = app.proxy_saved == custom;
-            let mut save = false;
-            ui.horizontal(|ui| {
-                save = pill(ui, if saved { "Saved" } else { "Save" }, None, !saved).clicked() && !saved;
-                ui.add_space(8.0);
-                ui.label(RichText::new(format!("A password in the address is kept in {}.", super::secret_store())).font(theme::regular(12.5)).color(theme::text_dim()));
-            });
-            if save {
-                match proxy::save(app.backend.data_dir(), &custom) {
-                    Ok(()) => {
-                        app.proxy_saved = custom;
-                        app.proxy_error = None;
+            // The address, its Save and the note are the Proxy row's unit in a search.
+            if filter_show(ui, "Proxy custom address save password secret store") {
+                ui.add_space(12.0);
+                super::text_field(ui, "Address", &mut app.proxy_url, false, "http://127.0.0.1:8080 or socks5://user:pass@host:1080");
+                ui.add_space(10.0);
+                let custom = Setting::Custom(app.proxy_url.trim().to_owned());
+                let saved = app.proxy_saved == custom;
+                let mut save = false;
+                ui.horizontal(|ui| {
+                    save = pill(ui, if saved { "Saved" } else { "Save" }, None, !saved).clicked() && !saved;
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(format!("A password in the address is kept in {}.", super::secret_store())).font(theme::regular(12.5)).color(theme::text_dim()));
+                });
+                if save {
+                    match proxy::save(app.backend.data_dir(), &custom) {
+                        Ok(()) => {
+                            app.proxy_saved = custom;
+                            app.proxy_error = None;
+                        }
+                        Err(e) => app.proxy_error = Some(format!("{e:#}")),
                     }
-                    Err(e) => app.proxy_error = Some(format!("{e:#}")),
                 }
+                ui.add_space(12.0);
             }
-            ui.add_space(12.0);
         }
         Setting::Off => {}
     }
-    if let Some(e) = &app.proxy_error {
+    if let Some(e) = &app.proxy_error
+        && filter_show(ui, "proxy error didn't connect save")
+    {
         ui.label(RichText::new(e).font(theme::regular(12.5)).color(theme::RED));
         ui.add_space(8.0);
     }
@@ -2852,6 +2885,12 @@ pub(super) fn setting_row(ui: &mut Ui, title: &str, desc: Option<&str>, control:
     if !filter_show(ui, &format!("{title} {}", desc.unwrap_or_default())) {
         return;
     }
+    setting_row_shown(ui, title, desc, control);
+}
+
+/// The row itself, without the filter check: for a block that's gated as one unit — a row
+/// and the widgets that belong to it show together or not at all.
+fn setting_row_shown(ui: &mut Ui, title: &str, desc: Option<&str>, control: impl FnOnce(&mut Ui)) {
     let w = ui.available_width();
     let text_w = (w - 230.0).max(200.0);
     let title_g = widgets::galley(ui, title, theme::semibold(14.5), theme::text(), text_w);

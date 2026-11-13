@@ -689,7 +689,15 @@ impl Iterator for PcmSource {
 }
 
 impl rodio::Source for PcmSource {
-    fn current_span_len(&self) -> Option<usize> { None }
+    /// A finite span, as rodio's own decoders give per decoded packet. The resampler
+    /// around the player's queue reads the song's rate when a span ends, and a `None`
+    /// here freezes it: every song after a decoded-DASH one would then be converted
+    /// at this song's rate — a 44.1 kHz song after 48 kHz PCM plays 9 % fast, a
+    /// 96 kHz one an octave low.
+    fn current_span_len(&self) -> Option<usize> {
+        let ch = self.channels.max(1) as usize;
+        Some((4096 / ch) * ch)
+    }
     fn channels(&self) -> rodio::ChannelCount { std::num::NonZeroU16::new(self.channels).unwrap_or(std::num::NonZeroU16::MIN) }
     fn sample_rate(&self) -> rodio::SampleRate { std::num::NonZeroU32::new(self.rate).unwrap_or(std::num::NonZeroU32::MIN) }
     fn total_duration(&self) -> Option<Duration> { self.duration }
