@@ -18,16 +18,28 @@ const TRAY_REREGISTER: Duration = Duration::from_secs(15);
 /// How many frames a show is re-asserted over, for shells that drop the first one.
 const SHOW_ASSERTS: u8 = 8;
 
+/// The Discord sign-in window's outcome, handed over from its thread.
+static LINK_RESULT: std::sync::Mutex<Option<Result<(String, Option<crate::discord_link::User>), String>>> = std::sync::Mutex::new(None);
+
 impl App {
     pub(super) fn set_discord_enabled(&mut self, enabled: bool) {
         self.discord_enabled = enabled;
         if enabled {
-            if self.discord.is_none() {
+            // A linked account publishes presence through the account's own gateway;
+            // without one, the plain IPC client (the app id's card) does it.
+            if self.discord_link_token.is_some() {
+                if self.discord_link.is_none() {
+                    self.discord_link = Some(Arc::new(crate::discord_link::Service::new(&self.backend)));
+                }
+            } else if self.discord.is_none() {
                 self.discord = crate::discord::Discord::spawn();
             }
         } else {
             if let Some(discord) = self.discord.take() {
                 discord.set(None);
+            }
+            if let Some(link) = self.discord_link.take() {
+                link.shutdown();
             }
             self.discord_sent = None;
         }
@@ -36,7 +48,20 @@ impl App {
     /// Mirror playback into Discord. Cheap enough to run every frame: it only sends on a
     /// new song, play/pause, a seek, or a newly learned duration.
     pub(super) fn sync_discord(&mut self) {
-        let Some(d) = &self.discord else { return };
+        if !self.discord_enabled {
+            return;
+        }
+        // A saved link comes back as a service on the first frame; the plain IPC
+        // one stays for a listener who never linked Discord.
+        if self.discord_link.is_none() && self.discord_link_token.is_some() {
+            self.discord_link = Some(Arc::new(crate::discord_link::Service::new(&self.backend)));
+        }
+        // The linked account's card goes through the account's own gateway; the plain
+        // IPC one stays for a listener who never linked Discord.
+        let linked = self.discord_link.is_some() && self.discord_link_token.is_some();
+        if !linked && self.discord.is_none() {
+            return;
+        }
         let track = self.playing_track().filter(|_| self.playing() && !self.buffering);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
         let start_ms = now - self.audio.status.position().as_millis() as i64;
@@ -59,8 +84,69 @@ impl App {
             start_ms,
             end_ms: (dur > 0).then_some(start_ms + dur),
         });
-        d.set(want.clone());
+        if linked {
+            let link = self.discord_link.as_ref().expect("checked above").clone();
+            let token = self.discord_link_token.clone().expect("checked above");
+            link.set_presence(token, want.clone(), self.discord_options.clone(), 1.0);
+        } else if let Some(d) = &self.discord {
+            d.set(want.clone());
+        }
         self.discord_sent = want;
+    }
+
+    /// Connect Discord: the sign-in window opens discord.com; the token it hides
+    /// behind a fresh iframe is captured and filed in the vault, then the account is
+    /// asked who it is (for the row's name and picture).
+    pub(super) fn link_discord(&mut self) {
+        if self.discord_link_busy {
+            return;
+        }
+        self.discord_link_busy = true;
+        let profile = self.backend.data_dir().join("webview-discord");
+        let backend = self.backend.clone();
+        let done = move |outcome| {
+            backend.spawn(async move {
+                match outcome {
+                    crate::login::Outcome::Token(token) => {
+                        if let Err(e) = crate::vault::set("discord token", &backend.data_dir(), token.as_bytes()) {
+                            log::warn!("saving the Discord sign-in: {e}");
+                        }
+                        let service = crate::discord_link::Service::new(&backend);
+                        let user = service.user_info(&token).await.ok();
+                        *LINK_RESULT.lock().unwrap() = Some(Ok((token, user)));
+                    }
+                    crate::login::Outcome::Cancelled => {}
+                    crate::login::Outcome::Failed(e) => {
+                        *LINK_RESULT.lock().unwrap() = Some(Err(e));
+                    }
+                    crate::login::Outcome::Cookie(_) => {}
+                }
+                backend.wake();
+            });
+        };
+        crate::login::spawn(crate::login::Site::Discord, profile, done);
+    }
+
+    /// The sign-in window's outcome, if one has landed since last asked.
+    pub(super) fn take_discord_link_result(&mut self) -> Option<Result<(String, Option<crate::discord_link::User>), String>> {
+        let r = LINK_RESULT.lock().unwrap().take()?;
+        self.discord_link_busy = false;
+        Some(r)
+    }
+
+    /// Disconnect the linked account: the gateway goes away and the token is deleted.
+    pub(super) fn unlink_discord(&mut self) {
+        if let Some(link) = self.discord_link.take() {
+            link.shutdown();
+        }
+        crate::vault::delete("discord token", &self.backend.data_dir());
+        self.discord_link_token = None;
+        self.discord_link_user = None;
+        self.discord_sent = None;
+        // Fall back to the plain IPC card while presence stays on.
+        if self.discord_enabled && self.discord.is_none() {
+            self.discord = crate::discord::Discord::spawn();
+        }
     }
 
     /// Tell Last.fm what's playing, and scrobble it once it has played half its length

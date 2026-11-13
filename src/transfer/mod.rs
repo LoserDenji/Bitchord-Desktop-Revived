@@ -36,6 +36,11 @@ const SAVE_EVERY: Duration = Duration::from_secs(5);
 /// The credential the Spotify sign-in (`sp_dc` cookie) is saved under.
 const VAULT: &str = "spotify sp_dc";
 
+/// The saved Spotify sign-in, if there is one.
+pub(crate) fn vault_cookie(data_dir: &std::path::Path) -> Option<String> {
+    crate::vault::get(VAULT, data_dir).and_then(|b| String::from_utf8(b).ok())
+}
+
 /// How a song came out of the search.
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Search {

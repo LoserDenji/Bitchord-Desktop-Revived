@@ -113,7 +113,7 @@ fn run_value() -> Option<String> {
 
 #[cfg(windows)]
 mod win {
-    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegDeleteValueW, RegSetKeyValueW};
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW};
     use windows::core::{HSTRING, PCWSTR};
 
     use super::{NAME, RUN_KEY, command};
@@ -133,7 +133,7 @@ mod win {
             let data: Vec<u16> = exe.encode_utf16().chain(Some(0)).collect();
             unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, &key, name_ptr, REG_SZ.0, Some(data.as_ptr().cast()), (data.len() * 2) as u32) }.ok()
         } else {
-            unsafe { RegDeleteValueW(HKEY_CURRENT_USER, &key, name_ptr) }.ok()
+            unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, &key, name_ptr) }.ok()
         };
         if let Err(e) = result {
             log::warn!("launch at login (registry): {e}");

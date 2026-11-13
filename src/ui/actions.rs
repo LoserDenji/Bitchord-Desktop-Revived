@@ -20,6 +20,28 @@ impl App {
         } else {
             a
         };
+        // In a locked party, pause is the listener's own; a resume rejoins the party.
+        let a = match super::party::locked_action(self, a) {
+            Some(a) => a,
+            None => return,
+        };
+        // Whatever the party should hear about went through: it goes out shortly,
+        // once the player has settled into the shape the action asked for.
+        if matches!(
+            a,
+            Action::Play(..)
+                | Action::PlayCollection(..)
+                | Action::PlayNext(_)
+                | Action::Enqueue(_)
+                | Action::Radio(_)
+                | Action::QueueJump(_)
+                | Action::QueueRemove(_)
+                | Action::QueueMove(..)
+                | Action::Seek(_)
+                | Action::TogglePlay
+        ) {
+            super::party::on_intent(self);
+        }
         // The first result opened after a search is what Recently Searched remembers.
         self.remember_search_click(&a);
         match a {

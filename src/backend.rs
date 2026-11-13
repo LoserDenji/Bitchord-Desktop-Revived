@@ -68,6 +68,8 @@ pub enum Req {
     AppleArtist { id: String, name: String },
     /// Apple's motion sleeve for a release; `key` is what the UI asked for.
     AppleCover { key: String, album: String, artist: String, title: Option<String> },
+    /// Spotify's canvas for the playing song; `key` is what the UI asked for.
+    SpotifyCanvas { key: String, title: String, artist: String, duration_ms: Option<u64> },
     /// A handwritten signature for `name` from the service at `endpoint`; `key` is
     /// what the UI asked for.
     ArtistSignature { key: String, endpoint: String, name: String },
@@ -131,6 +133,7 @@ impl Req {
             Req::Art { .. } => "Art",
             Req::AppleArtist { .. } => "Apple artist",
             Req::AppleCover { .. } => "Apple artwork",
+            Req::SpotifyCanvas { .. } => "Spotify canvas",
             Req::ArtistSignature { .. } => "Artist signature",
             Req::Radio { .. } => "Loading radio",
             Req::PlayCollection { .. } => "Playback",
@@ -153,7 +156,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::AppleArtist { .. } | Req::AppleCover { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::AppleArtist { .. } | Req::AppleCover { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. })
     }
 }
 
@@ -297,6 +300,8 @@ pub enum Resp {
     AppleArtist { id: String, info: Option<crate::apple::Artwork> },
     /// Apple's motion sleeve for a release; `key` is what the UI asked it for.
     AppleCover { key: String, motion: Option<crate::apple::Motion> },
+    /// Spotify's canvas for the playing song; `key` is what the UI asked it for.
+    SpotifyCanvas { key: String, url: Option<String> },
     /// A signature for an artist, already whitened for the header.
     ArtistSignature { key: String, signature: Option<crate::artist_signature::Signature> },
     Radio { seed: String, tracks: Vec<Track> },
@@ -507,6 +512,11 @@ pub struct Backend {
     /// video and whether the account has Premium (which gets YouTube's own pairs). One
     /// cell each, so a prefetch and the play of the same video share a lookup.
     songs: Arc<std::sync::Mutex<std::collections::HashMap<String, SongCell>>>,
+    /// Spotify's web-player client for canvas lookups, kept for the sign-in it was built
+    /// with: its tokens and query hashes cost several round trips.
+    canvas_spotify: Arc<tokio::sync::Mutex<Option<(String, Arc<crate::transfer::spotify::Client>)>>>,
+    /// Canvas answers per song (`None`: Spotify has none, or nobody's signed in).
+    canvas_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>>,
 }
 
 impl Backend {
@@ -533,7 +543,7 @@ impl Backend {
         {
             log::warn!("proxy relay: {e:#}");
         }
-        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), hires: Default::default(), monochrome: Arc::new(providers::Monochrome::new()), jiosaavn: Arc::new(providers::JioSaavn::new()), sources: Arc::new(std::sync::RwLock::new(DEFAULT_SOURCES.to_vec())), atmos: Default::default(), reverted: Default::default(), songs: Default::default() };
+        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), hires: Default::default(), monochrome: Arc::new(providers::Monochrome::new()), jiosaavn: Arc::new(providers::JioSaavn::new()), sources: Arc::new(std::sync::RwLock::new(DEFAULT_SOURCES.to_vec())), atmos: Default::default(), reverted: Default::default(), songs: Default::default(), canvas_spotify: Default::default(), canvas_cache: Default::default() };
         backend.keep_signed_in();
         Ok(backend)
     }
@@ -621,6 +631,58 @@ impl Backend {
         let _ = tokio::task::spawn_blocking(move || crate::login::forget(&profile)).await;
     }
 
+    /// Spotify's web-player client for canvas lookups, rebuilt when the sign-in changed.
+    async fn canvas_client(&self) -> anyhow::Result<Arc<crate::transfer::spotify::Client>> {
+        let sp_dc = crate::transfer::vault_cookie(&self.data_dir).context("not signed in to Spotify")?;
+        let mut held = self.canvas_spotify.lock().await;
+        if let Some((cookie, client)) = held.as_ref()
+            && *cookie == sp_dc
+        {
+            return Ok(client.clone());
+        }
+        let client = Arc::new(crate::transfer::spotify::Client::connect(Some(&sp_dc), &self.data_dir).await?);
+        *held = Some((sp_dc, client.clone()));
+        Ok(client)
+    }
+
+    /// The playing song's canvas (Spotify's own looping cover video), the way the web
+    /// player looks it up: search the song, take the best match, ask for its clip.
+    /// Answered once per song; asked again only after the cache is dropped.
+    async fn spotify_canvas(&self, key: &str, title: &str, artist: &str, duration_ms: Option<u64>) -> Option<String> {
+        if let Some(hit) = self.canvas_cache.lock().unwrap().get(key) {
+            return hit.clone();
+        }
+        let hit = self.spotify_canvas_inner(title, artist, duration_ms).await;
+        let mut cache = self.canvas_cache.lock().unwrap();
+        if cache.len() > 128 {
+            cache.clear();
+        }
+        cache.insert(key.to_owned(), hit.clone());
+        hit
+    }
+
+    async fn spotify_canvas_inner(&self, title: &str, artist: &str, duration_ms: Option<u64>) -> Option<String> {
+        let client = self.canvas_client().await.inspect_err(|e| log::info!("canvas: {e:#}")).ok()?;
+        let hits = client.search_tracks(&format!("{title} {artist}")).await.inspect_err(|e| log::info!("canvas: {e:#}")).ok()?;
+        let query = crate::providers::Query {
+            title,
+            artists: artist.split(',').map(str::trim).filter(|a| !a.is_empty()).map(str::to_owned).collect(),
+            duration_ms,
+        };
+        let candidates = hits
+            .into_iter()
+            .map(|h| crate::providers::Catalog {
+                id: h.id,
+                title: h.track.name,
+                artist: h.track.artist_line(),
+                album: None,
+                duration_ms: h.track.duration.map(|s| s as u64 * 1000),
+            })
+            .collect();
+        let best = crate::providers::ranked(&query, candidates).into_iter().next()?;
+        client.canvas(&best.id).await.inspect_err(|e| log::info!("canvas: {e:#}")).ok()?
+    }
+
     pub fn api(&self) -> Arc<ytmapi::Api> {
         self.api.clone()
     }
@@ -632,6 +694,12 @@ impl Backend {
 
     pub fn spawn<F: Future<Output = ()> + Send + 'static>(&self, f: F) {
         self.rt.spawn(f);
+    }
+
+    /// Like `spawn`, but hands the task's handle back, so it can be aborted later
+    /// (Discord's idle close, a party leaving).
+    pub fn spawn_handle<F: Future<Output = ()> + Send + 'static>(&self, f: F) -> tokio::task::JoinHandle<()> {
+        self.rt.spawn(f)
     }
 
     pub fn wake(&self) {
@@ -787,6 +855,13 @@ impl Backend {
                         log::debug!("apple: no motion sleeve for '{album}' by '{artist}'");
                     }
                     Resp::AppleCover { key, motion }
+                }
+                Req::SpotifyCanvas { key, title, artist, duration_ms } => {
+                    let url = self.spotify_canvas(&key, &title, &artist, duration_ms).await;
+                    if url.is_none() {
+                        log::debug!("canvas: none for '{title}' by '{artist}'");
+                    }
+                    Resp::SpotifyCanvas { key, url }
                 }
                 Req::ArtistSignature { key, endpoint, name } => {
                     let signature = crate::artist_signature::lookup(&self.http(), &endpoint, &name).await;

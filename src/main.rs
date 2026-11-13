@@ -13,6 +13,7 @@ mod backend;
 mod bidi;
 mod deeplink;
 mod discord;
+mod discord_link;
 mod dash;
 mod downloads;
 mod hires;
@@ -72,6 +73,11 @@ fn main() -> eframe::Result {
             login::child_main(login::Site::Spotify, dir.into());
             return Ok(());
         }
+        if flag == login::DISCORD_FLAG {
+            logging::init_child(&data_dir(), "discord");
+            login::child_main(login::Site::Discord, dir.into());
+            return Ok(());
+        }
         if flag == turnstile::FLAG {
             logging::init_child(&data_dir(), "turnstile");
             turnstile::child_main(dir.into());
@@ -87,8 +93,8 @@ fn main() -> eframe::Result {
     let mut show_requested = false;
     let mut handed = false;
     if claim.busy() {
-        if let Some(code) = deeplink::from_args() {
-            handed = deeplink::forward(&code);
+        if let Some(invite) = deeplink::from_args() {
+            handed = deeplink::forward(&invite.message());
         } else {
             handed = deeplink::forward_show();
         }

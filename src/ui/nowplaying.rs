@@ -300,13 +300,25 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
         }
     } else {
         widgets::paint_cover_xfade_px(ui, egui::Id::unique("np-art"), art, &track.thumbs, radius, 1.0, px);
-        // Apple's motion sleeve, over the still until its first frame arrives.
+        // Apple's motion sleeve over the still until its first frame arrives; where the
+        // release has none, Spotify's canvas for the song (if one exists and the listener
+        // is signed in) plays in its place.
+        let artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| track.artist_line());
         if let Some(album) = track.album.as_ref().map(|a| a.name.clone()).filter(|a| !a.is_empty()) {
-            let artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| track.artist_line());
             app.apple_cover(&album, &artist, Some(&track.title));
-            if let Some(s) = app.apple_sprite(ui.ctx(), &album, &artist, px) {
-                widgets::paint_motion(ui, art, radius, &s);
-            }
+        }
+        let sprite = track
+            .album
+            .as_ref()
+            .map(|a| a.name.clone())
+            .filter(|a| !a.is_empty())
+            .and_then(|album| app.apple_sprite(ui.ctx(), &album, &artist, px))
+            .or_else(|| {
+                app.canvas_cover(&track.id, &track.title, &artist, track.duration.map(|s| s as u64 * 1000));
+                app.canvas_sprite(ui.ctx(), &track.id, px)
+            });
+        if let Some(s) = sprite {
+            widgets::paint_motion(ui, art, radius, &s);
         }
         if cs.brightness < 0.99 {
             ui.painter().rect_filled(art, cr, theme::shade(1.0 - cs.brightness));
@@ -896,7 +908,7 @@ fn quality_mark_aspect(atmos: bool) -> f32 {
 /// The icon as white pixels with its own alpha, so it takes the badge's tint.
 fn quality_icon_texture(ui: &Ui, atmos: bool, mark: bool) -> egui::TextureHandle {
     let ctx = ui.ctx();
-    let id = egui::Id::new(("quality-icon", atmos, mark));
+    let id = egui::Id::unique(("quality-icon", atmos, mark));
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return tex;
     }

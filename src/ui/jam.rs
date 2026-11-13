@@ -134,6 +134,8 @@ pub fn join(app: &mut App, code: &str) {
 
 /// Leave the room (the host ends it for everyone). Playback carries on locally.
 pub fn leave(app: &mut App) {
+    // Only one room kind at a time: a party on the web app's server stands down too.
+    super::party::leave(app);
     if let Some(c) = app.jam.conn.take() {
         if app.jam.is_host() {
             c.end();
@@ -586,7 +588,21 @@ pub fn page(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.set_width(w);
             page_title(ui, "Listen together");
-            if app.jam.active() {
+            // Two room kinds: the relay jam this app started with, and the party
+            // server the web app and the phone share (Listen Together).
+            ui.horizontal(|ui| {
+                if pill(ui, "Jam", None, !app.party_view).clicked() {
+                    app.party_view = false;
+                }
+                ui.add_space(8.0);
+                if pill(ui, "Listen Together", None, app.party_view).clicked() {
+                    app.party_view = true;
+                }
+            });
+            ui.add_space(10.0);
+            if app.party_view {
+                super::party::page(app, ui);
+            } else if app.jam.active() {
                 room(app, ui);
             } else {
                 lobby(app, ui);

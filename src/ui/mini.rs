@@ -497,14 +497,25 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
             icon_at(ui, art.center(), icon::MUSIC, 28.0, theme::text_faint());
         }
     }
-    // Apple's motion sleeve, over the still until its first frame arrives.
-    if let Some(t) = &track
-        && let Some(album) = t.album.as_ref().map(|a| a.name.clone()).filter(|a| !a.is_empty())
-    {
+    // Apple's motion sleeve over the still until its first frame arrives; where the
+    // release has none, the song's Spotify canvas plays in its place.
+    if let Some(t) = &track {
         let artist = t.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| t.artist_line());
         let px = (art.width() * ctx.pixels_per_point()).round().max(256.0) as u32;
-        app.apple_cover(&album, &artist, Some(&t.title));
-        if let Some(s) = app.apple_sprite(&ctx, &album, &artist, px) {
+        let sprite = t
+            .album
+            .as_ref()
+            .map(|a| a.name.clone())
+            .filter(|a| !a.is_empty())
+            .and_then(|album| {
+                app.apple_cover(&album, &artist, Some(&t.title));
+                app.apple_sprite(&ctx, &album, &artist, px)
+            })
+            .or_else(|| {
+                app.canvas_cover(&t.id, &t.title, &artist, t.duration.map(|s| s as u64 * 1000));
+                app.canvas_sprite(&ctx, &t.id, px)
+            });
+        if let Some(s) = sprite {
             widgets::paint_motion(ui, art, theme::thumb_radius() + 1.0, &s);
         }
     }

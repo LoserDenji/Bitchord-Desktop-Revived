@@ -31,9 +31,19 @@ const PAGE: usize = 343;
 const LIBRARY_PAGE: usize = 50;
 const CDN: &str = "https://open.spotifycdn.com/cdn/build/web-player/";
 /// The persisted queries this reads, found in the web player's bundle.
-const OPERATIONS: [&str; 4] = ["fetchPlaylist", "fetchLibraryTracks", "libraryV3", "profileAttributes"];
+const OPERATIONS: [&str; 6] = ["fetchPlaylist", "fetchLibraryTracks", "libraryV3", "profileAttributes", "canvas", "searchTracks"];
 /// Where the query hashes are cached, so a new bundle (several MB) is read once per web-player release.
 const HASH_CACHE: &str = "spotify_queries.json";
+/// The last hashes known to work (the web player's bundle on 2026-10-16; the phone's
+/// constants). The fallback when the live bundle doesn't carry one of the queries.
+const KNOWN_HASHES: [(&str, &str); 6] = [
+    ("fetchPlaylist", "21ea11a6ac75a5f3e01fd365d29c18e0a4a8b7dc09f89bbb5d73910190c6acaf"),
+    ("fetchLibraryTracks", "087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240"),
+    ("libraryV3", "390c78e5b951029bad359785e69b07b536a509c581cbcd0aded5e5067f187455"),
+    ("profileAttributes", "08ffb4730af3746e04a8301396f20875dbbce10c75243803091a9274eacc8ac0"),
+    ("canvas", "575138ab27cd5c1b3e54da54d0a7cc8d85485402de26340c2145f0f6bb5e7a9f"),
+    ("searchTracks", "b02683192a98dde7966b5e6655a79eeb62713eab703eda9902c932818dd52751"),
+];
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Track {
@@ -54,6 +64,13 @@ impl Track {
     pub fn artist_line(&self) -> String {
         self.artists.join(", ")
     }
+}
+
+/// A song found by the web player's own search, with the id its Canvas is asked for.
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub track: Track,
+    pub id: String,
 }
 
 pub struct Playlist {
@@ -172,7 +189,7 @@ impl Client {
     }
 
     fn hash(&self, operation: &str) -> Result<&str> {
-        self.hashes.ops.get(operation).map(String::as_str).ok_or_else(|| anyhow!("couldn't find Spotify's {operation} query"))
+        self.hashes.ops.get(operation).map(String::as_str).or_else(|| KNOWN_HASHES.iter().find(|(op, _)| *op == operation).map(|(_, h)| *h)).ok_or_else(|| anyhow!("couldn't find Spotify's {operation} query"))
     }
 
     /// One persisted GraphQL query, retried on server errors and rate limits.
@@ -232,6 +249,34 @@ impl Client {
             library.insert(0, Entry { source: Source::Liked, name: "Liked Songs".to_owned(), owner: String::new(), count, art: None });
         }
         Ok(Account { name, library })
+    }
+
+    /// Spotify's search, for matching a YouTube song to its Spotify twin
+    /// (SpotifyService.searchTracks): ten hits, scored and picked by the caller.
+    pub async fn search_tracks(&self, query: &str) -> Result<Vec<SearchHit>> {
+        let body = self
+            .query(
+                "searchTracks",
+                json!({
+                    "searchTerm": query,
+                    "offset": 0,
+                    "limit": 10,
+                    "numberOfTopResults": 5,
+                    "includeAudiobooks": false,
+                    "includePreReleases": false,
+                    "includeAuthors": false,
+                }),
+            )
+            .await?;
+        Ok(parse_search_tracks(&body))
+    }
+
+    /// A song's canvas, the short looping clip Spotify shows in place of the cover
+    /// (SpotifyCanvasQuery): a playable mp4, when the song has one. Signed in only —
+    /// anonymous tokens are shown none.
+    pub async fn canvas(&self, track_id: &str) -> Result<Option<String>> {
+        let body = self.query("canvas", json!({ "trackUri": format!("spotify:track:{track_id}") })).await?;
+        Ok(parse_canvas(&body))
     }
 
     async fn web_api_playlists(&self) -> Result<Vec<Entry>> {
@@ -436,6 +481,31 @@ fn split_artists(s: &str) -> Vec<String> {
     s.split([',', ';']).map(str::trim).filter(|a| !a.is_empty()).map(str::to_owned).collect()
 }
 
+/// Search answers put each hit at `tracksV2.items[].item.data`, one shape the shared
+/// `parse_track` already reads; the hit's Spotify id rides along as the `uri`.
+fn parse_search_tracks(root: &Value) -> Vec<SearchHit> {
+    root["data"]["searchV2"]["tracksV2"]["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|entry| {
+                    let data = entry.pointer("/item/data").filter(|d| d.is_object()).unwrap_or(entry);
+                    let id = data["uri"].as_str().and_then(|u| u.strip_prefix("spotify:track:"))?.to_owned();
+                    let track = parse_track(entry)?;
+                    (!id.is_empty()).then(|| SearchHit { track, id })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// SpotifyCanvasQuery.parse: a playable `.mp4`, or none.
+fn parse_canvas(root: &Value) -> Option<String> {
+    let url = root.pointer("/data/trackUnion/canvas/url")?.as_str()?;
+    (url.starts_with("https://") && url.split(['?', '#']).next().is_some_and(|p| p.to_ascii_lowercase().ends_with(".mp4"))).then(|| url.to_owned())
+}
+
 async fn access_token(http: &reqwest::Client, sp_dc: Option<&str>, device_id: &str) -> Result<(String, String)> {
     let (version, secret) = totp_secret(http).await;
     let totp = totp(&secret, SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs());
@@ -636,6 +706,36 @@ mod tests {
     fn id_maps() {
         let js = r#"x={1:"a",2:"b"};y={1:"0123abcd",2:"deadbeef"};"#;
         assert_eq!(chunk_urls(js), vec![format!("{CDN}a.0123abcd.js"), format!("{CDN}b.deadbeef.js")]);
+    }
+
+    #[test]
+    fn reads_search_hits() {
+        let body: Value = serde_json::from_str(
+            r#"{"data":{"searchV2":{"tracksV2":{"items":[
+                {"item":{"data":{"uri":"spotify:track:4uLU6hGCN0BvZ1MQf9SUmu","name":"Brat","__typename":"Track",
+                    "artists":{"items":[{"profile":{"name":"Charli XCX"}}]},
+                    "trackDuration":{"totalMilliseconds":220000},"albumOfTrack":{"coverArt":{"sources":[{"url":"https://i.scdn.co/a.jpg","width":64}]}}}},
+                {"item":{"data":{"uri":"spotify:episode:abc","name":"A podcast"}}}
+            ]}}}}"#,
+        )
+        .unwrap();
+        let hits = parse_search_tracks(&body);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "4uLU6hGCN0BvZ1MQf9SUmu");
+        assert_eq!(hits[0].track.name, "Brat");
+        assert_eq!(hits[0].track.artists, ["Charli XCX"]);
+        assert_eq!(hits[0].track.duration, Some(220));
+    }
+
+    #[test]
+    fn canvases() {
+        let ok: Value = serde_json::from_str(r#"{"data":{"trackUnion":{"canvas":{"url":"https://canvas.scdn.co/v.mp4?token=1"}}}}"#).unwrap();
+        assert_eq!(parse_canvas(&ok).as_deref(), Some("https://canvas.scdn.co/v.mp4?token=1"));
+        let not_mp4: Value = serde_json::from_str(r#"{"data":{"trackUnion":{"canvas":{"url":"https://canvas.scdn.co/v.gif"}}}}"#).unwrap();
+        assert_eq!(parse_canvas(&not_mp4), None);
+        let http: Value = serde_json::from_str(r#"{"data":{"trackUnion":{"canvas":{"url":"http://x/v.mp4"}}}}"#).unwrap();
+        assert_eq!(parse_canvas(&http), None);
+        assert_eq!(parse_canvas(&Value::Null), None);
     }
 
     /// Live: reads a public playlist anonymously (`cargo test -- --ignored spotify_live`).

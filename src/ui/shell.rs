@@ -170,7 +170,7 @@ pub fn sidebar_collapse(app: &App, ctx: &egui::Context) -> f32 {
 /// has collapsed (the logo has faded out by then). `enabled` dims a chevron whose
 /// direction has no pages to go to.
 fn history_button(ui: &mut Ui, rect: Rect, glyph: char, name: &str, enabled: bool) -> bool {
-    let resp = ui.interact(rect, egui::Id::new("sidebar-history").with(name), Sense::click());
+    let resp = ui.interact(rect, egui::Id::unique("sidebar-history").with(name), Sense::click());
     let resp = named(resp, name);
     let resp = if enabled { resp.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
     let h = if enabled { theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15) } else { 0.0 };
@@ -334,7 +334,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 Target::Playlist(id) => app.playlist_order.iter().position(|x| x == id).unwrap_or(usize::MAX),
                 _ => usize::MAX,
             });
-            let drag_key = egui::Id::new("sidebar-pl-drag");
+            let drag_key = egui::Id::unique("sidebar-pl-drag");
             let dragging: Option<String> = ui.data(|d| d.get_temp(drag_key));
             let down = ui.input(|i| i.pointer.any_down());
             let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -717,7 +717,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         // The page scrolls on under this strip: fade it out rather than end it at the
         // player's edge. Clicks in the fade stay with the player, not the rows beneath.
         vgradient(ui.painter(), full, theme::panel(0.0), theme::panel(0.66));
-        ui.interact(full, ui.id().with("player-strip"), Sense::hover());
+        ui.interact(full, ui.scope_id().with("player-strip"), Sense::hover());
     }
     const H: f32 = 56.0;
     let w = (full.width() - 24.0).min(668.0);

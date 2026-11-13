@@ -11,6 +11,7 @@ mod dialogs;
 mod glyphs;
 mod integrations;
 mod jam;
+mod party;
 mod karaoke;
 mod keybinds;
 mod lists;
@@ -320,6 +321,15 @@ pub struct App {
     discord_enabled: bool,
     /// Last state sent to Discord, to send only real changes.
     discord_sent: Option<crate::discord::Presence>,
+    /// The linked Discord account ("Discord via link"): its gateway service, the
+    /// token (kept in the vault), and who the account is, for the settings row.
+    discord_link: Option<Arc<crate::discord_link::Service>>,
+    discord_link_token: Option<String>,
+    discord_link_user: Option<crate::discord_link::User>,
+    /// A Discord sign-in window is up; its outcome lands in between.
+    discord_link_busy: bool,
+    /// How the linked account's card reads (status, buttons, the activity name).
+    discord_options: crate::discord_link::Options,
     /// The Last.fm account scrobbles go to; a sign-in in progress and its outcome.
     lastfm_user: Option<String>,
     lastfm_busy: Arc<AtomicBool>,
@@ -442,6 +452,14 @@ pub struct App {
     /// Releases Apple had nothing for when last asked, and when: asked again after a
     /// while, since a lookup can fail on a network hiccup rather than for good.
     apple_missed: std::collections::HashMap<String, std::time::Instant>,
+    /// Spotify's canvas clip per playing song (`None`: Spotify has none, or nobody's
+    /// signed in), shown when Apple has no sleeve for the song's release.
+    canvas_covers: std::collections::HashMap<String, Option<String>>,
+    /// Songs Spotify had nothing for when last asked, and when.
+    canvas_missed: std::collections::HashMap<String, std::time::Instant>,
+    /// Canvas lookups already in flight.
+    canvas_waiting: std::collections::HashSet<String>,
+
     /// Decoders for the motion sleeves on screen.
     apple_motion: std::collections::HashMap<String, MotionView>,
     /// Apple lookups already in flight.
@@ -589,6 +607,10 @@ pub struct App {
     xfer: transfer::Setup,
     /// Listen together: the room we're in, if any.
     jam: jam::Session,
+    /// Listen Together on the party server (ui/party.rs): the session and whether
+    /// the jam page shows it instead of the relay jam.
+    party: party::Session,
+    party_view: bool,
     signing_in: Arc<AtomicBool>,
     toast: Option<(String, f64)>,
 
@@ -786,6 +808,11 @@ impl App {
             ch,
             media,
             discord: discord_enabled.then(crate::discord::Discord::spawn).flatten(),
+            discord_link: None,
+            discord_link_token: crate::vault::get("discord token", &data_dir).and_then(|b| String::from_utf8(b).ok()),
+            discord_link_user: get("discord_user").and_then(|s| serde_json::from_str(&s).ok()),
+            discord_link_busy: false,
+            discord_options: get("discord_options").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
             discord_enabled,
             discord_sent: None,
             lastfm_user: crate::lastfm::user(),
@@ -902,6 +929,9 @@ impl App {
             apple_artists: Default::default(),
             apple_covers: Default::default(),
             apple_missed: Default::default(),
+            canvas_covers: Default::default(),
+            canvas_missed: Default::default(),
+            canvas_waiting: Default::default(),
             apple_motion: Default::default(),
             apple_waiting: Default::default(),
             signature_api: get("signature_api").unwrap_or_default(),
@@ -984,6 +1014,8 @@ impl App {
             transfer: transfer_handle,
             xfer: Default::default(),
             jam: Default::default(),
+            party: Default::default(),
+            party_view: false,
             toast: None,
             settings_search: String::new(),
             settings_tab: Default::default(),
@@ -1038,6 +1070,8 @@ impl App {
             app.np_open = true;
         }
         app.jam.name = get("jam_name").unwrap_or_default();
+        app.party.nickname = get("party_nickname").unwrap_or_default();
+        app.party.server = get("party_server").unwrap_or_default();
         // Last launch's name, picture and playlists, so they show at once; the account
         // menu and the library replace them when they arrive.
         if app.logged_in
@@ -1251,6 +1285,36 @@ impl App {
         self.motion_sprite(ctx, key, &url, max_width)
     }
 
+    /// The newest frame of the playing song's canvas, started the first time it's seen.
+    /// Apple's sleeve wins where a release has one; this fills the songs whose release
+    /// hasn't. `None` until Spotify has answered (or if it has no clip, or nobody's
+    /// signed in).
+    fn canvas_sprite(&mut self, ctx: &egui::Context, video_id: &str, max_width: u32) -> Option<widgets::MotionSprite> {
+        if !self.animated_covers {
+            return None;
+        }
+        let url = self.canvas_covers.get(video_id)?.clone()?;
+        self.motion_sprite(ctx, format!("canvas\u{1}{video_id}"), &url, max_width)
+    }
+
+    /// Ask Spotify, once, for the playing song's canvas. Signed in to Spotify only: the
+    /// web player shows canvases to nobody else.
+    fn canvas_cover(&mut self, video_id: &str, title: &str, artist: &str, duration_ms: Option<u64>) {
+        if !self.animated_covers || video_id.is_empty() || title.trim().is_empty() {
+            return;
+        }
+        if self.canvas_covers.contains_key(video_id) {
+            return;
+        }
+        if self.canvas_missed.get(video_id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)) {
+            return;
+        }
+        if !self.canvas_waiting.insert(video_id.to_owned()) {
+            return;
+        }
+        self.backend.request(Req::SpotifyCanvas { key: video_id.to_owned(), title: title.to_owned(), artist: artist.to_owned(), duration_ms });
+    }
+
     /// The artist's handwritten signature, from the service in Settings: asked for once
     /// per name, uploaded the frame it arrives. `None` while it's on its way or when
     /// the service has none for them.
@@ -1328,7 +1392,11 @@ impl App {
             if self.apple_motion.len() >= 8 {
                 self.apple_motion.clear();
             }
-            self.apple_motion.insert(key.clone(), MotionView::new(crate::motion::play(ctx, url, max_width), max_width));
+            // Apple's sleeves arrive as an HLS master playlist; Spotify's canvases are
+            // one plain mp4, which decodes through its own download path.
+            let is_mp4 = url.split(['?', '#']).next().is_some_and(|p| p.to_ascii_lowercase().ends_with(".mp4"));
+            let motion = if is_mp4 { crate::motion::play_mp4(ctx, url, max_width) } else { crate::motion::play(ctx, url, max_width) };
+            self.apple_motion.insert(key.clone(), MotionView::new(motion, max_width));
         }
         // The clip's clock follows the music: paused, the sleeve holds still.
         // Read before the borrow of `apple_motion`: `playing` wants all of `self`.
@@ -1414,15 +1482,36 @@ impl eframe::App for App {
         if crate::deeplink::take_show() {
             self.show_window(ctx);
         }
-        for code in crate::deeplink::take() {
+        for invite in crate::deeplink::take() {
             self.show_window(ctx);
-            jam::open_link(self, code);
+            match invite {
+                crate::deeplink::Invite::Jam(code) => jam::open_link(self, code),
+                crate::deeplink::Invite::Party(code, server) => party::open_link(self, code, server),
+            }
         }
         for a in std::mem::take(&mut self.actions) {
             self.apply(a);
         }
         jam::tick(self);
         jam::dev_script(self, ctx, now);
+        party::tick(self, ctx);
+        // The Discord sign-in window landed: file the account, bring the gateway up.
+        if let Some(r) = self.take_discord_link_result() {
+            match r {
+                Ok((token, user)) => {
+                    self.discord_link_token = Some(token);
+                    if user.is_some() {
+                        self.discord_link_user = user;
+                    }
+                    self.set_discord_enabled(self.discord_enabled);
+                    self.toast(match &self.discord_link_user {
+                        Some(u) => format!("Discord connected as {}", u.name),
+                        None => "Discord connected".to_owned(),
+                    });
+                }
+                Err(e) => self.toast(format!("Connecting Discord failed: {e}")),
+            }
+        }
         if self.page_changed < 0.0 {
             self.page_changed = now;
         }
@@ -1697,6 +1786,8 @@ impl eframe::App for App {
         storage.set_string("autoplay", b(self.autoplay));
         storage.set_string("recent_searches", serde_json::to_string(&self.recent_searches).unwrap_or_default());
         storage.set_string("jam_name", self.jam.name.clone());
+        storage.set_string("party_nickname", self.party.nickname.clone());
+        storage.set_string("party_server", self.party.server.clone());
         let cache = self.logged_in.then(|| AccountCache {
             name: self.account_name.clone(),
             avatar: self.account_avatar.clone(),
@@ -1747,6 +1838,8 @@ impl eframe::App for App {
             storage.set_string("last_version", crate::update::current_version());
         }
         storage.set_string("discord_enabled", b(self.discord_enabled));
+        storage.set_string("discord_options", serde_json::to_string(&self.discord_options).unwrap_or_default());
+        storage.set_string("discord_user", self.discord_link_user.as_ref().and_then(|u| serde_json::to_string(u).ok()).unwrap_or_default());
         if dev_var("YTM_APPEARANCE").is_none() {
             storage.set_string("appearance", self.appearance.key().to_owned());
         }

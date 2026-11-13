@@ -23,6 +23,9 @@ pub enum Site {
     Google,
     /// open.spotify.com, for the Spotify transfer.
     Spotify,
+    /// discord.com, for Rich Presence through the linked account (fresh-iframe
+    /// token capture, like ForkChord's agent shim).
+    Discord,
 }
 
 impl Site {
@@ -30,6 +33,7 @@ impl Site {
         match self {
             Site::Google => FLAG,
             Site::Spotify => SPOTIFY_FLAG,
+            Site::Discord => DISCORD_FLAG,
         }
     }
 
@@ -37,6 +41,7 @@ impl Site {
         match self {
             Site::Google => "Sign in to YouTube Music",
             Site::Spotify => "Sign in to Spotify",
+            Site::Discord => "Connect Discord",
         }
     }
 
@@ -44,6 +49,7 @@ impl Site {
         match self {
             Site::Google => "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F",
             Site::Spotify => "https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F",
+            Site::Discord => "https://discord.com/login",
         }
     }
 
@@ -52,6 +58,7 @@ impl Site {
         match self {
             Site::Google => "https://music.youtube.com/",
             Site::Spotify => "https://open.spotify.com/",
+            Site::Discord => "https://discord.com/",
         }
     }
 
@@ -60,6 +67,7 @@ impl Site {
         match self {
             Site::Google => "SAPISID",
             Site::Spotify => "sp_dc",
+            Site::Discord => "",
         }
     }
 }
@@ -67,6 +75,8 @@ impl Site {
 pub enum Outcome {
     /// Google: the `Cookie` header value for youtube.com. Spotify: the `sp_dc` cookie's value.
     Cookie(String),
+    /// Discord: the account token read out of the page (fresh-iframe trick).
+    Token(String),
     Cancelled,
     Failed(String),
 }
@@ -78,6 +88,7 @@ const SAFARI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWe
 /// Command-line flags that make the binary run only a sign-in window.
 pub const FLAG: &str = "--login";
 pub const SPOTIFY_FLAG: &str = "--login-spotify";
+pub const DISCORD_FLAG: &str = "--login-discord";
 
 /// Show the sign-in window in a child process; `done` is called exactly once.
 pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send + 'static) {
@@ -107,6 +118,8 @@ pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send
                     let line = text.lines().last().unwrap_or_default();
                     if let Some(c) = line.strip_prefix("cookie ") {
                         Outcome::Cookie(c.to_owned())
+                    } else if let Some(t) = line.strip_prefix("discord ") {
+                        Outcome::Token(t.to_owned())
                     } else if let Some(e) = line.strip_prefix("failed ") {
                         Outcome::Failed(e.to_owned())
                     } else if line == "cancelled" {
@@ -124,6 +137,7 @@ pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send
 pub fn child_main(site: Site, profile_dir: PathBuf) {
     match run(site, profile_dir) {
         Ok(Outcome::Cookie(c)) => println!("cookie {c}"),
+        Ok(Outcome::Token(t)) => println!("discord {t}"),
         Ok(Outcome::Cancelled) => println!("cancelled"),
         Ok(Outcome::Failed(e)) => println!("failed {e}"),
         Err(e) => println!("failed {e:#}"),
@@ -209,6 +223,9 @@ fn store_id(profile_dir: &std::path::Path) -> [u8; 16] {
 }
 
 fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
+    if matches!(site, Site::Discord) {
+        return run_discord(site, profile_dir);
+    }
     let mut event_loop = EventLoopBuilder::<()>::with_user_event().build();
 
     let window = WindowBuilder::new()
@@ -297,6 +314,53 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                             *flow = ControlFlow::Exit;
                         }
                     }
+                }
+            }
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *flow = ControlFlow::Exit,
+            _ => {}
+        }
+    });
+    drop(webview);
+    Ok(outcome)
+}
+
+/// The Discord window: there's no cookie to catch — the account token hides behind a
+/// fresh same-origin iframe once the app has booted (Discord takes `localStorage`
+/// away from its own window), so the page is quietly asked for it every two seconds
+/// until it's there, as ForkChord's agent shim does.
+fn run_discord(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
+    let mut event_loop = EventLoopBuilder::<()>::with_user_event().build();
+    let window = WindowBuilder::new()
+        .with_title(site.title())
+        .with_inner_size(tao::dpi::LogicalSize::new(480.0, 720.0))
+        .build(&event_loop)?;
+    #[cfg(target_os = "macos")]
+    let store = store_id(&profile_dir);
+    let mut context = WebContext::new(Some(profile_dir));
+    let builder = WebViewBuilder::new_with_web_context(&mut context);
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_data_store_identifier(store);
+    let webview = crate::proxy::webview(builder, false).with_url(site.start()).build_in(&window)?;
+    // DiscordLoginScreen.TOKEN_SNIPPET: the value is the JSON string with its quotes.
+    let script = concat!(
+        "(function(){try{var f=document.createElement('iframe');f.style.display='none';",
+        "(document.body||document.documentElement).appendChild(f);",
+        "var t=f.contentWindow.localStorage.getItem('token');f.remove();return t||'';}catch(e){return '';}})()"
+    );
+    let mut outcome = Outcome::Cancelled;
+    event_loop.run_return(|event, _, flow| {
+        *flow = ControlFlow::Wait;
+        match event {
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) | Event::NewEvents(StartCause::Poll) => {
+                let read = webview.evaluate_script(script).unwrap_or_default();
+                let token = read.trim().trim_matches('"').to_owned();
+                // A real token is long; short answers are the page not signed in yet,
+                // or an engine that didn't return the string.
+                if token.len() > 20 && token.bytes().all(|b| b.is_ascii_graphic()) {
+                    outcome = Outcome::Token(token);
+                    *flow = ControlFlow::Exit;
+                } else {
+                    *flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_secs(2));
                 }
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *flow = ControlFlow::Exit,

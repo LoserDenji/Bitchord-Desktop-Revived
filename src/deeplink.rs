@@ -48,9 +48,37 @@ impl Claim {
     }
 }
 
-/// The room code in a launch argument, if it is a jam link:
-/// `ytm-rs://jam/CODE[/]` (any case) or the https share link with `?c=CODE`.
-pub fn parse(arg: &str) -> Option<String> {
+/// What a launch argument (or a hand-off message) asked for: a relay jam room, or
+/// a Listen Together party (with the custom server its invite names).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Invite {
+    Jam(String),
+    Party(String, Option<String>),
+}
+
+impl Invite {
+    /// Over the hand-off channel: a plain code, or a `party:CODE[|server]` line.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Jam(code) => code.clone(),
+            Self::Party(code, None) => format!("party:{code}"),
+            Self::Party(code, Some(server)) => format!("party:{code}|{server}"),
+        }
+    }
+
+    fn from_message(msg: &str) -> Option<Self> {
+        if let Some(rest) = msg.strip_prefix("party:") {
+            let (code, server) = rest.split_once('|').map(|(c, s)| (c, Some(s))).unwrap_or((rest, None));
+            return crate::party::clean_code(code).map(|code| Self::Party(code, server));
+        }
+        crate::jam::normalize_code(msg).map(Self::Jam)
+    }
+}
+
+/// What a launch argument names, if it is a room link:
+/// `ytm-rs://jam/CODE[/]` (any case) or the jam share link with `?c=CODE` for a jam,
+/// `bitchord://party/CODE` or an `/invite/<CODE>` link for a party.
+pub fn parse(arg: &str) -> Option<Invite> {
     let arg = arg.trim().trim_matches('"');
     let (scheme, rest) = arg.split_once("://")?;
     let rest = rest.split('#').next().unwrap_or("");
@@ -63,18 +91,20 @@ pub fn parse(arg: &str) -> Option<String> {
             return None;
         }
         if !code.is_empty() {
-            return normalize(code);
+            return normalize(code).map(Invite::Jam);
         }
-        return query_param(query, "c").and_then(normalize);
+        return query_param(query, "c").and_then(normalize).map(Invite::Jam);
     }
     if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") {
-        let (path, query) = rest.split_once('?')?;
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
         let lower = path.to_ascii_lowercase();
         let path = lower.trim_end_matches('/').trim_end_matches("/index.html");
-        if path != "grapedjuice.github.io/ytm-rs/jam" {
-            return None;
+        if path == "grapedjuice.github.io/ytm-rs/jam" {
+            return query_param(query, "c").and_then(normalize).map(Invite::Jam);
         }
-        return query_param(query, "c").and_then(normalize);
+        // A Listen Together invite: `…/invite/<CODE>` on the origin that hosts it,
+        // with the custom server it names, if any.
+        return crate::party::parse_invite(arg);
     }
     None
 }
@@ -86,18 +116,18 @@ fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// The first jam link among the process arguments.
-pub fn from_args() -> Option<String> {
+/// The first room link among the process arguments.
+pub fn from_args() -> Option<Invite> {
     std::env::args_os().skip(1).find_map(|a| parse(&a.to_string_lossy()))
 }
 
-/// Queue a code for the UI (e.g. from the launch arguments).
-pub fn push(code: String) {
-    PENDING.lock().unwrap().push(code);
+/// Queue an invite for the UI (e.g. from the launch arguments).
+pub fn push(invite: Invite) {
+    PENDING.lock().unwrap().push(invite);
 }
 
-/// Codes received since the last call, oldest first.
-pub fn take() -> Vec<String> {
+/// Invites received since the last call, oldest first.
+pub fn take() -> Vec<Invite> {
     std::mem::take(&mut *PENDING.lock().unwrap())
 }
 
@@ -233,7 +263,7 @@ mod unix {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         msg.extend_from_slice(&buf[..n]);
-                        if msg.len() > 256 {
+                        if msg.len() > 512 {
                             break;
                         }
                     }
@@ -245,7 +275,7 @@ mod unix {
 }
 
 /// What a hand-off channel delivered, once it's trimmed of its line ending: the window,
-/// or a jam room to join.
+/// or a room to join.
 fn received(msg: String) {
     if msg == SHOW_MSG {
         log::info!("another launch asked for the window");
@@ -253,13 +283,13 @@ fn received(msg: String) {
         wake();
         return;
     }
-    match normalize(&msg) {
-        Some(code) => {
-            log::info!("jam link received from another launch: {code}");
-            push(code);
+    match Invite::from_message(&msg) {
+        Some(invite) => {
+            log::info!("room invite received from another launch: {invite:?}");
+            push(invite);
             wake();
         }
-        None => log::warn!("jam link pipe: ignored an invalid message"),
+        None => log::warn!("room link pipe: ignored an invalid message"),
     }
 }
 
@@ -500,18 +530,33 @@ mod tests {
 
     #[test]
     fn app_protocol() {
-        assert_eq!(parse("ytm-rs://jam/ABC234").as_deref(), Some("ABC234"));
-        assert_eq!(parse("ytm-rs://jam/abc234/").as_deref(), Some("ABC234"));
-        assert_eq!(parse("YTM-RS://JAM/aBc234").as_deref(), Some("ABC234"));
-        assert_eq!(parse("\"ytm-rs://jam/ABC234\"").as_deref(), Some("ABC234"));
-        assert_eq!(parse("ytm-rs://jam/?c=xyz789").as_deref(), Some("XYZ789"));
+        assert_eq!(parse("ytm-rs://jam/ABC234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("ytm-rs://jam/abc234/"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("YTM-RS://JAM/aBc234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("\"ytm-rs://jam/ABC234\""), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("ytm-rs://jam/?c=xyz789"), Some(Invite::Jam("XYZ789".into())));
+        assert_eq!(parse("bitchord://party/XYZ789"), Some(Invite::Party("XYZ789".into(), None)));
+        assert_eq!(
+            parse("https://bitchord.kushagrasingh.in/invite/xyz789?server=party.example.com"),
+            Some(Invite::Party("XYZ789".into(), Some("https://party.example.com".into())))
+        );
+    }
+
+    #[test]
+    fn messages() {
+        assert_eq!(Invite::from_message("ABC234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(Invite::from_message("party:XYZ789"), Some(Invite::Party("XYZ789".into(), None)));
+        assert_eq!(Invite::Party("XYZ789".into(), Some("https://p.example.com".into())).message(), "party:XYZ789|https://p.example.com");
+        assert_eq!(Invite::from_message("party:XYZ789|https://p.example.com"), Some(Invite::Party("XYZ789".into(), Some("https://p.example.com".into()))));
+        assert_eq!(Invite::from_message("party:XYZ78"), None);
+        assert_eq!(Invite::from_message("nonsense"), None);
     }
 
     #[test]
     fn share_link() {
-        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam/?c=ABC234").as_deref(), Some("ABC234"));
-        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam?c=abc234").as_deref(), Some("ABC234"));
-        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam/index.html?x=1&c=abc234#top").as_deref(), Some("ABC234"));
+        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam/?c=ABC234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam?c=abc234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam/index.html?x=1&c=abc234#top"), Some(Invite::Jam("ABC234".into())));
     }
 
     #[test]
@@ -537,9 +582,9 @@ mod tests {
 
     #[test]
     fn queue() {
-        push("ABC234".into());
-        push("XYZ789".into());
-        assert_eq!(take(), ["ABC234", "XYZ789"]);
+        push(Invite::Jam("ABC234".into()));
+        push(Invite::Party("XYZ789".into(), None));
+        assert_eq!(take(), [Invite::Jam("ABC234".into()), Invite::Party("XYZ789".into(), None)]);
         assert!(take().is_empty());
     }
 

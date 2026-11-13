@@ -382,6 +382,18 @@ impl App {
                     }
                 }
             }
+            Resp::SpotifyCanvas { key, url } => {
+                self.canvas_waiting.remove(&key);
+                match url {
+                    Some(url) => {
+                        self.canvas_missed.remove(&key);
+                        self.canvas_covers.insert(key, Some(url));
+                    }
+                    None => {
+                        self.canvas_missed.insert(key, std::time::Instant::now());
+                    }
+                }
+            }
             Resp::Radio { seed, tracks } => {
                 self.radio_pending = false;
                 let was_at_end = self.queue.add_radio(&seed, tracks);

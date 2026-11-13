@@ -538,7 +538,7 @@ impl Client {
         let search: String = self
             .http
             .get("https://amp-api.music.apple.com/v1/catalog/us/search")
-            .query(&[("term", format!("{title} {artist}")), ("types", "songs"), ("limit", "10"), ("l", "en-US")])
+            .query(&[("term", format!("{title} {artist}")), ("types", "songs".to_owned()), ("limit", "10".to_owned()), ("l", "en-US".to_owned())])
             .header("User-Agent", APPLE_UA)
             .bearer_auth(&token)
             .header("Origin", APPLE_WEB)
@@ -597,7 +597,7 @@ impl Client {
         let asks = LYRICSPLUS_MIRRORS.iter().map(|host| {
             let url = format!("{host}/v2/lyrics/get");
             let params = params.clone();
-            async move { self.http.get(&url).query(&params).timeout(Duration::from_secs(12)).send().await.ok()?.error_for_status().ok()?.text().await }
+            async move { self.http.get(&url).query(&params).timeout(Duration::from_secs(12)).send().await?.error_for_status()?.text().await }
         });
         let answers = futures_util::future::join_all(asks).await;
         for body in answers.into_iter().flatten() {
@@ -787,7 +787,7 @@ fn parse_paxsenix_timed(raw: &str, song_ms: i32) -> Option<Vec<Line>> {
     }
     let last = lines.last().map(|l| l.end()).unwrap_or(0);
     let out = insert_instrumentals(lines, song_ms.max(last));
-    out.is_empty().not().then_some(out)
+    (!out.is_empty()).then_some(out)
 }
 
 /// Genius's own titles carry their own noise: music-note symbols, bracketed
@@ -886,7 +886,7 @@ fn from_lyricsplus(v: &Value, song_ms: i32) -> Vec<Line> {
         .iter()
         .filter_map(|l| {
             let Some(time) = l["time"].as_i64().map(|t| t as i32) else { return None };
-            let mut parts: Vec<Part> = l["syllabus"]
+            let parts: Vec<Part> = l["syllabus"]
                 .as_array()
                 .map(|syll| {
                     syll.iter()
@@ -1071,6 +1071,7 @@ fn decode_entities(text: &str) -> String {
         let code = u32::from_str_radix(digits, if hex.is_empty() { 10 } else { 16 }).ok().and_then(char::from_u32);
         code.map(|c| c.to_string()).unwrap_or_default()
     })
+    .into_owned()
 }
 
 /// Any run of spaces down to one, spaces at both ends off.
@@ -1120,7 +1121,7 @@ fn walk_candidates(v: &Value, into: &mut impl FnMut(&str, &str, &str, i32)) {
             if let (Some(id), Some(title)) = (id, title) {
                 let artist = first_string(attrs, &["artistName", "artist_name"]).or_else(|| artist_names(attrs)).unwrap_or_default();
                 let dur = first_number(attrs, &["durationInMillis", "durationMs", "duration_ms", "duration"]).map(to_duration_ms).unwrap_or(0);
-                into(&id, &title, &artist, dur);
+                into(&id, &title, &artist, i32::try_from(dur).unwrap_or(0));
             }
             o.values().for_each(|c| walk_candidates(c, into));
         }

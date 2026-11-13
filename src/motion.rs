@@ -92,12 +92,68 @@ pub fn play(ctx: &egui::Context, master: &str, max_width: u32) -> Arc<Motion> {
     Arc::new(Motion::new(master))
 }
 
+/// Start (or reuse) a clip that is one plain mp4 (Spotify's canvas), not Apple's HLS.
+pub fn play_mp4(ctx: &egui::Context, url: &str, max_width: u32) -> Arc<Motion> {
+    let key = format!("mp4:{max_width}:{url}");
+    if let Ok(mut streams) = STREAMS.lock() {
+        if let Some(m) = streams.get(&key).and_then(Weak::upgrade) {
+            return m;
+        }
+        let motion = Arc::new(Motion::new(url));
+        streams.insert(key, Arc::downgrade(&motion));
+        let (this, ctx, url) = (motion.clone(), ctx.clone(), url.to_owned());
+        let _ = std::thread::Builder::new().name("motion".into()).spawn(move || run_mp4(this, ctx, url, max_width));
+        return motion;
+    }
+    Arc::new(Motion::new(url))
+}
+
 fn run(motion: Arc<Motion>, ctx: egui::Context, master: String, max_width: u32) {
     let Some(path) = fetch(&master, max_width) else {
         log::info!("apple: no motion clip downloaded");
         return;
     };
     decode(&motion, &path, &ctx, max_width);
+}
+
+fn run_mp4(motion: Arc<Motion>, ctx: egui::Context, url: String, max_width: u32) {
+    let Some(path) = fetch_mp4(&url) else {
+        log::info!("canvas: clip didn't download");
+        return;
+    };
+    decode(&motion, &path, &ctx, max_width);
+}
+
+/// Save a plain mp4 to the cache; a saved copy is reused.
+fn fetch_mp4(url: &str) -> Option<PathBuf> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+    rt.block_on(async {
+        use sha1::{Digest, Sha1};
+        let dir = crate::data_dir().join("motion");
+        std::fs::create_dir_all(&dir).ok()?;
+        let name = format!("{:x}", Sha1::digest(url.as_bytes()));
+        let path = dir.join(format!("{}.mp4", &name[..32]));
+        if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 1024 {
+            return Some(path);
+        }
+        let bytes = crate::proxy::http()
+            .get(url)
+            .timeout(Duration::from_secs(30))
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .bytes()
+            .await
+            .ok()?;
+        let tmp = path.with_extension("part");
+        std::fs::write(&tmp, &bytes).ok()?;
+        std::fs::rename(&tmp, &path).ok()?;
+        log::info!("canvas: clip {:.0} KB cached", bytes.len() as f64 / 1024.0);
+        Some(path)
+    })
 }
 
 /// Pick a variant and save the clip to the cache; a saved copy is reused.

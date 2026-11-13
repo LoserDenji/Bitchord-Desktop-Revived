@@ -771,7 +771,7 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             egui::TextEdit::singleline(query)
                 .hint_text(egui::RichText::new("Search in this list").color(theme::text_faint()))
                 .font(theme::regular(14.0))
-                .vertical_align(egui::Align::Center)
+                .align(egui::Align2::LEFT_CENTER)
                 .frame(egui::Frame::NONE)
                 .desired_width(inner.width()),
         );
@@ -871,7 +871,7 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     // Apple's own photograph for the artist draws over YouTube's banner once it
     // arrives (paint_remote fades it in, like the web player's does).
     let w = ui.available_width();
-    let screen_h = ui.ctx().input(|i| i.screen_rect.height());
+    let screen_h = ui.ctx().input(|i| i.raw.screen_rect.height());
     let hero_h = (w / 1.93).clamp(240.0, (screen_h * 0.7).max(380.0));
     let (hero, _) = ui.allocate_exact_size(vec2(w, hero_h), Sense::hover());
     let hero_apple = apple.as_ref().and_then(|x| x.hero.as_ref());
@@ -2540,10 +2540,63 @@ fn settings_window(app: &mut App, ui: &mut Ui) {
 /// Settings › Connections.
 fn settings_connections(app: &mut App, ui: &mut Ui) {
     let mut discord_enabled = app.discord_enabled;
+    let linked = app.discord_link_token.is_some();
+    let (mut connect, mut disconnect) = (false, false);
     settings_section(ui, "Connections", None, None, |ui| {
-        setting_row(ui, "Discord", Some("Show what you're playing on your Discord profile."), |ui| {
+        let detail = match (&app.discord_link_user, linked) {
+            (Some(u), _) => format!("Showing what you play on {}'s Discord profile.", u.name),
+            (None, true) => "Discord is linked; presence shows on the linked account.".to_owned(),
+            (None, false) => "Show what you're playing on your Discord profile. Link an account for a card with buttons and cover art on your own profile.".to_owned(),
+        };
+        setting_row(ui, "Discord", Some(&detail), |ui| {
             toggle(ui, &mut discord_enabled, "Discord");
         });
+        divider(ui);
+        let status = app.discord_link.as_ref().map(|s| s.status()).unwrap_or(("off", None));
+        let link_detail = match (&status.1, app.discord_link_busy) {
+            (Some(p), _) => p.as_str(),
+            (None, true) => "Waiting for the Discord page…",
+            (None, false) if linked => match status.0 {
+                "ready" => "Linked account's presence is live.",
+                "connecting" => "Bringing the linked account's gateway up…",
+                "error" => "The linked account's gateway is down.",
+                _ => "Linked. Presence starts with the switch above.",
+            },
+            (None, false) => "Open discord.com and sign in; the app takes it from there.",
+        };
+        setting_row(ui, "Link account", Some(link_detail), |ui| {
+            if linked {
+                disconnect = pill(ui, "Disconnect", None, false).clicked();
+            } else if app.discord_link_busy {
+                ui.spinner();
+            } else {
+                connect = pill(ui, "Connect", None, false).clicked();
+            }
+        });
+        if linked {
+            divider(ui);
+            status_pills(ui, &mut app.discord_options.status, &["online", "idle", "dnd", "invisible"]);
+            divider(ui);
+            setting_row(ui, "Lead with the song", Some("Name the song, not the artist, in member lists."), |ui| {
+                toggle(ui, &mut app.discord_options.use_details, "song-first");
+            });
+            divider(ui);
+            text_option(ui, &mut app.discord_options.activity_name, "Activity name", "BitChord");
+            divider(ui);
+            setting_row(ui, "Buttons on the card", Some("Two taps on the profile card: the song and this project."), |ui| {
+                toggle(ui, &mut app.discord_options.button1_visible, "song-button");
+                ui.add_space(8.0);
+                toggle(ui, &mut app.discord_options.button2_visible, "project-button");
+            });
+            if app.discord_options.button1_visible {
+                divider(ui);
+                text_option(ui, &mut app.discord_options.button1_text, "First button", crate::discord_link::DEFAULT_BUTTON_1);
+            }
+            if app.discord_options.button2_visible {
+                divider(ui);
+                text_option(ui, &mut app.discord_options.button2_text, "Second button", crate::discord_link::DEFAULT_BUTTON_2);
+            }
+        }
         divider(ui);
         let busy = app.lastfm_busy.load(Ordering::Relaxed);
         let desc = match &app.lastfm_user {
@@ -2551,26 +2604,60 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
             None if busy => "Allow BitChord on the Last.fm page that opened in your browser.".to_owned(),
             None => "Scrobble what you play to your Last.fm profile.".to_owned(),
         };
-        let (mut connect, mut disconnect) = (false, false);
+        let (mut lf_connect, mut lf_disconnect) = (false, false);
         setting_row(ui, "Last.fm", Some(&desc), |ui| {
             if app.lastfm_user.is_some() {
-                disconnect = pill(ui, "Disconnect", None, false).clicked();
+                lf_disconnect = pill(ui, "Disconnect", None, false).clicked();
             } else if busy {
                 ui.spinner();
             } else {
-                connect = pill(ui, "Connect", None, false).clicked();
+                lf_connect = pill(ui, "Connect", None, false).clicked();
             }
         });
-        if connect {
+        if lf_connect {
             app.lastfm_sign_in();
         }
-        if disconnect {
+        if lf_disconnect {
             app.lastfm_sign_out();
         }
     });
+    if connect {
+        app.link_discord();
+    }
+    if disconnect {
+        app.unlink_discord();
+    }
     if discord_enabled != app.discord_enabled {
         app.set_discord_enabled(discord_enabled);
     }
+}
+
+/// Presence status as pills, one per choice (the phone's DiscordScreen).
+fn status_pills(ui: &mut Ui, value: &mut String, choices: &[&str]) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Status").size(13.5).color(theme::text_dim()));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            for choice in choices {
+                let on = value.as_str() == *choice;
+                if pill(ui, choice, None, on).clicked() {
+                    *value = (*choice).to_owned();
+                }
+            }
+        });
+    });
+}
+
+/// A one-line option the listener types over (the card's labels).
+fn text_option(ui: &mut Ui, value: &mut String, label: &str, placeholder: &str) {
+    setting_row(ui, label, Some(&format!("Empty: \"{placeholder}\".")), |ui| {
+        let width = ui.available_width() - 140.0;
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .hint_text(egui::RichText::new(placeholder).color(theme::text_faint()))
+                .font(theme::regular(13.0))
+                .desired_width(width.max(120.0)),
+        );
+    });
 }
 
 /// Settings › Network: the proxy everything goes through, a connection test, and a
