@@ -647,9 +647,11 @@ pub struct App {
     hidden_playlists: HashSet<String>,
     /// The collection page whose inline search is open, and what's typed in it.
     coll_search: Option<(String, String)>,
-    /// What's typed into Settings' own search box, which hides the sections it doesn't
+    /// What's typed into Settings' own search box, which hides the rows it doesn't
     /// match. Session-only: a new visit starts clean.
     settings_search: String,
+    /// The category Settings shows, one at a time (a search shows them all).
+    settings_tab: pages::SettingsTab,
     actions: Vec<Action>,
     dialog: Option<Dialog>,
     share_pending: Option<String>,
@@ -966,6 +968,7 @@ impl App {
             jam: Default::default(),
             toast: None,
             settings_search: String::new(),
+            settings_tab: Default::default(),
             actions: Vec::new(),
             dialog: None,
             share_pending: None,

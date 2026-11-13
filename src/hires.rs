@@ -8,7 +8,9 @@
 //! link shared for the phone works here too — except for addons that turn on
 //! `"bitchordAuth": true`: those verify every request against a hardware-backed key
 //! only the official Android app can hold, and this client detects that and says so
-//! instead of failing mysteriously.
+//! instead of failing mysteriously. A base URL may carry a query of its own — install
+//! links like `…/quality/manifest.json?sources=tidal` normalize to one — and every
+//! endpoint is built so the path lands before that query, not after it.
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
@@ -235,7 +237,7 @@ impl Client {
         if let Some(m) = slot.as_ref() {
             return Ok(Manifest { name: m.name.clone(), defaults: m.defaults.clone(), quality: m.quality.clone(), auth: m.auth });
         }
-        let url = format!("{}/manifest.json", self.base);
+        let url = base_url_with(&self.base, &["manifest.json"])?.into();
         let json = get_json(http, &url).await?;
         let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
         anyhow::ensure!(!id.is_empty(), "that URL answered, but not with an addon manifest");
@@ -296,27 +298,49 @@ impl Client {
         let container = json.get("container").and_then(Value::as_str).or(json.get("containerFormat").and_then(Value::as_str)).unwrap_or("");
         let mime = json.get("mimeType").and_then(Value::as_str).unwrap_or("");
         if is_manifest(transport) {
-            // Dolby Atmos arrives as a DASH E-AC-3 rendition, not a file: fetch and
-            // decode it whole, so it plays (and seeks) like any other stream.
+            // Streaming manifests: the whole rendition is fetched and reworked into
+            // something the player decodes like a file. Atmos arrives as a DASH E-AC-3
+            // rendition, decoded to stereo PCM; Tidal-style hi-res arrives as a DASH
+            // FLAC rendition, reassembled into one .flac byte stream.
             let dash = matches!(transport.trim().to_ascii_lowercase().as_str(), "dash" | "mpd" | "application/dash+xml");
-            let dolby = ["eac3", "ec-3", "ac3", "ac-3", "dolby", "atmos"].iter().any(|w| codec.to_ascii_lowercase().contains(w)) || json_is_atmos(&json);
-            anyhow::ensure!(dash && dolby, "the addon returned a streaming manifest, not a file");
-            let audio = crate::dash::fetch(http, &stated_url).await?;
-            let size = audio.pcm.len() as u64;
+            let codec_lc = codec.to_ascii_lowercase();
+            let dolby = ["eac3", "ec-3", "ac3", "ac-3", "dolby", "atmos"].iter().any(|w| codec_lc.contains(w)) || json_is_atmos(&json);
+            let flac = codec_lc.contains("flac");
+            anyhow::ensure!(dash && (dolby || flac), "the addon returned a streaming manifest, not a file");
+            if dolby {
+                let audio = crate::dash::fetch(http, &stated_url).await?;
+                let size = audio.pcm.len() as u64;
+                let info = Info {
+                    source: manifest.name.clone().unwrap_or_else(|| host_of(&self.base)),
+                    host: host_of(&stated_url),
+                    codec: "E-AC-3".to_owned(),
+                    quality: if quality.is_empty() { candidate.quality.clone() } else { quality },
+                    bitrate_kbps: Some(audio.bitrate_kbps).filter(|k| *k > 0),
+                    sample_rate: Some(audio.sample_rate),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    atmos: true,
+                    size,
+                    duration_ms: audio.duration_ms,
+                };
+                return Ok(Some(Stream { url: stated_url, size, duration_ms: audio.duration_ms, format: Format::Pcm { rate: audio.sample_rate, channels: 2 }, info, data: Some(audio.pcm) }));
+            }
+            let flac = crate::dash::fetch_flac(http, &stated_url).await?;
+            let size = flac.bytes.len() as u64;
             let info = Info {
                 source: manifest.name.clone().unwrap_or_else(|| host_of(&self.base)),
                 host: host_of(&stated_url),
-                codec: "E-AC-3".to_owned(),
+                codec: "FLAC".to_owned(),
                 quality: if quality.is_empty() { candidate.quality.clone() } else { quality },
-                bitrate_kbps: Some(audio.bitrate_kbps).filter(|k| *k > 0),
-                sample_rate: Some(audio.sample_rate),
-                bit_depth: Some(16),
-                channels: Some(2),
-                atmos: true,
+                bitrate_kbps: Some(flac.bitrate_kbps).filter(|k| *k > 0),
+                sample_rate: Some(flac.sample_rate),
+                bit_depth: Some(flac.bit_depth),
+                channels: Some(flac.channels),
+                atmos: false,
                 size,
-                duration_ms: audio.duration_ms,
+                duration_ms: flac.duration_ms,
             };
-            return Ok(Some(Stream { url: stated_url, size, duration_ms: audio.duration_ms, format: Format::Pcm { rate: audio.sample_rate, channels: 2 }, info, data: Some(audio.pcm) }));
+            return Ok(Some(Stream { url: stated_url, size, duration_ms: flac.duration_ms, format: Format::File { hint: "flac", mime: Some("audio/flac".to_owned()) }, info, data: Some(flac.bytes) }));
         }
         let Some(format) = format_of(&codec, container, mime, &stated_url, &label) else {
             anyhow::bail!("the addon's format isn't playable ({codec} {container} {mime})");
@@ -356,14 +380,7 @@ impl Client {
     }
 
     fn endpoint(&self, segments: &[&str], params: &[(String, String)]) -> anyhow::Result<String> {
-        let mut url = url::Url::parse(&self.base)?;
-        {
-            let mut path = url.path_segments_mut().map_err(|_| anyhow::anyhow!("that addon address can't take paths"))?;
-            path.pop_if_empty();
-            for segment in segments {
-                path.push(segment);
-            }
-        }
+        let mut url = base_url_with(&self.base, segments)?;
         {
             let mut query = url.query_pairs_mut();
             for (key, value) in params {
@@ -380,7 +397,7 @@ impl Client {
     /// search, and is healthy the moment it does — which is why a failed manifest read
     /// is given the second opinion before it's called a fault.
     pub async fn probe(&self, http: &reqwest::Client) -> Health {
-        let url = format!("{}/manifest.json", self.base);
+        let url = base_url_with(&self.base, &["manifest.json"])?.into();
         let manifest = async {
             let json = get_json(http, &url).await?;
             let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
@@ -440,15 +457,26 @@ const AUTH_DESKTOP_MSG: &str = "requires BitChord Android authentication (only t
 /// One `/search`, counted. Zero is a success — an addon holding nothing for one query
 /// is answering correctly — so callers read the count, not emptiness.
 async fn probe_search(http: &reqwest::Client, base: &str) -> anyhow::Result<usize> {
+    let mut url = base_url_with(base, &["search"])?;
+    url.query_pairs_mut().append_pair("q", PROBE_QUERY);
+    let json = get_json(http, url.as_str()).await?;
+    Ok(json.get("tracks").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0))
+}
+
+/// `{base}/{segments…}`, for a base that may carry a query of its own — an install
+/// link like `…/quality/manifest.json?sources=tidal` normalizes to a base ending in
+/// `?sources=tidal`. Pasting the path on with `format!` would land it after the
+/// query, where no server looks for it.
+fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
     let mut url = url::Url::parse(base)?;
     {
         let mut path = url.path_segments_mut().map_err(|_| anyhow::anyhow!("that addon address can't take paths"))?;
         path.pop_if_empty();
-        path.push("search");
+        for segment in segments {
+            path.push(segment);
+        }
     }
-    url.query_pairs_mut().append_pair("q", PROBE_QUERY);
-    let json = get_json(http, url.as_str()).await?;
-    Ok(json.get("tracks").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0))
+    Ok(url)
 }
 
 /// Health-checks a pasted link, saved or not. A link that isn't http(s) can't be a
@@ -914,6 +942,12 @@ async fn get_json(http: &reqwest::Client, url: &str) -> anyhow::Result<Value> {
         if let Some(msg) = auth_answer(&body) {
             anyhow::bail!("{} {msg}", AUTH_DESKTOP_MSG);
         }
+        // Other addons guard themselves behind a sign-in on their own site and point
+        // at it ("login":"/auth/discord/login"): they work once the listener has
+        // signed in there and pasted the personal link that comes out of it.
+        if let Some(login_url) = login_url(url, &body) {
+            anyhow::bail!("this addon needs your own sign-in link: open {login_url} in a browser, sign in, and paste the link it gives you here");
+        }
         anyhow::bail!("HTTP {}", status.as_u16());
     }
     let bytes = response.bytes().await?;
@@ -933,6 +967,14 @@ fn auth_answer(body: &str) -> Option<String> {
         "unavailable" => "the addon's verifier couldn't load BitChord's keys".to_owned(),
         _ => "the addon refused this client".to_owned(),
     })
+}
+
+/// The sign-in address a guarded addon points at ("login":"/auth/discord/login"),
+/// resolved against the request that was refused.
+fn login_url(request: &str, body: &str) -> Option<String> {
+    let json: Value = serde_json::from_str(body).ok()?;
+    let login = json.get("login").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())?;
+    url::Url::parse(request).ok()?.join(login).ok().map(String::from)
 }
 
 /// How many bytes the stream holds, from a HEAD or a one-byte range request.
@@ -982,6 +1024,19 @@ mod tests {
             normalize_base("https://music.example/addon?x=1"),
             "https://music.example/addon?x=1"
         );
+    }
+
+    #[test]
+    fn the_manifest_url_keeps_the_bases_query() {
+        // The install link's `?sources=tidal` survives normalization onto the base, so
+        // every endpoint must be built with the path before the query, not after it.
+        let base = normalize_base("https://addon.example/abc/quality/manifest.json?sources=tidal");
+        assert_eq!(base, "https://addon.example/abc/quality?sources=tidal");
+        let manifest = base_url_with(&base, &["manifest.json"]).unwrap();
+        assert_eq!(manifest.as_str(), "https://addon.example/abc/quality/manifest.json?sources=tidal");
+        let mut search = base_url_with(&base, &["search"]).unwrap();
+        search.query_pairs_mut().append_pair("quality", "LOSSLESS").append_pair("q", "test");
+        assert_eq!(search.as_str(), "https://addon.example/abc/quality/search?sources=tidal&quality=LOSSLESS&q=test");
     }
 
     #[test]
