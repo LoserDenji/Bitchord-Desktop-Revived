@@ -513,7 +513,7 @@ pub fn top_bar(app: &mut App, ui: &mut Ui) {
     // The refresh button, beside the account circle (this fork has no back/forward row
     // in the top bar: they live on the sidebar's logo line).
     {
-        let mut rui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(r.left() - 68.0, panel.top()), Vec2::splat(44.0))).layout(egui::Layout::centered_and_justified(egui::Align::Center)));
+        let mut rui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(r.left() - 68.0, panel.top()), Vec2::splat(44.0))).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
         if refresh_button(&mut rui).clicked() {
             app.refresh();
         }
@@ -807,9 +807,11 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     };
     // Accent-coloured controls: the play state and the volume slider take the accent
     // colour, like the progress line (this fork's transport is glyphs only, so the
-    // glyphs carry it rather than a filled circle).
+    // glyphs carry it rather than a filled circle). The flag is read out here: the
+    // closure must not hold the app, for the transport's calls below.
+    let accent_controls = app.accent_controls;
     let control = |h: f32| {
-        if app.accent_controls {
+        if accent_controls {
             theme::lerp_color(theme::with_alpha(accent, 0.55), accent, h)
         } else {
             ink(h)
