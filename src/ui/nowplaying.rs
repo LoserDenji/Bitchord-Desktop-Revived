@@ -326,7 +326,7 @@ fn video_stage(app: &mut App, ui: &mut Ui, content: Rect, track: &crate::model::
         app.actions.push(Action::TogglePlay);
     }
     let y = picture.bottom() + 12.0;
-    text_at(ui, pos2(picture.left(), y), &track.title, theme::bold(20.0), Color32::WHITE, fit.x);
+    widgets::title_at(ui, pos2(picture.left(), y), &track.title, track.explicit, theme::bold(20.0), Color32::WHITE, fit.x);
     let line = track.artist_line();
     widgets::linked_text(ui, pos2(picture.left(), y + 28.0), &line, &track.artists, theme::regular(14.0), theme::text_dim(), fit.x, &mut app.actions);
     if up_next {
@@ -459,7 +459,7 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let info_y = art.bottom() + 22.0;
     // The star and the ⋯ menu share the information line's right end.
     let text_w = w - 76.0;
-    text_at(ui, pos2(x0, info_y), &track.title, theme::semibold(17.0), Color32::WHITE, text_w);
+    widgets::title_at(ui, pos2(x0, info_y), &track.title, track.explicit, theme::semibold(17.0), Color32::WHITE, text_w);
     // Each artist opens their own page (features included); the album follows the
     // artist behind an em dash, as the reference writes the line.
     let mut line = track.artist_line();

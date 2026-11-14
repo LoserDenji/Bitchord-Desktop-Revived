@@ -994,10 +994,11 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     };
     let fade = 1.0 - 0.7 * focus;
     let afade = 1.0 - focus;
-    let tr = text_at(ui, pos2(text_l, cy - 15.0), &title, theme::semibold(13.0), theme::with_alpha(theme::text(), fade), text_w);
+    let explicit = track.as_ref().is_some_and(|t| t.explicit);
+    let tr = widgets::title_at(ui, pos2(text_l, cy - 15.0), &title, explicit, theme::semibold(13.0), theme::with_alpha(theme::text(), fade), text_w);
     if let Some(t) = &track {
         let tre = ui.interact(tr, ui.scope_id().with("bar-title"), Sense::click());
-        if named(tre, &t.title).on_hover_text(&t.title).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        if named(tre, &widgets::song_name(&t.title, t.explicit)).on_hover_text(&t.title).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             app.actions.push(Action::OpenNowPlaying(true));
         }
     }

@@ -217,6 +217,10 @@ fn tag(path: &Path, t: &Track, cover: Option<Vec<u8>>) -> anyhow::Result<()> {
     if let Some(n) = t.track_nr {
         tag.set_track_number(n);
     }
+    // The "E" other players show too.
+    if t.explicit {
+        tag.set_advisory_rating(mp4ameta::AdvisoryRating::Explicit);
+    }
     let img = cover.and_then(|c| match c.get(..4) {
         Some([0xff, 0xd8, ..]) => Some(mp4ameta::Img::jpeg(c)),
         Some([0x89, b'P', b'N', b'G']) => Some(mp4ameta::Img::png(c)),
@@ -240,12 +244,7 @@ mod tests {
             id: "abc".into(),
             title: title.into(),
             artists,
-            album: None,
-            duration: None,
-            thumbs: Vec::new(),
-            track_nr: None,
-            plays: None,
-            music_video: false,
+            ..Default::default()
         };
         let t = track("What? / Why: \"Now\"...", vec![Link { name: "AC/DC".into(), id: None }]);
         assert_eq!(file_stem(&t), "AC_DC - What_ _ Why_ _Now_");

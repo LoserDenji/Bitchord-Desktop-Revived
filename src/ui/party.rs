@@ -346,6 +346,7 @@ fn from_party_track(track: &PartyTrack) -> Track {
         track_nr: None,
         plays: None,
         music_video: false,
+        explicit: false,
     }
 }
 

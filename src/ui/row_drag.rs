@@ -228,12 +228,8 @@ mod tests {
             id: format!("song{i}"),
             title: format!("Song {i}"),
             artists: vec![],
-            album: None,
             duration: Some(200),
-            thumbs: vec![],
-            track_nr: None,
-            plays: None,
-            music_video: false,
+            ..Default::default()
         }
     }
 

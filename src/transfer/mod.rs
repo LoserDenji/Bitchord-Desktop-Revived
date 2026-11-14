@@ -1242,12 +1242,7 @@ mod tests {
             id: title.into(),
             title: title.into(),
             artists: vec![Link { name: artists.into(), id: None }],
-            album: None,
-            duration: None,
-            thumbs: vec![],
-            track_nr: None,
-            plays: None,
-            music_video: false,
+            ..Default::default()
         }
     }
 

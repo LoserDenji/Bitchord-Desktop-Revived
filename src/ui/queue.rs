@@ -37,6 +37,8 @@ pub struct Queue {
     /// The queue is a playlist played while its songs were still coming in: the rest
     /// join the queue as they arrive.
     pub fill: Option<QueueFill>,
+    /// Explicit songs are hidden: none join, and a queue started with some leaves them out.
+    pub hide_explicit: bool,
     /// Shuffle is a toggle: what played up next, in order, before the tail was shuffled.
     /// Set on the first shuffle, and taken back to restore the original order (see
     /// [`Queue::shuffle_toggle`]). Songs queued by hand while it's on stay at the end.
@@ -53,7 +55,7 @@ const SAVED_AFTER: usize = 150;
 
 impl Queue {
     pub fn new(repeat: Repeat) -> Self {
-        Self { tracks: Vec::new(), elsewhere: Default::default(), index: None, repeat, fill: None, shuffle_original: None }
+        Self { tracks: Vec::new(), elsewhere: Default::default(), index: None, repeat, fill: None, hide_explicit: false, shuffle_original: None }
     }
 
     /// The song playing was added by hand, not played from the list the queue was
@@ -78,8 +80,13 @@ impl Queue {
     }
 
     /// Play `tracks` from `start`; `fill`: a playlist still coming in, whose other songs
-    /// follow. False (and nothing changes) when there are none.
-    pub fn replace(&mut self, tracks: Vec<Track>, start: usize, fill: Option<QueueFill>) -> bool {
+    /// follow. False (and nothing changes) when there are none. With explicit songs hidden
+    /// they're left out, and an explicit `start` plays the next song that isn't.
+    pub fn replace(&mut self, mut tracks: Vec<Track>, mut start: usize, fill: Option<QueueFill>) -> bool {
+        if self.hide_explicit {
+            start = tracks.iter().take(start).filter(|t| !t.explicit).count();
+            tracks.retain(|t| !t.explicit);
+        }
         if tracks.is_empty() {
             return false;
         }
@@ -99,6 +106,25 @@ impl Queue {
         self.fill = None;
         self.shuffle_original = None;
         self.elsewhere.clear();
+        self.drop_explicit();
+    }
+
+    /// With explicit songs hidden, take them out, all but the one playing.
+    pub fn drop_explicit(&mut self) {
+        if !self.hide_explicit {
+            return;
+        }
+        let mut i = 0;
+        let (cur, mut index) = (self.index, self.index);
+        self.tracks.retain(|t| {
+            let keep = !t.explicit || Some(i) == cur;
+            if !keep && cur.is_some_and(|c| i < c) {
+                index = index.map(|c| c - 1);
+            }
+            i += 1;
+            keep
+        });
+        self.index = index;
     }
 
     /// Next, or the end of a song: true when there's a song to play. At the end of a
@@ -116,7 +142,9 @@ impl Queue {
         } else {
             return false;
         }
-        true
+        // An explicit song left to finish when those were hidden goes once it has.
+        self.drop_explicit();
+        !self.current().is_some_and(|t| self.hide_explicit && t.explicit)
     }
 
     /// Back to the song before: false at the first.
@@ -124,6 +152,7 @@ impl Queue {
         match self.index.filter(|&i| i > 0) {
             Some(i) => {
                 self.index = Some(i - 1);
+                self.drop_explicit();
                 true
             }
             None => false,
@@ -256,7 +285,7 @@ impl Queue {
     pub fn add_radio(&mut self, seed: &str, tracks: Vec<Track>) -> bool {
         let have: std::collections::HashSet<String> = self.tracks.iter().map(|t| t.id.clone()).collect();
         let was_at_end = self.at_end();
-        let added: Vec<Track> = tracks.into_iter().filter(|t| t.id != seed && !have.contains(&t.id)).collect();
+        let added: Vec<Track> = tracks.into_iter().filter(|t| t.id != seed && !have.contains(&t.id) && !(self.hide_explicit && t.explicit)).collect();
         self.elsewhere.extend(added.iter().map(|t| t.id.clone()));
         self.tracks.extend(added);
         was_at_end
@@ -276,7 +305,8 @@ impl Queue {
             return None;
         }
         let was_at_end = self.at_end();
-        self.tracks.extend(tracks);
+        let hide = self.hide_explicit;
+        self.tracks.extend(tracks.into_iter().filter(|t| !(hide && t.explicit)));
         if shuffled {
             // Mixed into what's still to come, past the next song (it may be loading already).
             let from = self.index.map_or(0, |i| i + if was_at_end { 1 } else { 2 }).min(self.tracks.len());
@@ -299,7 +329,7 @@ mod tests {
     use super::{Queue, QueueFill, Repeat, Track};
 
     fn track(id: &str) -> Track {
-        Track { id: id.into(), title: id.into(), artists: vec![], album: None, duration: None, thumbs: vec![], track_nr: None, plays: None, music_video: false }
+        Track { id: id.into(), title: id.into(), artists: vec![], album: None, duration: None, thumbs: vec![], track_nr: None, plays: None, ..Default::default() }
     }
 
     fn queue(songs: &[&str], index: usize, repeat: Repeat) -> Queue {

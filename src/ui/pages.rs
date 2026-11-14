@@ -111,6 +111,7 @@ pub(super) struct Rows {
     playing: bool,
     accent: Color32,
     now: f64,
+    hide_explicit: bool,
 }
 
 impl Rows {
@@ -120,7 +121,13 @@ impl Rows {
             playing: app.audio.status.playing.load(Ordering::Relaxed),
             accent: app.accent_color(),
             now,
+            hide_explicit: app.hide_explicit,
         }
+    }
+
+    /// `t` is listed: it isn't an explicit song while those are hidden.
+    pub(super) fn shows(&self, t: &Track) -> bool {
+        !(self.hide_explicit && t.explicit)
     }
 
     pub(super) fn opts(&self, liked: &HashSet<String>, t: &Track, number: Option<usize>, show_album: bool) -> RowOpts {
@@ -239,6 +246,7 @@ fn song_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut V
     let (l, r) = shelf_header(ui, title, strap, None, true);
     let nudge = r as i32 - l as i32;
     let col_w = feed_tile(ui, false);
+    let tracks: Vec<&Track> = tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
     let mut picked = None;
     let (_, reached_end) = h_scroll(ui, id, nudge, tracks.len().div_ceil(rows.max(1)), col_w, 20.0, |ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
@@ -257,7 +265,7 @@ fn song_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut V
         }
     });
     if let Some(i) = picked {
-        acts.push(Action::Radio(tracks[i].clone()));
+        acts.push(Action::Radio(Track::clone(tracks[i])));
     }
     reached_end
 }
@@ -406,6 +414,10 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
         let id = format!("home-{i}-{}", s.title);
         match &s.kind {
             ShelfKind::Cards(cards) => {
+                let cards: Vec<&Card> = cards.iter().filter(|c| !matches!(&c.target, Target::Song(t) if !rows.shows(t))).collect();
+                if cards.is_empty() {
+                    continue;
+                }
                 let (strap, thumb) = if s.title == "Listen again" { (None, None) } else { (s.strapline.as_deref(), s.strap_thumb.as_deref()) };
                 let (l, r) = shelf_header(ui, &s.title, strap, thumb, true);
                 let nudge = r as i32 - l as i32;
@@ -506,7 +518,9 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     // Songs here can be dragged onto a playlist in the sidebar, but not into another order.
     let drag = &mut app.row_drag;
     let ids = |section: &str| egui::Id::unique(("search", section));
-    if r.tracks.is_empty() && r.videos.is_empty() && r.artists.is_empty() && r.albums.is_empty() && r.playlists.is_empty() {
+    let tracks: Vec<&Track> = r.tracks.iter().filter(|t| rows.shows(t)).collect();
+    let videos: Vec<&Track> = r.videos.iter().filter(|t| rows.shows(t)).collect();
+    if tracks.is_empty() && videos.is_empty() && r.artists.is_empty() && r.albums.is_empty() && r.playlists.is_empty() {
         ui.add_space(18.0);
         ui.label(RichText::new("No results").font(theme::bold(20.0)).color(theme::text()));
         return;
@@ -516,7 +530,7 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     ui.horizontal_top(|ui| {
         if let Some(top) = r.artists.first().filter(|a| a.title.eq_ignore_ascii_case(q.trim())) {
             top_result(ui, top, false, acts);
-        } else if let Some(t) = r.tracks.first() {
+        } else if let Some(t) = tracks.first().copied() {
             let c = Card {
                 title: t.title.clone(),
                 subtitle: format!("Song • {}", t.artist_line()),
@@ -531,7 +545,7 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         ui.vertical(|ui| {
             ui.label(RichText::new("Songs").font(theme::bold(24.0)));
             ui.add_space(8.0);
-            for (i, t) in r.tracks.iter().take(4).enumerate() {
+            for (i, t) in tracks.iter().copied().take(4).enumerate() {
                 // Its own scope, so a picked-up row dims alone.
                 ui.push_id(i, |ui| {
                     row_drag::grip(ui, drag, ids("songs"), i, t);
@@ -546,11 +560,11 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     });
     card_row(ui, "s-artists", "Artists", &r.artists, acts);
     card_row(ui, "s-albums", "Albums", &r.albums, acts);
-    if !r.videos.is_empty() && !app.hide_search_videos {
+    if !videos.is_empty() && !app.hide_search_videos {
         ui.add_space(26.0);
         ui.label(RichText::new("Videos").font(theme::bold(24.0)));
         ui.add_space(10.0);
-        for (i, t) in r.videos.iter().take(6).enumerate() {
+        for (i, t) in videos.iter().copied().take(6).enumerate() {
             ui.push_id(("videos", i), |ui| {
                 row_drag::grip(ui, drag, ids("videos"), i, t);
                 let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
@@ -561,11 +575,11 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         }
         row_drag::carry(ui, drag, ids("videos"));
     }
-    if r.tracks.len() > 4 {
+    if tracks.len() > 4 {
         ui.add_space(26.0);
         ui.label(RichText::new("More songs").font(theme::bold(24.0)));
         ui.add_space(10.0);
-        for (i, t) in r.tracks.iter().skip(4).enumerate() {
+        for (i, t) in tracks.iter().copied().skip(4).enumerate() {
             ui.push_id(("more", i), |ui| {
                 row_drag::grip(ui, drag, ids("more"), i, t);
                 let o = RowOpts { pick, ..rows.opts(liked, t, None, true) };
@@ -875,7 +889,8 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let signature = app.signature_texture(ui.ctx(), &name);
     let Some(a) = &app.artist else { return };
     let acts = &mut app.actions;
-    let top = &a.top;
+    let top: Vec<Track> = a.top.iter().filter(|t| rows.shows(t)).cloned().collect();
+    let top = &top;
     // The hero, full-bleed at the header aspect the artist pages use (about 1.93:1),
     // fading into the page at the bottom. YouTube's banner draws it.
     let w = ui.available_width();
@@ -1633,6 +1648,23 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
             if toggle(ui, &mut app.sponsorblock, "Skip non-music parts").changed() {
                 app.request_segments();
             }
+        });
+        divider(ui);
+        setting_row(ui, "Hide explicit songs", Some("Leave songs marked E out of lists, search, the queue and autoplay. Ones already playing finish."), |ui| {
+            if toggle(ui, &mut app.hide_explicit, "Hide explicit songs").changed() {
+                app.set_hide_explicit();
+            }
+        });
+        divider(ui);
+        // Only with hiding on: it's off (and shown off) until then.
+        ui.add_enabled_ui(app.hide_explicit, |ui| {
+            setting_row(ui, "Use YouTube's Restricted Mode", Some("Stricter: YouTube also leaves out whatever else it finds mature, not just explicit songs. Applies to pages loaded from now on."), |ui| {
+                let mut on = app.hide_explicit && app.restricted_mode;
+                if toggle(ui, &mut on, "Use YouTube's Restricted Mode").changed() {
+                    app.restricted_mode = on;
+                    app.set_hide_explicit();
+                }
+            });
         });
     });
     settings_equalizer(app, ui);
