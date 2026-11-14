@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 
 use egui::{Align2, Color32, Rect, RichText, Sense, Ui, Vec2, pos2, vec2};
 
+use super::row_drag;
 use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, track_row};
 use super::{Action, App, LibTab, Page, ProviderVerdicts, Selection};
 use crate::backend::compact;
@@ -272,12 +273,14 @@ struct ListCtx<'a> {
 /// A long song list; only the rows on screen are built. Clicking one plays `tracks` from it,
 /// or picks it while selecting: Ctrl-click picks one song, Shift-click a run of them.
 #[allow(clippy::too_many_arguments)]
-fn list(ui: &mut Ui, rows: &Rows, liked: &HashSet<String>, tracks: &[Track], show_album: bool, number: impl Fn(usize, &Track) -> Option<usize>, cx: ListCtx, acts: &mut Vec<Action>) {
+fn list(ui: &mut Ui, rows: &Rows, liked: &HashSet<String>, tracks: &[Track], show_album: bool, number: impl Fn(usize, &Track) -> Option<usize>, cx: ListCtx, drag: &mut Option<row_drag::RowDrag>, drag_list: egui::Id, acts: &mut Vec<Action>) {
     let ListCtx { sel, page, own } = cx;
     let selecting = sel.on(page);
     let mods = ui.input(|i| i.modifiers);
     widgets::visible_rows(ui, tracks.len(), |ui, i| {
         let t = &tracks[i];
+        // Any song can be dragged onto a playlist in the sidebar.
+        row_drag::grip(ui, drag, drag_list, i, t);
         let o = RowOpts {
             selected: selecting.then(|| sel.rows.contains(&i)),
             remove: own.then_some(i),
@@ -291,6 +294,9 @@ fn list(ui: &mut Ui, rows: &Rows, liked: &HashSet<String>, tracks: &[Track], sho
             }
         }
     });
+    // These lists don't change order: a picked-up song is only carried out, onto a
+    // playlist in the sidebar.
+    row_drag::carry(ui, drag, drag_list);
 }
 
 /// A list page's "Select" button: turns select mode on and off.
@@ -497,6 +503,9 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     let Some(r) = &app.search else { return };
     let acts = &mut app.actions;
     let liked = &app.liked;
+    // Songs here can be dragged onto a playlist in the sidebar, but not into another order.
+    let drag = &mut app.row_drag;
+    let ids = |section: &str| egui::Id::unique(("search", section));
     if r.tracks.is_empty() && r.videos.is_empty() && r.artists.is_empty() && r.albums.is_empty() && r.playlists.is_empty() {
         ui.add_space(18.0);
         ui.label(RichText::new("No results").font(theme::bold(20.0)).color(theme::text()));
@@ -522,12 +531,17 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         ui.vertical(|ui| {
             ui.label(RichText::new("Songs").font(theme::bold(24.0)));
             ui.add_space(8.0);
-            for t in r.tracks.iter().take(4) {
-                let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
-                if track_row(ui, t, &o, acts).clicked() {
-                    acts.push(play(t));
-                }
+            for (i, t) in r.tracks.iter().take(4).enumerate() {
+                // Its own scope, so a picked-up row dims alone.
+                ui.push_id(i, |ui| {
+                    row_drag::grip(ui, drag, ids("songs"), i, t);
+                    let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
+                    if track_row(ui, t, &o, acts).clicked() {
+                        acts.push(play(t));
+                    }
+                });
             }
+            row_drag::carry(ui, drag, ids("songs"));
         });
     });
     card_row(ui, "s-artists", "Artists", &r.artists, acts);
@@ -536,23 +550,31 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         ui.add_space(26.0);
         ui.label(RichText::new("Videos").font(theme::bold(24.0)));
         ui.add_space(10.0);
-        for t in r.videos.iter().take(6) {
-            let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
-            if track_row(ui, t, &o, acts).clicked() {
-                acts.push(play(t));
-            }
+        for (i, t) in r.videos.iter().take(6).enumerate() {
+            ui.push_id(("videos", i), |ui| {
+                row_drag::grip(ui, drag, ids("videos"), i, t);
+                let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
+                if track_row(ui, t, &o, acts).clicked() {
+                    acts.push(play(t));
+                }
+            });
         }
+        row_drag::carry(ui, drag, ids("videos"));
     }
     if r.tracks.len() > 4 {
         ui.add_space(26.0);
         ui.label(RichText::new("More songs").font(theme::bold(24.0)));
         ui.add_space(10.0);
-        for t in r.tracks.iter().skip(4) {
-            let o = RowOpts { pick, ..rows.opts(liked, t, None, true) };
-            if track_row(ui, t, &o, acts).clicked() {
-                acts.push(play(t));
-            }
+        for (i, t) in r.tracks.iter().skip(4).enumerate() {
+            ui.push_id(("more", i), |ui| {
+                row_drag::grip(ui, drag, ids("more"), i, t);
+                let o = RowOpts { pick, ..rows.opts(liked, t, None, true) };
+                if track_row(ui, t, &o, acts).clicked() {
+                    acts.push(play(t));
+                }
+            });
         }
+        row_drag::carry(ui, drag, ids("more"));
     }
     card_row(ui, "s-pl", "Playlists", &r.playlists, acts);
 }
@@ -833,7 +855,7 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let shown: &[Track] = if needle.is_empty() { tracks } else { &filtered };
     let number = |i: usize, t: &Track| is_album.then(|| t.track_nr.map_or(i + 1, |n| n as usize));
     let own = app.logged_in && c.owned && !is_album;
-    list(ui, &rows, &app.liked, shown, !is_album, number, ListCtx { sel: &mut app.selection, page: &app.page, own }, acts);
+    list(ui, &rows, &app.liked, shown, !is_album, number, ListCtx { sel: &mut app.selection, page: &app.page, own }, &mut app.row_drag, egui::Id::unique(("list", id)), acts);
     if more {
         widgets::skeleton_rows(ui, now, 3);
     }
@@ -924,12 +946,20 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             });
         });
         ui.add_space(12.0);
+        // They can be dragged onto a playlist in the sidebar.
+        let drag = &mut app.row_drag;
+        let list = egui::Id::unique(("artist-top", id));
         for (i, t) in top.iter().enumerate().take(5) {
-            let o = rows.opts(&app.liked, t, None, true);
-            if track_row(ui, t, &o, acts).clicked() {
-                acts.push(Action::Play(top.clone(), i));
-            }
+            // Its own scope, so a picked-up row dims alone.
+            ui.push_id(i, |ui| {
+                row_drag::grip(ui, drag, list, i, t);
+                let o = rows.opts(&app.liked, t, None, true);
+                if track_row(ui, t, &o, acts).clicked() {
+                    acts.push(Action::Play(top.clone(), i));
+                }
+            });
         }
+        row_drag::carry(ui, drag, list);
     }
     // Albums and singles keep their own shelves now, each with its Show all into the
     // artist's full discography for that kind of release.
@@ -997,7 +1027,7 @@ fn artist_shelf(app: &mut App, ui: &mut Ui, artist: &str, title: &str, now: f64)
         let mut sel = std::mem::take(&mut app.selection);
         let page = app.page.clone();
         let cx = ListCtx { sel: &mut sel, page: &page, own: false };
-        let clicked = list(ui, &rows, liked, tracks, true, plain, cx, acts);
+        let clicked = list(ui, &rows, liked, tracks, true, plain, cx, &mut app.row_drag, egui::Id::unique(("shelf", app.page.clone())), acts);
         app.selection = sel;
         let _ = clicked;
     } else if !s.cards.is_empty() {
@@ -1060,7 +1090,7 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                 return;
             }
             let Some(h) = &app.history else { return };
-            list(ui, &rows, &app.liked, h, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.actions);
+            list(ui, &rows, &app.liked, h, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("history"), &mut app.actions);
         }
         LibTab::Uploads => {
             ui.horizontal(|ui| {
@@ -1085,7 +1115,7 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                 ui.add_space(20.0);
                 ui.label(RichText::new("No uploads yet").color(theme::text_dim()));
             }
-            list(ui, &rows, &app.liked, up, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.actions);
+            list(ui, &rows, &app.liked, up, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("uploads"), &mut app.actions);
         }
         // Liked Music, kept like any playlist.
         LibTab::Songs => {
@@ -1110,7 +1140,7 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                 });
                 ui.add_space(10.0);
             }
-            list(ui, &rows, &app.liked, liked, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.actions);
+            list(ui, &rows, &app.liked, liked, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("liked"), &mut app.actions);
             if more {
                 widgets::skeleton_rows(ui, now, 3);
             }
@@ -1177,7 +1207,7 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
     });
     ui.add_space(12.0);
     let rows = Rows::new(app, now);
-    list(ui, &rows, &app.liked, &songs, true, |_, _| None, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.actions);
+    list(ui, &rows, &app.liked, &songs, true, |_, _| None, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("downloads"), &mut app.actions);
 }
 
 // ------------------------------------------------------------------ settings

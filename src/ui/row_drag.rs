@@ -147,6 +147,20 @@ pub fn target(ui: &Ui, drag: &mut Option<RowDrag>, rect: Rect) -> Option<Over> {
     drag.take().map(|d| Over::Dropped(d.track))
 }
 
+/// Inside a scroll area of drop targets: scrolls it while a song is held near its top or
+/// bottom edge, to reach the targets out of view.
+pub fn scroll_targets(ui: &Ui, drag: &Option<RowDrag>) {
+    if !live(ui, drag) {
+        return;
+    }
+    let clip = ui.clip_rect();
+    let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| clip.contains(*p)) else { return };
+    let speed = edge_speed(p.y, clip.top(), clip.bottom());
+    if speed != 0.0 {
+        ui.scroll_with_delta(Vec2::new(0.0, speed * ui.input(|i| i.stable_dt)));
+    }
+}
+
 /// Whether a drag is going on: its list was shown last frame, or this one.
 fn live(ui: &Ui, drag: &Option<RowDrag>) -> bool {
     drag.as_ref().is_some_and(|d| d.seen + 1 >= ui.ctx().cumulative_frame_nr())
