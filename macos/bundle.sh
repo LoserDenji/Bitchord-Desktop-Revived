@@ -19,7 +19,8 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/bitchord"
 chmod 755 "$app/Contents/MacOS/bitchord"
-sed "s/@VERSION@/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
+# macOS wants numbers only: a nightly (2.0.2-nightly.20261114) shows as its base version.
+sed "s/@VERSION@/${version%%-*}/g" "$here/Info.plist" > "$app/Contents/Info.plist"
 
 # The Dock and Finder icon, at each size iconutil takes up to the 256 px source.
 tmp=$(mktemp -d)

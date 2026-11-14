@@ -183,7 +183,8 @@ pub struct NotesDialog {
 pub fn dialog(app: &mut App, ctx: &egui::Context) {
     let Some(d) = app.notes_dialog.clone() else { return };
     let body = app.updater.as_ref().and_then(|u| u.notes(&d.version));
-    // For the .deb, which can't install it itself: the new .deb to download.
+    // For a copy a package manager owns (the .deb or the Arch package), which can't
+    // install it itself: the new package to download.
     let deb_url = app.updater.as_ref().and_then(|u| match u.state() {
         crate::update::State::Available { version, url } if d.ready && version == d.version => Some(url),
         _ => None,
@@ -209,7 +210,7 @@ pub fn dialog(app: &mut App, ctx: &egui::Context) {
             ui.label(egui::RichText::new("by Loserdenji").font(theme::semibold(13.0)).color(accent));
             ui.add_space(3.0);
             let sub = if deb_url.is_some() {
-                format!("You're on {}. Download the new .deb and open it to install it over this one.", crate::update::current_version())
+                format!("You're on {}. {}", crate::update::current_version(), crate::update::package_step())
             } else if d.ready {
                 format!("You're on {}. It's downloaded and installs when you close the app.", crate::update::current_version())
             } else {

@@ -10,9 +10,10 @@
 //! installed from the disk image downloads the new one and puts the app from it in
 //! place of its own as it closes. A copy from the Linux .deb (a `deb.txt` beside the
 //! binary, in /usr/lib/bitchord) can't replace itself: it only says a new version is
-//! out ([`State::Available`]), and the new .deb installs over it. Every platform has a
-//! portable build too (a `portable.txt` marker; inside the app bundle on macOS), which
-//! updates from the portable download. Dev builds never update themselves.
+//! out ([`State::Available`]), and the new .deb installs over it. The Arch package (a
+//! `pacman.txt` there instead) does the same with the new package. Every platform has
+//! a portable build too (a `portable.txt` marker; inside the app bundle on macOS),
+//! which updates from the portable download. Dev builds never update themselves.
 //!
 //! Release notes (the release's Markdown body) are kept per version: the one a check
 //! finds, and any other on request ([`Updater::notes`]), for the update dialog, the
@@ -22,6 +23,7 @@
 //! pretends to be that version; `YTM_UPDATE_DRYRUN=1` logs the install command
 //! instead of running it; `YTM_UPDATE_FEED=<url>` reads the latest release from there.
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -57,8 +59,19 @@ pub struct Updater {
     downloads: Arc<Mutex<Option<Option<u64>>>>,
 }
 
+/// What a nightly's version has between the base version and its build number.
+const NIGHTLY: &str = "-nightly.";
+
+/// The version this was built as: a nightly build adds its build number.
+pub fn build_version() -> String {
+    match option_env!("YTM_NIGHTLY").filter(|n| !n.is_empty()) {
+        Some(n) => format!("{}{NIGHTLY}{n}", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").to_owned(),
+    }
+}
+
 pub fn current_version() -> String {
-    std::env::var("YTM_UPDATE_AS").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned())
+    std::env::var("YTM_UPDATE_AS").unwrap_or_else(|_| build_version())
 }
 
 /// Whether this copy was installed by the installer (which leaves its uninstaller
@@ -86,34 +99,76 @@ pub fn deb() -> bool {
     })
 }
 
+/// Whether this copy was installed from the Arch package, which marks it with
+/// `pacman.txt` beside the binary. Pacman owns it, so like the .deb it never
+/// replaces itself.
+pub fn pacman() -> bool {
+    static PACMAN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PACMAN.get_or_init(|| cfg!(target_os = "linux") && std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("pacman.txt").exists())).unwrap_or(false))
+}
+
+/// Whether a package manager owns this copy (the .deb or the Arch package): it only
+/// says a new version is out.
+pub fn packaged() -> bool {
+    deb() || pacman()
+}
+
+/// What to do with the new version, for a copy a package manager owns.
+pub fn package_step() -> &'static str {
+    if pacman() {
+        "Download the new package and install it over this one with sudo pacman -U."
+    } else {
+        "Download the new .deb and open it to install it over this one."
+    }
+}
+
 /// The `.app` bundle a binary is in (`bitchord.app/Contents/MacOS/bitchord`).
 fn bundle_of(exe: &Path) -> Option<&Path> {
     exe.ancestors().nth(3).filter(|a| a.extension().is_some_and(|x| x == "app"))
 }
 
-/// The release asset this copy updates from. The release workflow names them
-/// `BitChord-<version>-<os>-<arch>[-kind]`: a setup exe and a portable zip on Windows
-/// (x64), one universal dmg on macOS, and on Linux an installer tarball (installed by
-/// `install.sh`) and a `-portable-` one; the .deb-installed copy instead points at the
-/// new .deb, which `apt` installs over it. A release without this asset yet reads as up
-/// to date, so a platform the workflow doesn't build (ARM64 Linux, say) just never
+/// A version as the .deb has it: a nightly (`2.0.2-nightly.20261114`) comes after its
+/// version there too (`2.0.2+nightly.20261114`).
+fn deb_version(version: &str) -> String {
+    version.replacen(NIGHTLY, "+nightly.", 1)
+}
+
+/// The Arch package's file, as linux/arch.sh builds it: pkgver can't have a hyphen, so
+/// a nightly (`2.0.2-nightly.20261114`) is `2.0.2.nightly.20261114`, which pacman puts
+/// after its version too.
+fn pacman_package(version: &str, arch: &str) -> String {
+    format!("bitchord-{}-1-{arch}.pkg.tar.zst", version.replace('-', "."))
+}
+
+/// The release asset this copy updates from. The release workflow names them as
+/// ytm-rs does: on Windows a setup exe and a portable zip (x64, plus `-arm64` builds
+/// cross-compiled on the x64 runner), on macOS a per-architecture dmg and portable
+/// zip, and on Linux an installer tarball (installed by `install.sh`), a `-portable-`
+/// one, a .deb and an Arch package; a copy a package manager owns instead points at
+/// the new package, which installs over it. A release without this asset yet reads as
+/// up to date, so a platform the workflow doesn't build (ARM64 Linux, say) just never
 /// updates.
 fn asset_name(version: &str) -> String {
+    let portable = portable_dir().is_some();
     let arch = std::env::consts::ARCH;
+    if cfg!(target_os = "linux") && pacman() {
+        return pacman_package(version, arch);
+    }
     if cfg!(target_os = "linux") && deb() {
         let arch = if arch == "x86_64" { "amd64" } else if arch == "aarch64" { "arm64" } else { arch };
-        return format!("bitchord_{version}_{arch}.deb");
+        return format!("bitchord_{}_{arch}.deb", deb_version(version));
     }
     if cfg!(target_os = "linux") {
-        let kind = if portable_dir().is_some() { "portable-" } else { "" };
-        return format!("BitChord-{kind}{version}-linux-{arch}.tar.gz");
+        let kind = if portable { "portable-" } else { "" };
+        return format!("bitchord-{kind}{version}-linux-{arch}.tar.gz");
     }
-    if cfg!(target_os = "macos") {
-        // The release ships one universal dmg for Apple Silicon and Intel.
-        return format!("BitChord-{version}-macos-universal.dmg");
-    }
-    let portable = portable_dir().is_some();
-    if portable { format!("BitChord-{version}-windows-x64-portable.zip") } else { format!("BitChord-{version}-windows-x64-setup.exe") }
+    // ARM64 Windows builds have their own assets; x64 keeps the original names.
+    let (suffix, setup) = if cfg!(target_os = "macos") {
+        (format!("-macos-{arch}"), "dmg")
+    } else {
+        (if cfg!(target_arch = "aarch64") { "-arm64" } else { "" }.to_owned(), "exe")
+    };
+    if portable { format!("bitchord-portable-{version}{suffix}.zip") } else { format!("bitchord-setup-{version}{suffix}.{setup}") }
 }
 
 /// The portable build's folder: the download ships a `portable.txt` beside the exe
@@ -145,17 +200,30 @@ pub fn clean_portable() {
     }
 }
 
-/// `a` is newer than `b` (dotted numeric versions, a leading "v" ignored).
+/// `a` is newer than `b` (dotted numeric versions, a leading "v" ignored). A nightly
+/// (`2.0.2-nightly.20261114`) is built from main after that version's release, so it's
+/// newer than the release and older than the next one.
 pub fn newer(a: &str, b: &str) -> bool {
-    let parse = |v: &str| v.trim_start_matches('v').split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    let (a, b) = (parse(a), parse(b));
-    for i in 0..a.len().max(b.len()) {
-        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
-        if x != y {
-            return x > y;
+    let nums = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    let parse = |v: &str| {
+        let v = v.trim_start_matches('v');
+        match v.split_once(NIGHTLY) {
+            Some((base, build)) => (nums(base), Some(nums(build))),
+            None => (nums(v), None),
         }
+    };
+    let cmp = |a: &[u64], b: &[u64]| {
+        (0..a.len().max(b.len())).map(|i| a.get(i).copied().unwrap_or(0).cmp(&b.get(i).copied().unwrap_or(0))).find(|o| o.is_ne()).unwrap_or(Ordering::Equal)
+    };
+    let (a, b) = (parse(a), parse(b));
+    match cmp(&a.0, &b.0) {
+        Ordering::Equal => match (a.1, b.1) {
+            (Some(x), Some(y)) => cmp(&x, &y).is_gt(),
+            (Some(_), None) => true,
+            _ => false,
+        },
+        o => o.is_gt(),
     }
-    false
 }
 
 impl Updater {
@@ -287,9 +355,10 @@ impl Updater {
             return Ok(State::UpToDate);
         };
         let url = asset["browser_download_url"].as_str().ok_or_else(|| anyhow::anyhow!("asset has no URL"))?;
-        // The .deb-installed copy: apt owns the files, so it doesn't download anything,
-        // it only points you at the new .deb to install over it.
-        if deb() {
+        // A copy a package manager owns (the .deb or the Arch package): apt or pacman
+        // own the files, so it doesn't download anything, it only points you at the new
+        // package to install over it.
+        if packaged() {
             log::info!("update: {version} is out");
             return Ok(State::Available { version, url: url.to_owned() });
         }
@@ -553,7 +622,7 @@ fn client() -> anyhow::Result<reqwest::Client> {
 
 #[cfg(test)]
 mod tests {
-    use super::newer;
+    use super::{deb_version, newer, pacman_package};
 
     #[test]
     fn version_order() {
@@ -563,5 +632,24 @@ mod tests {
         assert!(!newer("v0.2.7", "0.2.7"));
         assert!(!newer("v0.2.6", "0.2.7"));
         assert!(!newer("", "0.2.7"));
+    }
+
+    #[test]
+    fn nightly_order() {
+        // A nightly is newer than its base release, and older than the next one.
+        assert!(newer("v2.0.2-nightly.20261114", "v2.0.2"));
+        assert!(!newer("v2.0.2", "v2.0.2-nightly.20261114"));
+        assert!(newer("v2.0.3", "v2.0.2-nightly.20261114"));
+        assert!(!newer("v2.0.2-nightly.20261114", "v2.0.2-nightly.20261115"));
+        assert!(newer("v2.0.2-nightly.20261115", "v2.0.2-nightly.20261114"));
+    }
+
+    #[test]
+    fn package_names() {
+        assert_eq!(deb_version("2.0.2"), "2.0.2");
+        assert_eq!(deb_version("2.0.2-nightly.20261114"), "2.0.2+nightly.20261114");
+        assert_eq!(pacman_package("2.0.2", "x86_64"), "bitchord-2.0.2-1-x86_64.pkg.tar.zst");
+        assert_eq!(pacman_package("2.0.2-nightly.20261114", "x86_64"), "bitchord-2.0.2.nightly.20261114-1-x86_64.pkg.tar.zst");
+        assert_eq!(pacman_package("2.0.2-nightly.20261114.2", "x86_64"), "bitchord-2.0.2.nightly.20261114.2-1-x86_64.pkg.tar.zst");
     }
 }

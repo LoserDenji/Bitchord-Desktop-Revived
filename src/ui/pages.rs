@@ -1750,8 +1750,8 @@ fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
         // The tests' verdicts are keyed by the links themselves, so they follow their
         // link to its new place; only the list order and the switches move.
         app.hires_sources.swap(a, b);
-        if let (Some(x), Some(y)) = (app.hires_enabled.get_mut(a), app.hires_enabled.get_mut(b)) {
-            std::mem::swap(x, y);
+        if a < app.hires_enabled.len() && b < app.hires_enabled.len() {
+            app.hires_enabled.swap(a, b);
         }
         edited = true;
     }

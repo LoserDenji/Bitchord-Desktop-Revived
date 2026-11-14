@@ -37,7 +37,7 @@ if [ ! -f "$here/bitchord" ]; then
     arch=$(uname -m)
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
-    url=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | grep -o "https://[^\"]*/BitChord-[0-9][^\"/]*-linux-$arch\.tar\.gz" | head -n 1)
+    url=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | grep -o "https://[^\"]*/bitchord-[0-9][^\"/]*-linux-$arch\.tar\.gz" | head -n 1)
     [ -n "$url" ] || { echo "No Linux $arch download in the latest release."; exit 1; }
     echo "Downloading $(basename "$url")"
     curl -fL# "$url" | tar -xz -C "$tmp"

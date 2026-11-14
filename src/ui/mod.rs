@@ -2053,7 +2053,7 @@ pub fn system_device_label() -> &'static str {
 /// can't change while running, and the check touches the disk, so it runs once.
 fn updatable() -> bool {
     static UPDATABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *UPDATABLE.get_or_init(|| crate::update::installed() || crate::update::portable_dir().is_some() || crate::update::deb())
+    *UPDATABLE.get_or_init(|| crate::update::installed() || crate::update::portable_dir().is_some() || crate::update::packaged())
 }
 
 pub fn fmt_time(secs: u32) -> String {
