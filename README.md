@@ -69,8 +69,15 @@ Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord
 
   If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
   
-- **macOS** — download `BitChord-<version>-macos-universal.dmg` (one build for both Apple Silicon and Intel), open it and drag BitChord into Applications.
+- **macOS** — Download `bitchord-setup-<version>-macos-aarch64.dmg` (Apple silicon) or `-macos-x86_64.dmg` (Intel), open it, and drag **bitchord** to Applications. Requires macOS 11 or later.
 
+The app isn't notarized, so the first time, right-click it and pick **Open**, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/ytm-rs.app
+```
+
+Sign-ins are kept in your login Keychain. Jam links don't open the app on macOS yet; type the code on the **Listen together** page instead.
   The build is unsigned, so the first launch needs one extra step: right-click BitChord → **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.
   
 <div align="center">
@@ -79,7 +86,16 @@ Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord
   <p><em>macOS installation walkthrough</em></p>
 </div>
 
-- **Linux** — install the `.deb` (Debian, Ubuntu, Mint and friends), or download the other tarball, extract it and run `./install.sh` (installs into your user directory, with a menu entry and a `bitchord` command; it offers to install any missing libraries). For a run-anywhere copy, use the `-portable-` tarball. The installed and portable copies update themselves; a `.deb` install tells you when a new version is out, to install over it.
+- **Linux** —
+```sh
+curl -fsSL https://raw.githubusercontent.com/grapedjuice/ytm-rs/main/linux/install.sh | sh
+```
+
+This installs bitchord for your user (no root) in `~/.local/lib/ytm-rs`, with a `ytm-rs` command and an app menu entry. If WebKitGTK or other required libraries are missing, it installs them too (that step asks for your password). You can also download `ytm-rs-<version>-linux-x86_64.tar.gz`, extract it and run `./install.sh`.
+
+On Debian, Ubuntu and their derivatives you can instead download `ytm-rs_<version>_amd64.deb` and open it, or run `sudo apt install ./ytm-rs_<version>_amd64.deb`. It doesn't update itself: when a new version is out, the app says so and links to the new `.deb`, which installs over the old one. To uninstall it, run `sudo apt remove ytm-rs`.
+
+Sign-ins are kept in your keyring (GNOME Keyring or KWallet). To uninstall, run `~/.local/lib/ytm-rs/install.sh --uninstall`.
 
 ## Building from source
 
