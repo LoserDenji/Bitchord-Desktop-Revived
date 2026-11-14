@@ -611,10 +611,21 @@ struct SeekJob {
 }
 
 /// Build a decoder for `j` (it may wait for the download) and hand it to the audio thread.
-fn build_seek(j: SeekJob, tx: &Sender<AudioCmd>, events: &Sender<AudioEvent>) {
+/// `pending`: the seek asked for since, if any.
+fn build_seek(mut j: SeekJob, pending: &std::sync::Mutex<Option<SeekJob>>, tx: &Sender<AudioCmd>, events: &Sender<AudioEvent>) {
+    let seekable = !j.pos.is_zero();
+    let decoder = stream::decoder(j.shared.clone(), seekable);
+    // That may have waited a long time (the download, the index). A seek in the same song
+    // asked for meanwhile takes this decoder, which can go anywhere, rather than have it
+    // dropped as stale and another built.
+    if seekable && decoder.is_ok() {
+        let mut next = pending.lock().unwrap();
+        if next.as_ref().is_some_and(|n| n.generation == j.generation && !n.pos.is_zero()) {
+            j = next.take().unwrap();
+        }
+    }
     let SeekJob { shared, pos, live, generation, seek } = j;
-    let seekable = !pos.is_zero();
-    let res = stream::decoder(shared.clone(), seekable).map_err(|e| e.to_string()).and_then(|mut d| {
+    let res = decoder.map_err(|e| e.to_string()).and_then(|mut d| {
         // Building it may have waited for the download: catch up.
         let pos = live.map_or(pos, |(p, at)| p + at.elapsed());
         if seekable {
@@ -1141,7 +1152,7 @@ fn run(
                             loop {
                                 let next = job.lock().unwrap().take();
                                 match next {
-                                    Some(j) => build_seek(j, &tx, &events),
+                                    Some(j) => build_seek(j, &job, &tx, &events),
                                     None => {
                                         busy.store(false, Ordering::Release);
                                         // A seek that came in just now finds `busy` already false, or is taken here.

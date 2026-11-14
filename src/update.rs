@@ -57,6 +57,8 @@ pub struct Updater {
     notes: Notes,
     /// Total downloads of every release asset: None until asked, Some(None) while fetching.
     downloads: Arc<Mutex<Option<Option<u64>>>>,
+    /// The nightly channel, rather than stable.
+    nightly: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// What a nightly's version has between the base version and its build number.
@@ -72,6 +74,11 @@ pub fn build_version() -> String {
 
 pub fn current_version() -> String {
     std::env::var("YTM_UPDATE_AS").unwrap_or_else(|_| build_version())
+}
+
+/// Whether `version` is a nightly build's.
+pub fn is_nightly(version: &str) -> bool {
+    version.contains(NIGHTLY)
 }
 
 /// Whether this copy was installed by the installer (which leaves its uninstaller
@@ -227,8 +234,22 @@ pub fn newer(a: &str, b: &str) -> bool {
 }
 
 impl Updater {
-    pub fn new(data_dir: &Path, wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { state: Arc::new(Mutex::new(State::Idle)), dir: data_dir.join("updates"), wake: Arc::new(wake), notes: Default::default(), downloads: Default::default() }
+    pub fn new(data_dir: &Path, nightly: bool, wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self { state: Arc::new(Mutex::new(State::Idle)), dir: data_dir.join("updates"), wake: Arc::new(wake), notes: Default::default(), downloads: Default::default(), nightly: Arc::new(std::sync::atomic::AtomicBool::new(nightly)) }
+    }
+
+    /// Switch channel. What was found or downloaded for the other one is dropped; a
+    /// check under way starts over on the new channel when it ends.
+    pub fn set_nightly(&self, nightly: bool) {
+        if self.nightly.swap(nightly, std::sync::atomic::Ordering::Relaxed) == nightly {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if !matches!(*state, State::Checking | State::Downloading { .. }) {
+            *state = State::Idle;
+        }
+        drop(state);
+        (self.wake)();
     }
 
     pub fn state(&self) -> State {
@@ -322,27 +343,56 @@ impl Updater {
                 Ok(rt) => rt,
                 Err(e) => return this.set(State::Failed(e.to_string())),
             };
-            match rt.block_on(this.run()) {
-                Ok(s) => this.set(s),
-                Err(e) => {
-                    log::warn!("update check failed: {e:#}");
-                    this.set(State::Failed(format!("{e:#}")));
+            loop {
+                let nightly = this.nightly.load(std::sync::atomic::Ordering::Relaxed);
+                let result = rt.block_on(this.run(nightly));
+                // The channel changed while this ran: check again on the new one.
+                if this.nightly.load(std::sync::atomic::Ordering::Relaxed) != nightly {
+                    continue;
                 }
+                match result {
+                    Ok(s) => this.set(s),
+                    Err(e) => {
+                        log::warn!("update check failed: {e:#}");
+                        this.set(State::Failed(format!("{e:#}")));
+                    }
+                }
+                break;
             }
         });
     }
 
-    async fn run(&self) -> anyhow::Result<State> {
+    /// The release to update to from what the feed returned: a single release, or the
+    /// list of them, from which the newest stable one, or on the nightly channel the newest
+    /// stable or nightly one. Other prereleases (test builds) are never picked.
+    fn pick_release(feed: serde_json::Value, nightly: bool) -> Option<serde_json::Value> {
+        let serde_json::Value::Array(list) = feed else { return Some(feed) };
+        let tag = |r: &serde_json::Value| r["tag_name"].as_str().unwrap_or_default().to_owned();
+        list.into_iter()
+            .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+            .filter(|r| if r["prerelease"].as_bool().unwrap_or(false) { nightly && is_nightly(&tag(r)) } else { true })
+            .reduce(|best, r| if newer(&tag(&r), &tag(&best)) { r } else { best })
+    }
+
+    /// Whether `tag` is the one to install over `current`: newer, or on the stable channel,
+    /// the stable release in place of a nightly build.
+    fn wanted(tag: &str, current: &str, nightly: bool) -> bool {
+        newer(tag, current) || (!nightly && is_nightly(current) && !is_nightly(tag) && !tag.is_empty() && tag.trim_start_matches('v') != current)
+    }
+
+    async fn run(&self, nightly: bool) -> anyhow::Result<State> {
         let http = client()?;
-        let feed = std::env::var("YTM_UPDATE_FEED").unwrap_or_else(|_| LATEST.to_owned());
-        let release: serde_json::Value = http.get(feed).send().await?.error_for_status()?.json().await?;
+        // Nightlies are prereleases, which the latest release never is: they're in the list.
+        let feed = std::env::var("YTM_UPDATE_FEED").unwrap_or_else(|_| if nightly { format!("{ALL_RELEASES}?per_page=30") } else { LATEST.to_owned() });
+        let feed: serde_json::Value = http.get(feed).send().await?.error_for_status()?.json().await?;
+        let release = Self::pick_release(feed, nightly).ok_or_else(|| anyhow::anyhow!("no releases found"))?;
         let tag = release["tag_name"].as_str().unwrap_or_default();
         if let Some(body) = release["body"].as_str() {
             self.notes.lock().unwrap().insert(tag.trim_start_matches('v').to_owned(), Some(body.to_owned()));
         }
         let current = current_version();
-        if !newer(tag, &current) {
-            log::info!("update: {current} is current (latest {tag})");
+        if !Self::wanted(tag, &current, nightly) {
+            log::info!("update: {current} is current (latest {tag}, {} channel)", if nightly { "nightly" } else { "stable" });
             return Ok(State::UpToDate);
         }
         let version = tag.trim_start_matches('v').to_owned();
@@ -651,5 +701,26 @@ mod tests {
         assert_eq!(pacman_package("2.0.2", "x86_64"), "bitchord-2.0.2-1-x86_64.pkg.tar.zst");
         assert_eq!(pacman_package("2.0.2-nightly.20261114", "x86_64"), "bitchord-2.0.2.nightly.20261114-1-x86_64.pkg.tar.zst");
         assert_eq!(pacman_package("2.0.2-nightly.20261114.2", "x86_64"), "bitchord-2.0.2.nightly.20261114.2-1-x86_64.pkg.tar.zst");
+    }
+
+    #[test]
+    fn channels() {
+        use super::{Updater, is_nightly};
+        use serde_json::json;
+        let r = |tag: &str, pre: bool| json!({ "tag_name": tag, "prerelease": pre, "draft": false });
+        let list = json!([r("test-wayland-tray-1", true), r("v2.0.2-nightly.20261114", true), r("v2.0.2", false), r("v2.0.1", false)]);
+        let tag = |nightly| Updater::pick_release(list.clone(), nightly).unwrap()["tag_name"].as_str().unwrap().to_owned();
+        assert_eq!(tag(false), "v2.0.2");
+        assert_eq!(tag(true), "v2.0.2-nightly.20261114");
+        // A stable release after the nightly wins on the nightly channel too.
+        let list = json!([r("v2.0.3", false), r("v2.0.2-nightly.20261114", true)]);
+        assert_eq!(Updater::pick_release(list, true).unwrap()["tag_name"], "v2.0.3");
+        // Back on stable from a nightly: the stable release, though older.
+        assert!(Updater::wanted("v2.0.2", "2.0.2-nightly.20261114", false));
+        assert!(!Updater::wanted("v2.0.2", "2.0.2-nightly.20261114", true));
+        assert!(!Updater::wanted("v2.0.2", "2.0.2", false));
+        assert!(Updater::wanted("v2.0.2-nightly.20261115", "2.0.2-nightly.20261114", true));
+        assert!(is_nightly("2.0.2-nightly.20261114"));
+        assert!(!is_nightly("2.0.2"));
     }
 }

@@ -520,7 +520,8 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     let ids = |section: &str| egui::Id::unique(("search", section));
     let tracks: Vec<&Track> = r.tracks.iter().filter(|t| rows.shows(t)).collect();
     let videos: Vec<&Track> = r.videos.iter().filter(|t| rows.shows(t)).collect();
-    if tracks.is_empty() && videos.is_empty() && r.artists.is_empty() && r.albums.is_empty() && r.playlists.is_empty() {
+    let episodes: Vec<&Track> = r.episodes.iter().filter(|t| rows.shows(t)).collect();
+    if tracks.is_empty() && videos.is_empty() && r.artists.is_empty() && r.albums.is_empty() && r.playlists.is_empty() && r.podcasts.is_empty() && episodes.is_empty() {
         ui.add_space(18.0);
         ui.label(RichText::new("No results").font(theme::bold(20.0)).color(theme::text()));
         return;
@@ -591,6 +592,26 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         row_drag::carry(ui, drag, ids("more"));
     }
     card_row(ui, "s-pl", "Playlists", &r.playlists, acts);
+    card_row(ui, "s-podcasts", "Podcasts", &r.podcasts, acts);
+    if !episodes.is_empty() {
+        ui.add_space(26.0);
+        ui.label(RichText::new("Episodes").font(theme::bold(24.0)));
+        ui.add_space(10.0);
+        for (i, t) in episodes.iter().copied().take(6).enumerate() {
+            ui.push_id(("episodes", i), |ui| {
+                row_drag::grip(ui, drag, ids("episodes"), i, t);
+                let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
+                if track_row(ui, t, &o, acts).clicked() {
+                    // An episode plays alone: a radio from it would queue songs after it.
+                    acts.push(match play(t) {
+                        Action::Radio(t) => Action::Play(vec![t], 0),
+                        other => other,
+                    });
+                }
+            });
+        }
+        row_drag::carry(ui, drag, ids("episodes"));
+    }
 }
 
 /// Apple's search landing: what was opened from the last few searches, with its artwork.
@@ -718,7 +739,7 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         ui.vertical(|ui| {
             ui.set_max_width(ui.available_width().min(760.0));
             ui.add_space(24.0);
-            ui.label(RichText::new(if is_album { "ALBUM" } else { "PLAYLIST" }).font(theme::semibold(12.0)).color(theme::text_dim()));
+            ui.label(RichText::new(if is_album { "ALBUM" } else if c.is_show() { "PODCAST" } else { "PLAYLIST" }).font(theme::semibold(12.0)).color(theme::text_dim()));
             ui.label(RichText::new(&c.title).font(theme::bold(40.0)).color(theme::text()));
             ui.add_space(2.0);
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
@@ -726,7 +747,7 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             let total: u32 = tracks.iter().filter_map(|t| t.duration).sum();
             if total > 0 {
                 ui.label(
-                    RichText::new(format!("{} songs • {} min", tracks.len(), total / 60)).font(theme::regular(13.5)).color(theme::text_faint()),
+                    RichText::new(format!("{} {} • {} min", tracks.len(), c.things(), total / 60)).font(theme::regular(13.5)).color(theme::text_faint()),
                 );
             }
             if let Some(d) = c.description.as_deref().filter(|d| !d.trim().is_empty()) {
@@ -1075,7 +1096,8 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        for (t, label) in [(LibTab::Playlists, "Playlists"), (LibTab::Songs, "Liked songs"), (LibTab::Albums, "Albums"), (LibTab::History, "History"), (LibTab::Uploads, "Uploads")] {
+        let podcasts = app.show_podcasts;
+        for (t, label) in [(LibTab::Playlists, "Playlists"), (LibTab::Songs, "Liked songs"), (LibTab::Albums, "Albums"), (LibTab::Podcasts, "Podcasts"), (LibTab::History, "History"), (LibTab::Uploads, "Uploads")].into_iter().filter(|(t, _)| podcasts || *t != LibTab::Podcasts) {
             if chip(ui, label, tab == t).clicked() {
                 // Tabs swap in place (no history entry); the current one refreshes.
                 if tab == t {
@@ -1175,6 +1197,7 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                     grid(ui, &lib.playlists, &mut app.actions)
                 }
                 LibTab::Albums => grid(ui, &lib.albums, &mut app.actions),
+                LibTab::Podcasts => grid(ui, &lib.podcasts, &mut app.actions),
                 LibTab::Songs | LibTab::History | LibTab::Uploads => unreachable!(),
             }
         }
@@ -1404,6 +1427,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
         SettingsTab::General => {
             settings_window(app, ui);
             settings_downloads(ui);
+            settings_updates(app, ui);
             settings_section(ui, "Network", None, None, |ui| network(app, ui));
             if filter_show(ui, "Import Spotify transfer Liked Songs playlists account") {
                 super::transfer::settings_section(app, ui);
@@ -1653,6 +1677,12 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
         setting_row(ui, "Hide explicit songs", Some("Leave songs marked E out of lists, search, the queue and autoplay. Ones already playing finish."), |ui| {
             if toggle(ui, &mut app.hide_explicit, "Hide explicit songs").changed() {
                 app.set_hide_explicit();
+            }
+        });
+        divider(ui);
+        setting_row(ui, "Show podcasts", Some("Podcast shows and episodes: a Podcasts filter on Home, in search results, and the ones you've saved in your library."), |ui| {
+            if toggle(ui, &mut app.show_podcasts, "Show podcasts").changed() {
+                app.set_show_podcasts();
             }
         });
         divider(ui);
@@ -2276,6 +2306,56 @@ fn live_mono_servers(app: &App) -> String {
     app.mono_servers.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
+/// Settings › General › Updates: the channel to take them from, and a check on demand.
+/// A nightly build of the newest changes is published every night there are some; it can
+/// break at any time. Stable follows the finished releases only.
+fn settings_updates(app: &mut App, ui: &mut Ui) {
+    use crate::update::State;
+    let mut channel = None;
+    settings_section(ui, "Updates", None, None, |ui| {
+        let desc = "Stable: finished releases, ready for everyday listening.\nNightly: experimental. It can break at any time.";
+        setting_row(ui, "Update channel", Some(desc), |ui| {
+            let btn = dropdown_button(ui, if app.update_nightly { "Nightly" } else { "Stable" }, 140.0, "Update channel");
+            egui::Popup::menu(&btn).show(|ui| {
+                ui.set_width(140.0);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                ui.add_space(4.0);
+                for (label, nightly) in [("Stable", false), ("Nightly", true)] {
+                    if option_row(ui, label, nightly == app.update_nightly).clicked() {
+                        channel = Some(nightly);
+                        ui.close();
+                    }
+                }
+                ui.add_space(4.0);
+            });
+        });
+        divider(ui);
+        let status = match app.updater.as_ref().map(|u| u.state()) {
+            Some(State::Checking) => "Checking for updates…".to_owned(),
+            Some(State::Downloading { percent, .. }) => format!("Downloading… {percent}%"),
+            Some(State::Ready { version, .. }) => format!("{version} is downloaded. It installs when you close the app"),
+            Some(State::Available { version, .. }) => format!("{version} is out"),
+            Some(State::Failed(e)) => format!("The check failed: {e}"),
+            _ => format!("You're on {}. Checks run at launch and every six hours.", crate::update::current_version()),
+        };
+        let mut check = false;
+        setting_row(ui, "Check now", Some(&status), |ui| {
+            ui.add_enabled_ui(super::updatable(), |ui| {
+                check = pill(ui, "Check for updates", None, false).clicked();
+            });
+        });
+        if check {
+            if let Some(u) = &app.updater {
+                u.set_nightly(app.update_nightly);
+                u.check();
+            }
+        }
+    });
+    if let Some(nightly) = channel {
+        app.set_update_nightly(nightly);
+    }
+}
+
 /// Settings › Downloads.
 fn settings_downloads(ui: &mut Ui) {
     settings_section(ui, "Downloads", None, Some("Download songs from their menu. They're saved at the best quality your account gets, tagged with their cover art, and play from the file, even offline."), |ui| {
@@ -2579,6 +2659,39 @@ fn settings_window(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
+        if cfg!(target_os = "linux") {
+            use super::titlebar::Choice;
+            let dir = app.backend.data_dir().to_owned();
+            let saved = Choice::load(&dir);
+            setting_row(ui, "Title bar", Some("Who draws the window's title bar and buttons. Automatic uses Bitchord's where the desktop draws none (GNOME on Wayland)."), |ui| {
+                let btn = dropdown_button(ui, saved.label(), 120.0, "Title bar");
+                egui::Popup::menu(&btn).show(|ui| {
+                    ui.set_width(120.0);
+                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    ui.add_space(4.0);
+                    for c in Choice::ALL {
+                        if option_row(ui, c.label(), c == saved).clicked() {
+                            if let Err(e) = c.save(&dir) {
+                                log::warn!("title bar: couldn't save the setting: {e}");
+                            }
+                            ui.close();
+                        }
+                    }
+                    ui.add_space(4.0);
+                });
+            });
+            divider(ui);
+            if saved.own_here() != super::titlebar::custom() && std::env::var_os("YTM_NATIVE_TITLEBAR").is_none() {
+                let mut restart = false;
+                setting_row(ui, "Restart to apply", Some("The title bar changes from the next start."), |ui| {
+                    restart = pill(ui, "Restart now", None, true).clicked();
+                });
+                if restart {
+                    app.restart(ui.ctx());
+                }
+                divider(ui);
+            }
+        }
         setting_row(ui, "Collapse sidebar", Some("Show only icons in the sidebar, for narrow windows. The menu button at its top does the same."), |ui| {
             toggle(ui, &mut app.sidebar_collapsed, "Collapse sidebar");
         });

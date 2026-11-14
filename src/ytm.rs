@@ -33,6 +33,7 @@ fn parse_home(v: &Value) -> HomePage {
             let ep = if selected { &c["onDeselectedCommand"] } else { &c["navigationEndpoint"] };
             Some(Chip { title: text(&c["text"])?, params: ep["browseEndpoint"]["params"].as_str().map(str::to_owned), selected })
         })
+        .filter(|c: &Chip| podcasts() || c.title != "Podcasts")
         .collect();
     HomePage { chips, shelves: shelves(&sec["contents"]), continuation: continuation(sec) }
 }
@@ -42,6 +43,28 @@ pub async fn home_more(api: &Api, token: &str, auth: bool) -> anyhow::Result<Hom
     let sec = &v["continuationContents"]["sectionListContinuation"];
     Ok(HomePage { chips: vec![], shelves: shelves(&sec["contents"]), continuation: continuation(sec) })
 }
+
+/// Whether podcasts are shown (Settings › Playback › Show podcasts). Off, the app is as
+/// it was before it knew of them: no Podcasts chip on Home, and shows and episodes are
+/// left out wherever YouTube Music lists them.
+static PODCASTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_podcasts(on: bool) {
+    PODCASTS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn podcasts() -> bool {
+    PODCASTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A podcast show's page id is "MPSP" and its playlist's id. It's kept whole as the
+/// playlist's id here, since the show's page is what lists its episodes; this is the
+/// playlist id itself, for what YouTube takes that by (saving it, sharing it).
+pub fn list_id(id: &str) -> &str {
+    id.strip_prefix(SHOW_PREFIX).unwrap_or(id)
+}
+
+const SHOW_PREFIX: &str = "MPSP";
 
 // ----------------------------------------------------------------------- search
 
@@ -53,6 +76,10 @@ pub enum Filter {
     /// Playlists made by YouTube Music (not the community ones).
     Playlists,
     Videos,
+    /// Podcast shows.
+    Podcasts,
+    /// Podcast episodes.
+    Episodes,
 }
 
 impl Filter {
@@ -63,6 +90,8 @@ impl Filter {
             Filter::Artists => "EgWKAQIgAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
             Filter::Playlists => "EgeKAQQoADgBahIQAxAEEAkQDhAKEAUQERAQEBU%3D",
             Filter::Videos => "EgWKAQIQAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
+            Filter::Podcasts => "EgWKAQJQAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
+            Filter::Episodes => "EgWKAQJIAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
         }
     }
 }
@@ -81,6 +110,11 @@ pub async fn search_songs(api: &Api, query: &str, auth: bool) -> anyhow::Result<
 /// Videos for a search: music videos and plain uploads, which song results leave out.
 pub async fn search_videos(api: &Api, query: &str, auth: bool) -> anyhow::Result<Vec<Track>> {
     Ok(search_as(api, query, Filter::Videos, auth).await?.iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect())
+}
+
+/// Podcast episodes for a search.
+pub async fn search_episodes(api: &Api, query: &str, auth: bool) -> anyhow::Result<Vec<Track>> {
+    Ok(search_as(api, query, Filter::Episodes, auth).await?.iter().filter_map(|i| episode_row(&i["musicResponsiveListItemRenderer"])).collect())
 }
 
 /// Song or video rows, searched as the signed-in account: signed-out searches miss
@@ -492,7 +526,9 @@ pub async fn playlist(api: &Api, id: &str, auth: bool, limit: Option<usize>) -> 
 /// A playlist's first page (about 100 songs), the next page's token, and how many
 /// songs to stop at: `limit` (`None`: all), or fewer when the header says so.
 pub async fn playlist_start(api: &Api, id: &str, auth: bool, limit: Option<usize>) -> anyhow::Result<(Collection, Option<String>, usize)> {
-    let v = api.call("browse", json!({ "browseId": format!("VL{id}") }), auth).await?;
+    // A podcast show's own page lists its episodes; a playlist's is "VL" and its id.
+    let browse = if id.starts_with(SHOW_PREFIX) { id.to_owned() } else { format!("VL{id}") };
+    let v = api.call("browse", json!({ "browseId": browse }), auth).await?;
     let Some((mut pl, token, count)) = parse_playlist(&v, id) else {
         // A session Google has revoked still gets answers, just signed-out ones.
         anyhow::ensure!(!(auth && api.account().is_some() && crate::ytmapi::logged_out(&v)), "Your YouTube sign-in has expired");
@@ -574,7 +610,9 @@ fn playlist_continuation(v: &Value) -> (Vec<Track>, Vec<Option<String>>, Option<
     if !items.is_null() {
         return list_page(arr(items));
     }
-    let shelf = &v["continuationContents"]["musicPlaylistShelfContinuation"];
+    let cont = &v["continuationContents"];
+    // A podcast show's episodes continue as a plain shelf.
+    let shelf = if cont["musicPlaylistShelfContinuation"].is_null() { &cont["musicShelfContinuation"] } else { &cont["musicPlaylistShelfContinuation"] };
     let (tracks, ids, token) = list_page(arr(&shelf["contents"]));
     (tracks, ids, token.or_else(|| continuation(shelf)))
 }
@@ -586,6 +624,10 @@ fn list_page(items: &[Value]) -> (Vec<Track>, Vec<Option<String>>, Option<String
         .iter()
         .filter_map(|i| {
             let r = &i["musicResponsiveListItemRenderer"];
+            if r.is_null() {
+                // A podcast show's page lists its episodes this way.
+                return Some((episode(&i["musicMultiRowListItemRenderer"])?, None));
+            }
             Some((list_item(r)?, r["playlistItemData"]["playlistSetVideoId"].as_str().map(str::to_owned)))
         })
         .unzip();
@@ -919,6 +961,26 @@ pub async fn saved_playlists(api: &Api) -> anyhow::Result<Vec<Card>> {
     saved(api, "4qmFsgIrEhdGRW11c2ljX2xpa2VkX3BsYXlsaXN0cxoQZ2dNR0tnUUlBQkFCb0FZQg%3D%3D").await
 }
 
+/// The podcast shows saved to the library, with its own lists (New episodes, Episodes
+/// for later) first, as YouTube Music has them.
+pub async fn saved_podcasts(api: &Api) -> anyhow::Result<Vec<Card>> {
+    let v = api.call_signed_in("browse", json!({ "browseId": "FEmusic_library_non_music_audio_list" })).await?;
+    let sections = arr(&v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]);
+    let mut cards = grid_cards(sections);
+    let mut token = sections.iter().find_map(|s| grid_next(&s["gridRenderer"]));
+    for _ in 0..100 {
+        let Some(t) = token.take() else { break };
+        let Ok(v) = api.call_signed_in("browse", json!({ "continuation": t })).await else { break };
+        let (more, next) = grid_continuation(&v);
+        if more.is_empty() {
+            break;
+        }
+        cards.extend(more);
+        token = next;
+    }
+    Ok(cards)
+}
+
 pub async fn saved_albums(api: &Api) -> anyhow::Result<Vec<Card>> {
     saved(api, "4qmFsgIoEhRGRW11c2ljX2xpa2VkX2FsYnVtcxoQZ2dNR0tnUUlBQkFCb0FZQg%3D%3D").await
 }
@@ -1188,7 +1250,7 @@ pub async fn delete_playlist(api: &Api, id: &str) -> anyhow::Result<()> {
 
 pub async fn save_collection(api: &Api, playlist_id: &str, save: bool) -> anyhow::Result<()> {
     let endpoint = if save { "like/like" } else { "like/removelike" };
-    write(api, endpoint, json!({"target": {"playlistId": playlist_id}})).await?;
+    write(api, endpoint, json!({"target": {"playlistId": list_id(playlist_id)}})).await?;
     Ok(())
 }
 
@@ -1318,7 +1380,11 @@ fn shelf(s: &Value) -> Option<Shelf> {
     let strapline = text(&h["strapline"]);
     let strap_thumb = thumbs(&h["thumbnail"]["musicThumbnailRenderer"]).into_iter().next().map(|t| t.url);
     let items: Vec<&Value> = arr(&r["contents"]).iter().filter(|i| !is_video(i)).collect();
-    let kind = if items.iter().any(|i| !i["musicResponsiveListItemRenderer"].is_null()) {
+    let kind = if podcasts() && items.iter().any(|i| !i["musicMultiRowListItemRenderer"].is_null()) {
+        let tracks: Vec<Track> = items.iter().filter_map(|i| episode(&i["musicMultiRowListItemRenderer"])).collect();
+        let rows = r["numItemsPerColumn"].as_str().and_then(|n| n.parse().ok()).unwrap_or(3);
+        ShelfKind::Songs { tracks, rows }
+    } else if items.iter().any(|i| !i["musicResponsiveListItemRenderer"].is_null()) {
         let tracks: Vec<Track> = items.iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect();
         let rows = r["numItemsPerColumn"].as_str().and_then(|n| n.parse().ok()).unwrap_or(4);
         ShelfKind::Songs { tracks, rows }
@@ -1364,6 +1430,8 @@ fn target(nav: &Value) -> Option<Target> {
         "MUSIC_PAGE_TYPE_ALBUM" | "MUSIC_PAGE_TYPE_AUDIOBOOK" => Target::Album(id),
         "MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL" => Target::Artist(id),
         "MUSIC_PAGE_TYPE_PLAYLIST" => Target::Playlist(id.strip_prefix("VL").unwrap_or(&id).to_owned()),
+        // A show opens as the playlist it is, by its own page (see `list_id`).
+        "MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE" if podcasts() => Target::Playlist(id),
         _ => return None,
     })
 }
@@ -1387,6 +1455,48 @@ fn list_card(r: &Value) -> Option<Card> {
     };
     let round = matches!(target, Target::Artist(_));
     Some(Card { title, subtitle, thumbs: thumbs(&r["thumbnail"]["musicThumbnailRenderer"]), target, round, links: artist_links(detail) })
+}
+
+/// A podcast episode as Home's Podcasts feed and a show's page list it: its show stands
+/// where a song's artist does, linked to the show's page.
+fn episode(r: &Value) -> Option<Track> {
+    let id = r["onTap"]["watchEndpoint"]["videoId"].as_str()?.to_owned();
+    let length = runs(&r["playbackProgress"]["musicPlaybackProgressRenderer"]["durationText"]).filter_map(|run| run["text"].as_str()).find_map(spoken_duration);
+    Some(Track { id, title: text(&r["title"])?, artists: show_links(&r["secondTitle"]), duration: length, thumbs: thumbs(&r["thumbnail"]["musicThumbnailRenderer"]), ..Default::default() })
+}
+
+/// An episode in search results: "Episode • Dec 28, 2025 • <its show>" where a song has
+/// its artists, which is what `list_item` would take the date for.
+fn episode_row(r: &Value) -> Option<Track> {
+    let mut t = list_item(r)?;
+    t.artists = show_links(&r["flexColumns"][1]["musicResponsiveListItemFlexColumnRenderer"]["text"]);
+    t.album = None;
+    Some(t)
+}
+
+/// The podcast shows named in a line of text, each linked to its page.
+fn show_links(v: &Value) -> Vec<Link> {
+    runs(v)
+        .filter(|run| page_type(run) == Some("MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE"))
+        .map(|run| Link { name: run["text"].as_str().unwrap_or_default().to_owned(), id: browse_id(run) })
+        .collect()
+}
+
+/// "3 hr 36 min", "49 min", "1 hr", "45 sec" → seconds.
+fn spoken_duration(s: &str) -> Option<u32> {
+    let mut words = s.split_whitespace();
+    let (mut total, mut any) = (0u32, false);
+    while let (Some(n), Some(unit)) = (words.next(), words.next()) {
+        let n: u32 = n.parse().ok()?;
+        total += n * match unit.trim_end_matches('s') {
+            "hr" | "hour" => 3600,
+            "min" => 60,
+            "sec" => 1,
+            _ => return None,
+        };
+        any = true;
+    }
+    any.then_some(total)
 }
 
 /// A song row (playlists, search, history, album tracks, Quick picks).

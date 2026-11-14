@@ -220,7 +220,7 @@ impl App {
         use crate::update::{State, Updater};
         if self.updater.is_none() {
             let c = ctx.clone();
-            self.updater = Some(Updater::new(self.backend.data_dir(), move || c.request_repaint()));
+            self.updater = Some(Updater::new(self.backend.data_dir(), self.update_nightly, move || c.request_repaint()));
         }
         let Some(u) = self.updater.clone() else { return };
         let due = match self.update_checked {
@@ -248,6 +248,22 @@ impl App {
                 self.notes_dialog = Some(notes::NotesDialog { version, ready: true });
             }
             _ => {}
+        }
+    }
+
+    /// Switch between the stable and nightly update channels, and look for an update
+    /// on the new one right away.
+    pub(super) fn set_update_nightly(&mut self, nightly: bool) {
+        if nightly == self.update_nightly {
+            return;
+        }
+        self.update_nightly = nightly;
+        log::info!("update channel: {}", if nightly { "nightly" } else { "stable" });
+        if let Some(u) = &self.updater {
+            u.set_nightly(nightly);
+            if updatable() {
+                u.check();
+            }
         }
     }
 

@@ -27,7 +27,7 @@ mod responses;
 mod row_drag;
 mod shell;
 mod titlebar;
-pub use titlebar::{custom as custom_titlebar, set_hwnd as set_titlebar_hwnd};
+pub use titlebar::{custom as custom_titlebar, init as init_titlebar, set_hwnd as set_titlebar_hwnd};
 mod transfer;
 mod widgets;
 
@@ -49,7 +49,7 @@ use crate::shader::Background;
 use crate::theme;
 use lists::{LIKED_MUSIC, Lists};
 use queue::Queue;
-use dev::{dev_script, dev_screenshot, dev_var};
+use dev::{dev_probe, dev_script, dev_screenshot, dev_var};
 use dialogs::text_field;
 pub use queue::Repeat;
 
@@ -78,6 +78,8 @@ pub enum LibTab {
     Playlists,
     Songs,
     Albums,
+    /// Saved podcast shows (with Settings › Playback › Show podcasts on).
+    Podcasts,
     History,
     Uploads,
 }
@@ -449,6 +451,8 @@ pub struct App {
     hide_search_videos: bool,
     /// Leave explicit songs out of lists and the queue.
     hide_explicit: bool,
+    /// Podcast shows and episodes on Home, in search and in the library.
+    show_podcasts: bool,
     /// With them, ask YouTube for its Restricted Mode too.
     restricted_mode: bool,
     /// The song version playing in place of the current music video.
@@ -634,6 +638,8 @@ pub struct App {
 
     // updates
     updater: Option<crate::update::Updater>,
+    /// Updates from the nightly channel rather than stable.
+    update_nightly: bool,
     /// When the last automatic update check ran (app time, s).
     update_checked: Option<f64>,
     update_announced: bool,
@@ -770,6 +776,8 @@ impl App {
         let hide_explicit = get("hide_explicit").is_some_and(|v| v == "1");
         let restricted_mode = get("restricted_mode").is_some_and(|v| v == "1");
         backend.set_hide_explicit(hide_explicit, restricted_mode);
+        let show_podcasts = get("podcasts").is_some_and(|v| v == "1");
+        crate::ytm::set_podcasts(show_podcasts);
         // Before any request: a song started at launch must see the addon sources too.
         let hires_source = get("hires_source").unwrap_or_default();
         let hires_sources: Vec<String> = hires_source.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
@@ -912,6 +920,7 @@ impl App {
             glow: None,
             hide_search_videos: get("hide_search_videos").is_some_and(|v| v == "1"),
             hide_explicit,
+            show_podcasts,
             restricted_mode,
             playing_as: None,
             output_device: get("output_device").filter(|d| !d.is_empty()).map(|id| (id, get("output_device_name").unwrap_or_default())),
@@ -937,6 +946,8 @@ impl App {
             hidden_playlists: get("hidden_playlists").map(|v| v.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default(),
             coll_search: None,
             update_checked: None,
+            // A nightly build stays on nightlies until told otherwise.
+            update_nightly: get("update_channel").map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
             update_announced: false,
             update_seen: get("update_seen"),
             notes_dialog: None,
@@ -1131,6 +1142,11 @@ impl App {
     // ---------------------------------------------------------------- navigation
 
     fn go(&mut self, page: Page) {
+        // An episode's show stands where a song's artist does; it opens as the playlist it is.
+        let page = match page {
+            Page::Artist(id) if crate::ytm::list_id(&id) != id => Page::Playlist(id),
+            p => p,
+        };
         self.np_open = false;
         if page == self.page {
             // Clicking the page you're on refreshes it.
@@ -1641,6 +1657,7 @@ impl eframe::App for App {
         titlebar::set_fullscreen(&ctx, self.fullscreen);
         // The mini player, or nothing but the background while the window changes size.
         dev::dev_memory(&ctx, now);
+        dev::dev_probe(&ctx);
         let layout = self.mini.layout(&ctx);
         // The strip's window is cut to the same corner as the artwork it frames; the
         // full window keeps its corners.
@@ -1815,6 +1832,7 @@ impl eframe::App for App {
         storage.set_string("ambient_light", b(self.ambient_light));
         storage.set_string("hide_search_videos", b(self.hide_search_videos));
         storage.set_string("hide_explicit", b(self.hide_explicit));
+        storage.set_string("podcasts", b(self.show_podcasts));
         storage.set_string("restricted_mode", b(self.restricted_mode));
         let folder = crate::downloads::folder();
         storage.set_string("download_dir", if folder == crate::downloads::default_folder() { String::new() } else { folder.display().to_string() });
@@ -1858,6 +1876,7 @@ impl eframe::App for App {
         if let Some(v) = &self.update_seen {
             storage.set_string("update_seen", v.clone());
         }
+        storage.set_string("update_channel", if self.update_nightly { "nightly" } else { "stable" }.to_owned());
         storage.set_string("discord_enabled", b(self.discord_enabled));
         storage.set_string("discord_options", serde_json::to_string(&self.discord_options).unwrap_or_default());
         storage.set_string("discord_user", self.discord_link_user.as_ref().and_then(|u| serde_json::to_string(u).ok()).unwrap_or_default());

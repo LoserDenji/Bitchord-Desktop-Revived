@@ -307,7 +307,7 @@ mod tests {
         let (starts, urls): (Vec<f64>, Vec<String>) = s.segments.into_iter().unzip();
         let shared = crate::stream::Shared::segmented(starts, s.duration_ms, s.loudness_db, false);
         let t = std::time::Instant::now();
-        crate::stream::download(http, crate::stream::Media::Segments(urls), crate::innertube::UA.to_owned(), shared.clone(), None).await;
+        crate::stream::download(http, crate::stream::Media::Segments(urls), crate::innertube::UA.to_owned(), shared.clone(), None, crate::stream::Ranging::Query).await;
         assert!(shared.error().is_none(), "{:?}", shared.error());
         println!("downloaded in {:?}", t.elapsed());
         let mut d = crate::stream::decoder(shared.clone(), true).unwrap();

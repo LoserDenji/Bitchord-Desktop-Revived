@@ -425,6 +425,20 @@ impl App {
         self.queue.repeat == Repeat::One && !self.current().is_some_and(|t| self.hide_explicit && t.explicit)
     }
 
+    /// Settings › Playback › Show podcasts: Home and the library are asked for again, with
+    /// or without them.
+    pub(super) fn set_show_podcasts(&mut self) {
+        crate::ytm::set_podcasts(self.show_podcasts);
+        if !self.show_podcasts && self.page == super::Page::Library(super::LibTab::Podcasts) {
+            self.page = super::Page::Library(super::LibTab::Playlists);
+        }
+        self.search = None;
+        self.backend.request(Req::Home(None));
+        if self.logged_in {
+            self.backend.request(Req::Library);
+        }
+    }
+
     /// Explicit songs hidden or shown again: queued ones go (all but the one playing; a
     /// jam guest's queue is the host's), and YouTube's Restricted Mode applies to what
     /// loads from now on.

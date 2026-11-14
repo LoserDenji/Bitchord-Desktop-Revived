@@ -574,7 +574,7 @@ async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Ar
         }
         Err(e) => {
             if !shared.inner.lock().unwrap().cancelled {
-                shared.fail(format!("stream: {e:#}"));
+                shared.fail(format!("stream: {e:#}"), false);
             }
         }
     }

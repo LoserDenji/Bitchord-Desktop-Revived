@@ -400,7 +400,7 @@ impl App {
 fn share_url(target: &Target) -> String {
     match target {
         Target::Song(t) => format!("https://music.youtube.com/watch?v={}", t.id),
-        Target::Playlist(id) => format!("https://music.youtube.com/playlist?list={id}"),
+        Target::Playlist(id) => format!("https://music.youtube.com/playlist?list={}", crate::ytm::list_id(id)),
         Target::Album(id) => format!("https://music.youtube.com/browse/{id}"),
         Target::Artist(id) => format!("https://music.youtube.com/channel/{id}"),
     }
@@ -415,6 +415,8 @@ mod share_tests {
         let song = Track { id: "abc123".into(), title: String::new(), artists: vec![], album: None, duration: None, thumbs: vec![], track_nr: None, plays: None, ..Default::default() };
         assert_eq!(share_url(&Target::Song(song)), "https://music.youtube.com/watch?v=abc123");
         assert_eq!(share_url(&Target::Playlist("PL123".into())), "https://music.youtube.com/playlist?list=PL123");
+        // A podcast show is shared as its playlist.
+        assert_eq!(share_url(&Target::Playlist("MPSPPL123".into())), "https://music.youtube.com/playlist?list=PL123");
         assert_eq!(share_url(&Target::Album("MPRE123".into())), "https://music.youtube.com/browse/MPRE123");
         assert_eq!(share_url(&Target::Artist("UC123".into())), "https://music.youtube.com/channel/UC123");
     }

@@ -176,6 +176,9 @@ pub struct SearchResults {
     pub albums: Vec<Card>,
     pub artists: Vec<Card>,
     pub playlists: Vec<Card>,
+    /// Podcast shows and episodes, when podcasts are shown.
+    pub podcasts: Vec<Card>,
+    pub episodes: Vec<Track>,
 }
 
 /// An album or playlist page.
@@ -201,11 +204,22 @@ pub struct Collection {
 }
 
 impl Collection {
+    /// A podcast show: its page lists episodes.
+    pub fn is_show(&self) -> bool {
+        ytm::list_id(&self.id) != self.id
+    }
+
+    /// "songs", or what this lists instead.
+    pub fn things(&self) -> &'static str {
+        if self.is_show() { "episodes" } else { "songs" }
+    }
+
     /// The subtitle, with the song count for a playlist.
     pub fn byline(&self) -> String {
+        let things = self.things();
         match self.count {
-            Some(n) if self.subtitle.is_empty() => format!("{n} songs"),
-            Some(n) => format!("{} • {n} songs", self.subtitle),
+            Some(n) if self.subtitle.is_empty() => format!("{n} {things}"),
+            Some(n) => format!("{} • {n} {things}", self.subtitle),
             None => self.subtitle.clone(),
         }
     }
@@ -255,6 +269,8 @@ pub struct ShelfLink {
 pub struct Library {
     pub playlists: Vec<Card>,
     pub albums: Vec<Card>,
+    /// Saved podcast shows, when podcasts are shown.
+    pub podcasts: Vec<Card>,
     /// That half didn't load (YouTube Music refused it, say): the one shown stays.
     pub playlists_failed: bool,
     pub albums_failed: bool,
@@ -979,16 +995,24 @@ impl Backend {
         }))
     }
 
-    /// Songs, videos, albums, artists and playlists for a search, asked at once. Only the
-    /// songs must arrive.
+    /// Songs, videos, albums, artists and playlists for a search, asked at once (podcast
+    /// shows and episodes too when those are shown). Only the songs must arrive.
     async fn search(&self, query: String, me: bool) -> anyhow::Result<Resp> {
         let api = &*self.api;
-        let (t, v, al, ar, pl) = tokio::join!(
+        let podcasts = async {
+            if !ytm::podcasts() {
+                return (Vec::new(), Vec::new());
+            }
+            let (shows, episodes) = tokio::join!(ytm::search_cards(api, &query, ytm::Filter::Podcasts, me), ytm::search_episodes(api, &query, me));
+            (shows.unwrap_or_default(), episodes.unwrap_or_default())
+        };
+        let (t, v, al, ar, pl, (podcasts, episodes)) = tokio::join!(
             ytm::search_songs(api, &query, me),
             ytm::search_videos(api, &query, me),
             ytm::search_cards(api, &query, ytm::Filter::Albums, me),
             ytm::search_cards(api, &query, ytm::Filter::Artists, me),
             ytm::search_cards(api, &query, ytm::Filter::Playlists, me),
+            podcasts,
         );
         Ok(Resp::Search(SearchResults {
             tracks: t?,
@@ -996,6 +1020,8 @@ impl Backend {
             albums: al.unwrap_or_default(),
             artists: ar.unwrap_or_default(),
             playlists: pl.unwrap_or_default(),
+            podcasts,
+            episodes,
             query,
         }))
     }
@@ -1005,7 +1031,16 @@ impl Backend {
         let api = &*self.api;
         // Liked songs are Liked Music, loaded like any playlist. Each half shows
         // without the other; it only fails when both do.
-        let (pls, albums) = tokio::join!(ytm::saved_playlists(api), ytm::saved_albums(api));
+        let podcasts = async {
+            if !ytm::podcasts() {
+                return Vec::new();
+            }
+            ytm::saved_podcasts(api).await.unwrap_or_else(|e| {
+                log::warn!("saved podcasts didn't load: {e:#}");
+                Vec::new()
+            })
+        };
+        let (pls, albums, podcasts) = tokio::join!(ytm::saved_playlists(api), ytm::saved_albums(api), podcasts);
         let pls = match (pls, &albums) {
             (Err(e), Err(_)) => return Err(e),
             (pls, _) => pls,
@@ -1021,6 +1056,7 @@ impl Backend {
             albums_failed: albums.is_err(),
             playlists: pls.map(|p| p.into_iter().filter(saved_playlist_visible).collect()).unwrap_or_default(),
             albums: albums.unwrap_or_default(),
+            podcasts,
         }))
     }
 
@@ -1498,8 +1534,9 @@ impl Backend {
     /// lists them: the first one that has the song plays its copy, and when none does
     /// (or the song was sent back to YouTube audio), YouTube plays. `best` (downloads)
     /// takes the high quality stream whatever the setting, and waits for the solver it
-    /// needs, and downloads always come from YouTube. Playback without Premium takes
-    /// Opus where there is one; downloads stay AAC, which saves as a tagged .m4a.
+    /// needs, and downloads always come from YouTube. Playback takes Opus where there
+    /// is one (Premium's 774 at ~256 kbps, else 251); downloads stay AAC, which saves
+    /// as a tagged .m4a.
     /// `allow_hires`: the sources before YouTube are tried (playback only).
     async fn resolve(&self, video_id: &str, best: bool, track: Option<&Track>, allow_hires: bool) -> anyhow::Result<(Source, ResolvedStream)> {
         let hq = best || self.hq.load(Ordering::Relaxed);
@@ -1565,7 +1602,9 @@ impl Backend {
             && let Some(session) = self.api.account()
             && self.is_premium(&session).await
         {
-            match self.resolve_from(Source::WebMusic, video_id, stream::Format::Aac, None).await {
+            // Premium plays Opus (774, ~256 kbps) where there is one; downloads stay AAC,
+            // which saves as a tagged .m4a.
+            match self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }, None).await {
                 Ok(s) => return Ok((Source::WebMusic, s)),
                 // Not fatal: the usual 128 kbps stream still plays.
                 Err(e) => log::warn!("high quality stream failed for {video_id} ({e:#}); using standard quality"),
@@ -1599,7 +1638,7 @@ impl Backend {
                     return Err(if restricted { anyhow::anyhow!("sign in to play this song") } else { e });
                 };
                 if self.is_premium(&session).await {
-                    match self.resolve_from(Source::WebMusic, video_id, stream::Format::Aac, None).await {
+                    match self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }, None).await {
                         Ok(s) => return Ok((Source::WebMusic, s)),
                         Err(e) => log::warn!("web music player failed ({e:#}); using yt-dlp"),
                     }
@@ -1610,7 +1649,8 @@ impl Backend {
     }
 
     /// `format`: the container the caller needs (the visionOS player picks Opus or AAC
-    /// from it). The hi-res source re-resolves by searching for `track` again.
+    /// from it; Premium's web player takes Opus to mean its 774, ~256 kbps, where there
+    /// is one). The hi-res source re-resolves by searching for `track` again.
     async fn resolve_from(&self, source: Source, video_id: &str, format: stream::Format, track: Option<&Track>) -> anyhow::Result<ResolvedStream> {
         let plain = |s: innertube::Stream, ua: &str| ResolvedStream {
             media: stream::Media::File(s.url),
@@ -1633,7 +1673,7 @@ impl Backend {
             }
             Source::WebMusic => {
                 let session = self.api.account().ok_or_else(|| anyhow::anyhow!("signed out"))?;
-                plain(session.audio_stream(&self.http(), &self.jsc, video_id).await?, webmusic::UA)
+                plain(session.audio_stream(&self.http(), &self.jsc, video_id, format == stream::Format::Opus).await?, webmusic::UA)
             }
             Source::YtDlp => {
                 let session = self.api.account().ok_or_else(|| anyhow::anyhow!("sign in to play this song"))?;
