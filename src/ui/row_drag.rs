@@ -57,7 +57,9 @@ pub fn grip(ui: &mut Ui, drag: &mut Option<RowDrag>, list: Id, i: usize, t: &Tra
         // A drag some other list left behind gives way.
         let grip = ui.interact(rect, list.with(("grip", i)), Sense::DRAG);
         let held = drag.as_ref().is_some_and(|d| d.list == list && d.from == i);
-        if grip.dragged_by(egui::PointerButton::Primary) && !held {
+        // egui counts a drag-only widget as dragged from the press itself: wait until the
+        // pointer has moved too far (or held too long) for a click.
+        if grip.dragged_by(egui::PointerButton::Primary) && !held && ui.input(|input| input.pointer.is_decidedly_dragging()) {
             *drag = Some(RowDrag { list, from: i, track: t.clone(), seen: ui.ctx().cumulative_frame_nr() });
         }
     }
@@ -351,6 +353,16 @@ mod tests {
         assert_eq!(l.clicked, [3]);
         assert!(l.drag.is_none());
         assert!(l.dropped.is_empty());
+    }
+
+    #[test]
+    fn pressing_a_row_doesnt_pick_it_up() {
+        let mut l = List::new(40);
+        l.pick_up(3, 300.0);
+        l.frame(vec![]);
+        l.move_to(l.at + vec2(2.0, 2.0));
+        assert!(l.drag.is_none());
+        l.button(false);
     }
 
     #[test]
