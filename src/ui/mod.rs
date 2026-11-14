@@ -19,6 +19,7 @@ mod lyric_prefs;
 mod mini;
 mod notes;
 mod nowplaying;
+mod pace;
 mod pages;
 mod playback;
 mod queue;
@@ -48,7 +49,7 @@ use crate::shader::Background;
 use crate::theme;
 use lists::{LIKED_MUSIC, Lists};
 use queue::Queue;
-use dev::{dev_pace, dev_script, dev_screenshot, dev_var};
+use dev::{dev_script, dev_screenshot, dev_var};
 use dialogs::text_field;
 pub use queue::Repeat;
 
@@ -1452,7 +1453,7 @@ impl eframe::App for App {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        dev_pace();
+        pace::frame(ctx);
         self.lyric_view.release_hidden(ctx.cumulative_pass_nr());
         let now = ctx.input(|i| i.time);
         self.sync_look();
