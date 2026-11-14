@@ -270,7 +270,7 @@ pub struct RecentSearch {
     pub round: bool,
 }
 
-/// A decoded motion sleeve, uploaded to a texture as frames arrive.
+/// A decoded animated cover, uploaded to a texture as frames arrive.
 pub struct MotionView {
     motion: std::sync::Arc<crate::motion::Motion>,
     tex: Option<egui::TextureHandle>,
@@ -298,7 +298,7 @@ impl MotionView {
             let image = egui::ColorImage::from_rgba_unmultiplied([frame.w, frame.h], &frame.rgba);
             match &mut self.tex {
                 Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
-                None => self.tex = Some(ctx.load_texture("apple-motion", image, egui::TextureOptions::LINEAR)),
+                None => self.tex = Some(ctx.load_texture("motion-cover", image, egui::TextureOptions::LINEAR)),
             }
         }
         self.tex.as_ref()
@@ -445,25 +445,23 @@ pub struct App {
     // visuals
     art_key: Option<String>,
     art_changed: f64,
-    /// Apple's page for each artist visited (their display name and hero clips).
-    apple_artists: std::collections::HashMap<String, Option<crate::apple::Artwork>>,
-    /// Motion sleeve master playlist per release key (`None`: Apple has none).
-    apple_covers: std::collections::HashMap<String, Option<String>>,
-    /// Releases Apple had nothing for when last asked, and when: asked again after a
+    /// The animated cover found for each song asked this session, per song id. Filled
+    /// by Apple's lookup (ytm-rs's `canvas`, which remembers its answers on disk) or
+    /// Spotify's canvas fallback.
+    canvas_covers: std::collections::HashMap<String, String>,
+    /// Songs whose Apple lookup is done, found or not: a miss hands the song to
+    /// Spotify's canvas.
+    canvas_apple_done: std::collections::HashSet<String>,
+    /// Apple animated-cover lookups already in flight.
+    canvas_apple_waiting: std::collections::HashSet<String>,
+    /// Songs Spotify had nothing for when last asked, and when: asked again after a
     /// while, since a lookup can fail on a network hiccup rather than for good.
-    apple_missed: std::collections::HashMap<String, std::time::Instant>,
-    /// Spotify's canvas clip per playing song (`None`: Spotify has none, or nobody's
-    /// signed in), shown when Apple has no sleeve for the song's release.
-    canvas_covers: std::collections::HashMap<String, Option<String>>,
-    /// Songs Spotify had nothing for when last asked, and when.
     canvas_missed: std::collections::HashMap<String, std::time::Instant>,
-    /// Canvas lookups already in flight.
+    /// Spotify canvas lookups already in flight.
     canvas_waiting: std::collections::HashSet<String>,
 
-    /// Decoders for the motion sleeves on screen.
-    apple_motion: std::collections::HashMap<String, MotionView>,
-    /// Apple lookups already in flight.
-    apple_waiting: std::collections::HashSet<String>,
+    /// Decoders for the animated covers on screen.
+    motion_views: std::collections::HashMap<String, MotionView>,
     /// Settings › Artist pages: the listener's own signature service, or empty.
     signature_api: String,
     /// Signatures already uploaded, by name key (`artist_signature::key`).
@@ -931,14 +929,12 @@ impl App {
             radio_pending: false,
             seek_drag: None,
             art_key: None,
-            apple_artists: Default::default(),
-            apple_covers: Default::default(),
-            apple_missed: Default::default(),
             canvas_covers: Default::default(),
+            canvas_apple_done: Default::default(),
+            canvas_apple_waiting: Default::default(),
             canvas_missed: Default::default(),
             canvas_waiting: Default::default(),
-            apple_motion: Default::default(),
-            apple_waiting: Default::default(),
+            motion_views: Default::default(),
             signature_api: get("signature_api").unwrap_or_default(),
             signature_tex: Default::default(),
             signature_images: Default::default(),
@@ -1107,7 +1103,7 @@ impl App {
             return;
         }
         // Leaving a page deloads its motion clips: no decoder keeps running unseen.
-        self.apple_motion.clear();
+        self.motion_views.clear();
         // A settings search is for the session there: a new visit starts clean.
         if self.page == Page::Settings {
             self.settings_search.clear();
@@ -1122,7 +1118,7 @@ impl App {
         if self.np_open {
             self.np_open = false;
         } else if let Some(p) = self.back.pop() {
-            self.apple_motion.clear();
+            self.motion_views.clear();
             self.forward.push(std::mem::replace(&mut self.page, p));
             self.page_loaded();
         }
@@ -1130,7 +1126,7 @@ impl App {
 
     fn nav_forward(&mut self) {
         if let Some(p) = self.forward.pop() {
-            self.apple_motion.clear();
+            self.motion_views.clear();
             self.back.push(std::mem::replace(&mut self.page, p));
             self.page_loaded();
         }
@@ -1256,68 +1252,35 @@ impl App {
         }
     }
 
-    /// Ask Apple, once, for the release's motion sleeve.
-    fn apple_cover(&mut self, album: &str, artist: &str, title: Option<&str>) {
-        if !self.animated_covers || album.is_empty() || artist.is_empty() {
-            return;
-        }
-        let key = format!("{album}\u{1}{artist}");
-        if self.apple_covers.contains_key(&key) {
-            return;
-        }
-        if self.apple_missed.get(&key).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(300)) {
-            return;
-        }
-        if !self.apple_waiting.insert(key.clone()) {
-            return;
-        }
-        self.backend.request(Req::AppleCover {
-            key,
-            album: album.to_owned(),
-            artist: artist.to_owned(),
-            title: title.map(str::to_owned),
-        });
-    }
-
-    /// The newest frame of the release's motion sleeve, started the first time it's seen.
-    /// `None` until Apple has answered (or if it has no clip for the release).
-    fn apple_sprite(&mut self, ctx: &egui::Context, album: &str, artist: &str, max_width: u32) -> Option<widgets::MotionSprite> {
-        if !self.animated_covers {
+    /// The song's animated cover, the way ytm-rs draws it: Apple Music's clip for its
+    /// release (looked up once per song, the answer remembered on disk), or Spotify's
+    /// canvas for the song where Apple has none. The newest frame of it, started the
+    /// first time it's seen; `None` until a source has answered (or if neither has one).
+    fn animated_cover(&mut self, ctx: &egui::Context, track: &crate::model::Track, max_width: u32) -> Option<widgets::MotionSprite> {
+        if !self.animated_covers || track.id.is_empty() {
             return None;
         }
-        let key = format!("{album}\u{1}{artist}");
-        let url = self.apple_covers.get(&key)?.clone()?;
-        self.motion_sprite(ctx, key, &url, max_width)
-    }
-
-    /// The newest frame of the playing song's canvas, started the first time it's seen.
-    /// Apple's sleeve wins where a release has one; this fills the songs whose release
-    /// hasn't. `None` until Spotify has answered (or if it has no clip, or nobody's
-    /// signed in).
-    fn canvas_sprite(&mut self, ctx: &egui::Context, video_id: &str, max_width: u32) -> Option<widgets::MotionSprite> {
-        if !self.animated_covers {
+        let id = track.id.clone();
+        if let Some(url) = self.canvas_covers.get(&id).cloned() {
+            return self.motion_sprite(ctx, format!("clip\u{1}{id}"), &url, max_width);
+        }
+        // Apple first, once per song. `canvas` remembers found clips and misses on
+        // disk, so neither is asked again for days.
+        if !self.canvas_apple_done.contains(&id) {
+            if self.canvas_apple_waiting.insert(id.clone()) {
+                self.backend.request(Req::Canvas { track: track.clone() });
+            }
             return None;
         }
-        let url = self.canvas_covers.get(video_id)?.clone()?;
-        self.motion_sprite(ctx, format!("canvas\u{1}{video_id}"), &url, max_width)
-    }
-
-    /// Ask Spotify, once, for the playing song's canvas. Signed in to Spotify only: the
-    /// web player shows canvases to nobody else.
-    fn canvas_cover(&mut self, video_id: &str, title: &str, artist: &str, duration_ms: Option<u64>) {
-        if !self.animated_covers || video_id.is_empty() || title.trim().is_empty() {
-            return;
+        // Spotify's canvas for the song, for a listener signed in to Spotify.
+        if self.canvas_missed.get(&id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)) {
+            return None;
         }
-        if self.canvas_covers.contains_key(video_id) {
-            return;
+        if self.canvas_waiting.insert(id.clone()) {
+            let artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| track.artist_line());
+            self.backend.request(Req::SpotifyCanvas { key: id, title: track.title.clone(), artist, duration_ms: track.duration.map(|d| d as u64 * 1000) });
         }
-        if self.canvas_missed.get(video_id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)) {
-            return;
-        }
-        if !self.canvas_waiting.insert(video_id.to_owned()) {
-            return;
-        }
-        self.backend.request(Req::SpotifyCanvas { key: video_id.to_owned(), title: title.to_owned(), artist: artist.to_owned(), duration_ms });
+        None
     }
 
     /// The artist's handwritten signature, from the service in Settings: asked for once
@@ -1389,24 +1352,24 @@ impl App {
     /// The newest frame of a motion clip, started the first time it's seen. The decoders
     /// on screen are capped so old pages don't leave threads behind.
     fn motion_sprite(&mut self, ctx: &egui::Context, key: String, url: &str, max_width: u32) -> Option<widgets::MotionSprite> {
-        // One decoder per release. The strip and the player ask for different sizes, and
+        // One decoder per cover. The strip and the player ask for different sizes, and
         // replacing it per caller would restart the clip every frame and never show a
         // frame: a bigger view takes over only when it needs a wider decode.
-        let stale = self.apple_motion.get(&key).map_or(true, |v| v.width < max_width);
+        let stale = self.motion_views.get(&key).map_or(true, |v| v.width < max_width);
         if stale {
-            if self.apple_motion.len() >= 8 {
-                self.apple_motion.clear();
+            if self.motion_views.len() >= 8 {
+                self.motion_views.clear();
             }
-            // Apple's sleeves arrive as an HLS master playlist; Spotify's canvases are
+            // Apple's clips arrive as an HLS master playlist; Spotify's canvases are
             // one plain mp4, which decodes through its own download path.
             let is_mp4 = url.split(['?', '#']).next().is_some_and(|p| p.to_ascii_lowercase().ends_with(".mp4"));
             let motion = if is_mp4 { crate::motion::play_mp4(ctx, url, max_width) } else { crate::motion::play(ctx, url, max_width) };
-            self.apple_motion.insert(key.clone(), MotionView::new(motion, max_width));
+            self.motion_views.insert(key.clone(), MotionView::new(motion, max_width));
         }
-        // The clip's clock follows the music: paused, the sleeve holds still.
-        // Read before the borrow of `apple_motion`: `playing` wants all of `self`.
+        // The clip's clock follows the music: paused, the cover holds still.
+        // Read before the borrow of `motion_views`: `playing` wants all of `self`.
         let playing = self.playing() || self.buffering;
-        let view = self.apple_motion.get_mut(&key)?;
+        let view = self.motion_views.get_mut(&key)?;
         view.set_playing(playing);
         let tex = view.texture(ctx)?;
         Some(widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() })

@@ -1,13 +1,13 @@
-//! Apple's motion sleeves, played locally and on every platform.
+//! Animated covers, played locally and on every platform.
 //!
-//! The clip is HLS, but each variant's media playlist is a single byte-ranged
-//! fragmented MP4, so it downloads as one file. That file's H.264 is decoded on the
-//! CPU with OpenH264 — no system video api involved, so the same code runs on
-//! Windows, macOS and Linux. Only the newest frame is kept: the UI turns it into a
-//! texture and draws it in place of the still sleeve.
+//! The clip is found by [`crate::canvas`] (a port of ytm-rs's lookup). It is HLS, but
+//! each variant's media playlist is a fragmented MP4, so it downloads as one file.
+//! That file's H.264 is decoded on the CPU with OpenH264 — no system video api
+//! involved, so the same code runs on Windows, macOS and Linux. Only the newest frame
+//! is kept: the UI turns it into a texture and draws it in place of the still cover.
 //!
 //! The clip loops on its own clock, which only runs while the music plays: paused,
-//! the sleeve holds still, the way Apple Music's does.
+//! the cover holds still, the way Apple Music's does.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -110,7 +110,7 @@ pub fn play_mp4(ctx: &egui::Context, url: &str, max_width: u32) -> Arc<Motion> {
 
 fn run(motion: Arc<Motion>, ctx: egui::Context, master: String, max_width: u32) {
     let Some(path) = fetch(&master, max_width) else {
-        log::info!("apple: no motion clip downloaded");
+        log::info!("animated cover: no clip downloaded");
         return;
     };
     decode(&motion, &path, &ctx, max_width);
@@ -156,36 +156,33 @@ fn fetch_mp4(url: &str) -> Option<PathBuf> {
     })
 }
 
-/// Pick a variant and save the clip to the cache; a saved copy is reused.
+/// Pick a rendition and save the clip to the cache; a saved copy is reused. The
+/// download is ytm-rs's [`crate::canvas::load`]: it picks the H.264 rendition for
+/// `max_width` out of the master playlist and hands over the clip's init segment and
+/// media segments, which together are one fragmented MP4.
 fn fetch(master: &str, max_width: u32) -> Option<PathBuf> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
     rt.block_on(async {
         use sha1::{Digest, Sha1};
         let http = crate::proxy::http();
-        let media = crate::apple::variant(&http, master, max_width).await?;
-        let file = crate::apple::media_file(&http, &media).await?;
+        let clip = crate::canvas::load(&http, master, max_width).await.ok()?;
         let dir = crate::data_dir().join("motion");
         std::fs::create_dir_all(&dir).ok()?;
-        let name = format!("{:x}", Sha1::digest(file.as_bytes()));
+        // Per size: a wider view decodes a bigger rendition of the same playlist.
+        let name = format!("{:x}", Sha1::digest(format!("{max_width}\u{1}{master}").as_bytes()));
         let path = dir.join(format!("{}.mp4", &name[..32]));
         if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 1024 {
             return Some(path);
         }
-        let bytes = http
-            .get(&file)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await
-            .ok()?
-            .error_for_status()
-            .ok()?
-            .bytes()
-            .await
-            .ok()?;
+        // Init segment first, then the media segments: together a complete fMP4 file.
+        let mut bytes = clip.init.clone();
+        for seg in &clip.segments {
+            bytes.extend_from_slice(seg);
+        }
         let tmp = path.with_extension("part");
         std::fs::write(&tmp, &bytes).ok()?;
         std::fs::rename(&tmp, &path).ok()?;
-        log::info!("apple: motion clip {:.0} KB cached", bytes.len() as f64 / 1024.0);
+        log::info!("animated cover: clip {:.0} KB cached", bytes.len() as f64 / 1024.0);
         Some(path)
     })
 }
@@ -408,7 +405,7 @@ fn scaled_rgba(yuv: &openh264::decoder::DecodedYUV, step: usize) -> (usize, usiz
 fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max_width: u32) {
     let Ok(bytes) = std::fs::read(path) else { return };
     let Some(track) = find(&bytes, &["moov"]).and_then(parse_track) else {
-        log::info!("apple: the motion clip isn't H.264 in MP4");
+        log::info!("animated cover: the clip isn't H.264 in MP4");
         return;
     };
     // Every frame of the clip, as the decoder takes it: a sleeve is short, and this is
@@ -421,10 +418,10 @@ fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max
         })
         .collect();
     if samples.is_empty() {
-        log::info!("apple: no frames in the motion clip");
+        log::info!("animated cover: no frames in the clip");
         return;
     }
-    log::info!("apple: motion clip has {} frame(s)", samples.len());
+    log::info!("animated cover: clip has {} frame(s)", samples.len());
     let side = max_width.max(64);
     let mut last = Instant::now();
     'laps: for _lap in 0u64.. {
@@ -434,7 +431,7 @@ fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max
         let mut decoder = match new_decoder(&track) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("apple: motion decode failed: {e}");
+                log::warn!("animated cover: decode failed: {e}");
                 return;
             }
         };
@@ -449,7 +446,7 @@ fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max
             }
             let (w, h, rgba) = scaled_rgba(&yuv, (yuv.dimensions().0 / side as usize).max(1));
             if motion.version.load(Ordering::Acquire) == 0 {
-                log::info!("apple: motion playing at {w}x{h}");
+                log::info!("animated cover: playing at {w}x{h}");
             }
             motion.publish(ctx, w, h, rgba);
         }

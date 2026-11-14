@@ -29,7 +29,7 @@ const GATEWAY: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
 const API: &str = "https://discord.com/api/v9";
 const PROJECT_URL: &str = "https://github.com/LoserDenji/Bitchord-Desktop-Revived";
 pub const DEFAULT_BUTTON_1: &str = "Listen on YouTube Music";
-pub const DEFAULT_BUTTON_2: &str = "Visit BitChord";
+pub const DEFAULT_BUTTON_2: &str = "Bitchord Desktop Revived";
 const APP_NAME: &str = "BitChord";
 
 const INITIAL_RECONNECT_MS: u64 = 1_000;
@@ -59,15 +59,13 @@ const OP_HEARTBEAT_ACK: u8 = 11;
 pub struct Options {
     /// listening | playing | watching | competing
     pub activity_type: String,
-    /// online | idle | dnd | invisible
-    pub status: String,
     /// Lead with the song title rather than the artist in member lists.
     pub use_details: bool,
     /// Replaces "BitChord" after "Listening to"; empty keeps it.
     pub activity_name: String,
-    pub button1_text: String,
+    /// The two card buttons are fixed — one opens the song on YouTube Music, one
+    /// opens this project's page — and only switched off, not renamed.
     pub button1_visible: bool,
-    pub button2_text: String,
     pub button2_visible: bool,
 }
 
@@ -75,12 +73,9 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             activity_type: "listening".into(),
-            status: "online".into(),
             use_details: false,
             activity_name: String::new(),
-            button1_text: String::new(),
             button1_visible: true,
-            button2_text: String::new(),
             button2_visible: true,
         }
     }
@@ -113,16 +108,7 @@ fn activity_type_id(name: &str) -> u8 {
     }
 }
 
-fn status_text(status: &str) -> &'static str {
-    match status {
-        "idle" => "idle",
-        "dnd" => "dnd",
-        "invisible" => "invisible",
-        _ => "online",
-    }
-}
-
-/// {song_name}, {artist_name} and {album_name} in the button labels.
+/// {song_name}, {artist_name} and {album_name} in a presence text field.
 fn resolve_variables(text: &str, title: &str, artist: &str, album: Option<&str>) -> String {
     text.replace("{song_name}", title)
         .replace("{artist_name}", artist)
@@ -518,7 +504,8 @@ impl Service {
     }
 
     /// DiscordRPC.updateSong: timestamps with the rate divided out, the rate tag,
-    /// buttons with {song_name} variables, external-asset artwork.
+    /// external-asset artwork. The buttons are fixed: the song on YouTube Music and
+    /// this project's page, each switchable from Settings but never renamed.
     async fn build_presence(
         &self,
         token: &str,
@@ -535,30 +522,10 @@ impl Service {
         let album = p.album.as_deref();
         let mut buttons: Vec<(String, String)> = Vec::new();
         if options.button1_visible {
-            let label = resolve_variables(
-                if options.button1_text.trim().is_empty() {
-                    DEFAULT_BUTTON_1
-                } else {
-                    &options.button1_text
-                },
-                &p.title,
-                &p.artist,
-                album,
-            );
-            buttons.push((label, watch_url.clone()));
+            buttons.push((DEFAULT_BUTTON_1.to_owned(), watch_url.clone()));
         }
         if options.button2_visible {
-            let label = resolve_variables(
-                if options.button2_text.trim().is_empty() {
-                    DEFAULT_BUTTON_2
-                } else {
-                    &options.button2_text
-                },
-                &p.title,
-                &p.artist,
-                album,
-            );
-            buttons.push((label, PROJECT_URL.to_string()));
+            buttons.push((resolve_variables(DEFAULT_BUTTON_2, &p.title, &p.artist, album), PROJECT_URL.to_string()));
         }
         let art = p
             .art
@@ -608,7 +575,9 @@ impl Service {
             "activities": [activity],
             "afk": true,
             "since": now,
-            "status": status_text(&options.status),
+            // The account's own presence status is none of a music player's business;
+            // "online" is what Discord itself keeps while its desktop app is open.
+            "status": "online",
         })
     }
 
@@ -745,50 +714,33 @@ mod tests {
         let o = Options::default();
         let v = serde_json::to_string(&o).unwrap();
         assert_eq!(serde_json::from_str::<Options>(&v).unwrap(), o);
+        // A settings file saved by an older version: the status and the button labels
+        // it carries are dropped, and what's left still reads.
+        let old = r#"{ "activity_type": "playing", "status": "dnd", "use_details": true, "activity_name": "My app", "button1_text": "Play {song_name}", "button1_visible": false, "button2_text": "", "button2_visible": false }"#;
         let o = Options {
             activity_type: "playing".into(),
-            status: "dnd".into(),
             use_details: true,
             activity_name: "My app".into(),
-            button1_text: "Play {song_name}".into(),
             button1_visible: false,
-            button2_text: String::new(),
             button2_visible: false,
         };
-        assert_eq!(
-            serde_json::from_str::<Options>(&serde_json::to_string(&o).unwrap()).unwrap(),
-            o
-        );
+        assert_eq!(serde_json::from_str::<Options>(old).unwrap(), o);
     }
 
     #[test]
-    fn type_and_status_ids() {
+    fn activity_type_ids() {
         assert_eq!(activity_type_id("listening"), 2);
         assert_eq!(activity_type_id("playing"), 0);
         assert_eq!(activity_type_id("watching"), 3);
         assert_eq!(activity_type_id("competing"), 5);
         assert_eq!(activity_type_id("anything"), 2);
-        assert_eq!(status_text("idle"), "idle");
-        assert_eq!(status_text("dnd"), "dnd");
-        assert_eq!(status_text("invisible"), "invisible");
-        assert_eq!(status_text("nonsense"), "online");
     }
 
     #[test]
     fn variables() {
-        assert_eq!(
-            resolve_variables(
-                "Play {song_name} by {artist_name} from {album_name}",
-                "Song",
-                "Artist",
-                Some("Album")
-            ),
-            "Play Song by Artist from Album"
-        );
-        assert_eq!(
-            resolve_variables("{album_name}", "Song", "Artist", None),
-            ""
-        );
+        assert_eq!(resolve_variables(DEFAULT_BUTTON_2, "Song", "Artist", Some("Album")), DEFAULT_BUTTON_2);
+        assert_eq!(resolve_variables("Play {song_name}", "Song", "Artist", None), "Play Song");
+        assert_eq!(resolve_variables("{album_name}", "Song", "Artist", None), "");
     }
 
     #[test]

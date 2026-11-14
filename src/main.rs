@@ -1,9 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appicon;
-mod apple;
 mod artist_signature;
 mod autostart;
+mod canvas;
 mod fullscreen;
 mod proxy;
 mod renderer;

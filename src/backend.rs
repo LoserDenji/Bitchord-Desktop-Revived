@@ -65,10 +65,9 @@ pub enum Req {
     LyricsExtras { video_id: String, source: String, lines: Vec<String>, lang: Option<String>, target: String },
     /// Process cover art for the background; `key` is echoed back.
     Art { key: String, url: String },
-    /// Apple's artist page (display name and hero clips) for the artist `id`.
-    AppleArtist { id: String, name: String },
-    /// Apple's motion sleeve for a release; `key` is what the UI asked for.
-    AppleCover { key: String, album: String, artist: String, title: Option<String> },
+    /// The animated cover of a song, the way ytm-rs finds it: Apple Music's clip for
+    /// its release, with the lookup and its answer cached on disk.
+    Canvas { track: Track },
     /// Spotify's canvas for the playing song; `key` is what the UI asked for.
     SpotifyCanvas { key: String, title: String, artist: String, duration_ms: Option<u64> },
     /// A handwritten signature for `name` from the service at `endpoint`; `key` is
@@ -132,8 +131,7 @@ impl Req {
             Req::Segments { .. } => "SponsorBlock",
             Req::LyricsExtras { .. } => "Translation",
             Req::Art { .. } => "Art",
-            Req::AppleArtist { .. } => "Apple artist",
-            Req::AppleCover { .. } => "Apple artwork",
+            Req::Canvas { .. } => "Animated cover",
             Req::SpotifyCanvas { .. } => "Spotify canvas",
             Req::ArtistSignature { .. } => "Artist signature",
             Req::Radio { .. } => "Loading radio",
@@ -157,7 +155,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::AppleArtist { .. } | Req::AppleCover { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. })
     }
 }
 
@@ -297,10 +295,9 @@ pub enum Resp {
     /// Romanization/translation for one source's lines, arriving after them.
     LyricsExtras { video_id: String, source: String, target: String, extras: crate::translate::Extras },
     Art { key: String, art: Art },
-    /// Apple's page for an artist, when there is one (`None`: no match, or no token).
-    AppleArtist { id: String, info: Option<crate::apple::Artwork> },
-    /// Apple's motion sleeve for a release; `key` is what the UI asked it for.
-    AppleCover { key: String, motion: Option<crate::apple::Motion> },
+    /// The animated cover found for a song (`None`: Apple has none); the UI hands the
+    /// song to Spotify's canvas then.
+    CanvasUrl { id: String, url: Option<String> },
     /// Spotify's canvas for the playing song; `key` is what the UI asked it for.
     SpotifyCanvas { key: String, url: Option<String> },
     /// A signature for an artist, already whitened for the header.
@@ -836,26 +833,9 @@ impl Backend {
                     let art = tokio::task::spawn_blocking(move || crate::art::process(&bytes)).await??;
                     Resp::Art { key, art }
                 }
-                Req::AppleArtist { id, name } => {
-                    let info = crate::apple::artist(&self.http(), &name).await;
-                    log::info!("apple artist '{name}': {}", match &info {
-                        Some(a) => match &a.logo {
-                            Some(l) => format!("'{}' wordmark {}x{}", a.name, l.w, l.h),
-                            None => format!("'{}' in type (no wordmark)", a.name),
-                        },
-                        None => "no answer".to_owned(),
-                    });
-                    Resp::AppleArtist { id, info }
-                }
-                Req::AppleCover { key, album, artist, title } => {
-                    let motion = match title.as_deref() {
-                        Some(t) => crate::apple::song_motion(&self.http(), t, &artist, Some(&album)).await,
-                        None => crate::apple::album_motion(&self.http(), &album, &artist).await,
-                    };
-                    if motion.is_none() {
-                        log::debug!("apple: no motion sleeve for '{album}' by '{artist}'");
-                    }
-                    Resp::AppleCover { key, motion }
+                Req::Canvas { track } => {
+                    let url = crate::canvas::find(&self.http(), &self.data_dir, &track).await;
+                    Resp::CanvasUrl { id: track.id, url }
                 }
                 Req::SpotifyCanvas { key, title, artist, duration_ms } => {
                     let url = self.spotify_canvas(&key, &title, &artist, duration_ms).await;

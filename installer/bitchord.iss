@@ -48,6 +48,11 @@ CloseApplications=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; The escape hatch for a broken update: an old settings file (app.ron and friends)
+; can leave the app misbehaving after an update, and only wiping the data folder
+; fixes it. Checked here, everything under %AppData%\ytm-rs goes before the new
+; files land — the app starts as a fresh install.
+Name: "cleandata"; Description: "Remove the existing BitChord data before installing (%AppData%\ytm-rs). Use this if an update left the app misbehaving: it deletes the old settings and caches, so BitChord starts as a fresh install."; GroupDescription: "Fix an update:"; Flags: unchecked
 
 [Files]
 ; The exe statically links the WebView2 loader, so there's no DLL to ship.
@@ -74,3 +79,17 @@ Type: filesandordirs; Name: "{userappdata}\ytm-rs\data\updates"
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// The "Remove the existing BitChord data" task: the data folder goes just before
+// the new files are written, so the install that follows is a clean one. The app
+// is closed by the setup's CloseApplications, so nothing holds the files open.
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    if IsTaskSelected('cleandata') then
+    begin
+      DelTree(ExpandConstant('{userappdata}\ytm-rs'), True, True, True);
+      Log('Removed existing BitChord data (%AppData%\ytm-rs) at the user''s request.');
+    end;
+end;

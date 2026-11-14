@@ -632,14 +632,11 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         return;
     }
     let rows = Rows::new(app, now);
-    // The header's motion sleeve, asked for before the release is borrowed below.
-    let (release, artist) = match app.opened(id) {
-        Some(o) => (o.c.title.clone(), o.c.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| o.c.byline())),
-        None => (String::new(), String::new()),
-    };
-    app.apple_cover(&release, &artist, None);
+    // The header's animated cover: the release's first song stands in for the album —
+    // Apple files the release's clip with its songs, and the canvas finds it there.
     let px = (232.0 * ui.ctx().pixels_per_point()).round().max(256.0) as u32;
-    let sprite = app.apple_sprite(ui.ctx(), &release, &artist, px);
+    let proxy = app.opened(id).and_then(|o| o.c.tracks.first().cloned());
+    let sprite = proxy.and_then(|t| app.animated_cover(ui.ctx(), &t, px));
     let Some(o) = app.lists.get(id) else { return };
     let (c, more) = (&o.c, app.receiving(id));
     let acts = &mut app.actions;
@@ -821,24 +818,6 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
 
 // ------------------------------------------------------------------ artist
 
-/// Apple's wordmark for the artist, bottom-left at `base`, no wider than `max_w`.
-/// False until the image is ready, so the caller can draw the name instead.
-fn wordmark(ui: &Ui, base: egui::Pos2, logo: &crate::apple::LogoSrc, max_w: f32) -> bool {
-    let aspect = logo.w.max(1) as f32 / logo.h.max(1) as f32;
-    let mut size = vec2(72.0 * aspect, 72.0);
-    if size.x > max_w {
-        size = vec2(max_w, max_w / aspect);
-    }
-    let url = logo.at_height((size.y * 2.0) as u32);
-    let ready = matches!(egui::Image::new(url.as_str()).load_for_size(ui.ctx(), size), Ok(egui::load::TexturePoll::Ready { .. }));
-    if ready {
-        let rect = Rect::from_min_size(pos2(base.x, base.y - 40.0 - size.y), size);
-        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        widgets::paint_remote(ui, &url, rect, 0.0, uv, Color32::WHITE);
-    }
-    ready
-}
-
 fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     if app.artist.as_ref().is_none_or(|a| a.id != id) {
         placeholder(app, ui, now, 2, CARD);
@@ -846,35 +825,18 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     }
     let rows = Rows::new(app, now);
     let accent = app.accent_color();
-    // Apple's own page for this artist: their display name and the hero clip. Artists
-    // Apple has no clip for (Charli xcx) keep the still banner.
-    let apple = app.apple_artists.get(id).and_then(|o| o.clone());
-    let name = apple.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| app.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default());
-    // Apple's search misses once now and then. While the page is open, ask again after
-    // the cooldown rather than waiting for the listener to come back to it.
-    if apple.is_none() {
-        let key = format!("artist:{id}");
-        let cooling = app.apple_missed.get(&key).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(120));
-        if !cooling && app.apple_waiting.insert(key) {
-            app.backend.request(crate::backend::Req::AppleArtist { id: id.to_owned(), name: name.clone() });
-        }
-    }
-    // Apple's wordmark wins the hero; failing one, the listener's signature service;
-    // failing that, the name in type. A lettered artist still has their signature
-    // asked for, because it signs the About section below instead of the hero.
+    let name = app.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+    // The listener's signature service stands in for the name where it has one.
     let signature = app.signature_texture(ui.ctx(), &name);
     let Some(a) = &app.artist else { return };
     let acts = &mut app.actions;
     let top = &a.top;
-    // The hero, full-bleed at Apple's header aspect (about 1.93:1, the shape the
-    // phone's and ForkChord's artist pages use), fading into the page at the bottom.
-    // Apple's own photograph for the artist draws over YouTube's banner once it
-    // arrives (paint_remote fades it in, like the web player's does).
+    // The hero, full-bleed at the header aspect the artist pages use (about 1.93:1),
+    // fading into the page at the bottom. YouTube's banner draws it.
     let w = ui.available_width();
     let screen_h = ui.ctx().input(|i| i.raw.screen_rect.map_or(0.0, |r| r.height()));
     let hero_h = (w / 1.93).clamp(240.0, (screen_h * 0.7).max(380.0));
     let (hero, _) = ui.allocate_exact_size(vec2(w, hero_h), Sense::hover());
-    let hero_apple = apple.as_ref().and_then(|x| x.hero.as_ref());
     if let Some(t) = a.banner.iter().max_by_key(|t| t.width) {
         let img_ratio = if t.height > 0 { t.width as f32 / t.height as f32 } else { 16.0 / 9.0 };
         // Cover-fit: crop the image's top band to the hero's aspect.
@@ -882,48 +844,28 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, vis_h));
         ui.painter().rect_filled(hero, 14.0, theme::glass(0.07));
         widgets::paint_remote(ui, &t.url, hero, 14.0, uv, Color32::WHITE);
-    } else if hero_apple.is_none() {
+    } else {
         ui.painter().rect_filled(hero, 14.0, theme::with_alpha(accent, 0.25));
-    }
-    if let Some(h) = hero_apple {
-        let rect_ratio = w / hero_h;
-        // Cover-fit, centred like the web player's object-cover: a wider photo is
-        // cropped at its sides, a taller one keeps its top (faces stay in).
-        let img_ratio = h.aspect();
-        let uv = if img_ratio > rect_ratio {
-            let vis_w = (rect_ratio / img_ratio).min(1.0);
-            Rect::from_min_max(pos2((1.0 - vis_w) / 2.0, 0.0), pos2((1.0 + vis_w) / 2.0, 1.0))
-        } else {
-            let vis_h = (img_ratio / rect_ratio).min(1.0);
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, vis_h))
-        };
-        // 1200 px wide, like the phone's header fetch; sharp across a full-width hero.
-        widgets::paint_remote(ui, &h.at_width(1200), hero, 14.0, uv, Color32::WHITE);
     }
     super::shell::vgradient(ui.painter(), Rect::from_min_max(pos2(hero.left(), hero.center().y - 40.0), hero.max), Color32::TRANSPARENT, theme::shade(0.85));
     let base = hero.left_bottom() + vec2(28.0, -30.0);
-    // Apple letters some artists a wordmark image instead of setting their name in type.
-    // Until it downloads (or when there's none) the typed name stands in.
-    let drawn = apple.as_ref().and_then(|x| x.logo.as_ref()).is_some_and(|logo| wordmark(ui, base, logo, w * 0.62));
-    if !drawn {
-        match &signature {
-            // The artist's own hand, credited above it the way a page signs itself off.
-            Some(tex) => {
-                let tex_size = tex.size_vec2();
-                let aspect = tex_size.x / tex_size.y.max(1.0);
-                let mut size = vec2(96.0 * aspect, 96.0);
-                let max_w = (w * 0.42).min(340.0);
-                if size.x > max_w {
-                    size = vec2(max_w, max_w / aspect);
-                }
-                let rect = Rect::from_min_size(pos2(base.x, base.y - 40.0 - size.y), size);
-                ui.painter().text(pos2(base.x, rect.top() - 8.0), Align2::LEFT_BOTTOM, format!("Signed by {name}"), theme::regular(12.0), Color32::from_white_alpha(199));
-                let tex = egui::load::SizedTexture::from_handle(tex);
-                egui::Image::from_texture(tex).uv(Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))).paint_at(ui, rect);
+    match &signature {
+        // The artist's own hand, credited above it the way a page signs itself off.
+        Some(tex) => {
+            let tex_size = tex.size_vec2();
+            let aspect = tex_size.x / tex_size.y.max(1.0);
+            let mut size = vec2(96.0 * aspect, 96.0);
+            let max_w = (w * 0.42).min(340.0);
+            if size.x > max_w {
+                size = vec2(max_w, max_w / aspect);
             }
-            None => {
-                ui.painter().text(base - vec2(0.0, 44.0), Align2::LEFT_BOTTOM, &name, theme::bold(58.0), Color32::WHITE);
-            }
+            let rect = Rect::from_min_size(pos2(base.x, base.y - 40.0 - size.y), size);
+            ui.painter().text(pos2(base.x, rect.top() - 8.0), Align2::LEFT_BOTTOM, format!("Signed by {name}"), theme::regular(12.0), Color32::from_white_alpha(199));
+            let tex = egui::load::SizedTexture::from_handle(tex);
+            egui::Image::from_texture(tex).uv(Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))).paint_at(ui, rect);
+        }
+        None => {
+            ui.painter().text(base - vec2(0.0, 44.0), Align2::LEFT_BOTTOM, &name, theme::bold(58.0), Color32::WHITE);
         }
     }
     if let Some(s) = a.subscribers {
@@ -975,32 +917,8 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     if let Some(d) = a.description.as_deref().filter(|d| !d.trim().is_empty()) {
         shelf_header(ui, "About", None, None, false);
         let full = ui.available_width().min(820.0);
-        // A lettered artist's signature can't be the hero, so it signs the About
-        // section beside the prose the way a page signs itself off.
-        let beside = drawn.then_some(signature.as_ref()).flatten();
-        if let Some(tex) = beside {
-            ui.horizontal_top(|ui| {
-                let sig_w = (full * 0.28).clamp(120.0, 210.0);
-                let text_w = (full - sig_w - 32.0).max(220.0);
-                let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.5), theme::text_dim(), text_w, 8);
-                ui.label(g);
-                ui.add_space(32.0);
-                let tex_size = tex.size_vec2();
-                let aspect = tex_size.x / tex_size.y.max(1.0);
-                let mut size = vec2(sig_w, sig_w / aspect);
-                if size.y > 140.0 {
-                    size = vec2(140.0 * aspect, 140.0);
-                }
-                let (rect, _) = ui.allocate_exact_size(vec2(size.x, size.y + 22.0), Sense::hover());
-                ui.painter().text(rect.left_top(), Align2::LEFT_TOP, format!("Signed by {name}"), theme::regular(12.0), Color32::from_white_alpha(199));
-                let img = Rect::from_min_size(pos2(rect.left(), rect.top() + 22.0), size);
-                let tex = egui::load::SizedTexture::from_handle(tex);
-                egui::Image::from_texture(tex).uv(Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))).paint_at(ui, img);
-            });
-        } else {
-            let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.5), theme::text_dim(), full, 8);
-            ui.label(g);
-        }
+        let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.5), theme::text_dim(), full, 8);
+        ui.label(g);
     }
 }
 
@@ -1784,6 +1702,9 @@ fn eq_bands(ui: &mut Ui, gains: &mut crate::audio::eq::Gains) -> bool {
 fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
     let mut edited = false;
     let mut remove = None;
+    // ↑/↓ through the list: the song asks the addons in this order, so an addon moved
+    // up is asked first (the same priority the sources list above orders by).
+    let mut swap = None;
     for i in 0..app.hires_sources.len() {
         let link = app.hires_sources[i].trim().to_owned();
         // One addon: switch, field, Test and × are one unit in a search.
@@ -1799,7 +1720,7 @@ fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
                 app.backend.set_hires_source(&live_sources(app));
             }
             ui.add_space(6.0);
-            let field_w = (ui.available_width() - 110.0).max(120.0);
+            let field_w = (ui.available_width() - 150.0).max(120.0);
             ui.allocate_ui_with_layout(vec2(field_w, 42.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(field_w);
                 if super::text_field(ui, "", &mut app.hires_sources[i], false, "https://your-addon.example").changed() {
@@ -1807,12 +1728,32 @@ fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
                 }
             });
             hires_test_button(app, ui, &link);
+            // Priority: up and down through the addon list.
+            if widgets::icon_button(ui, icon::CHEVRON_UP, 11.0, "Move this addon up", false).clicked()
+                && i > 0
+            {
+                swap = Some((i - 1, i));
+            }
+            if widgets::icon_button(ui, icon::CHEVRON_DOWN, 11.0, "Move this addon down", false).clicked()
+                && i + 1 < app.hires_sources.len()
+            {
+                swap = Some((i, i + 1));
+            }
             if widgets::icon_button(ui, icon::X, 14.0, "Remove source", false).clicked() {
                 remove = Some(i);
             }
         });
         hires_test_line(app, ui, &link);
         ui.add_space(6.0);
+    }
+    if let Some((a, b)) = swap {
+        // The tests' verdicts are keyed by the links themselves, so they follow their
+        // link to its new place; only the list order and the switches move.
+        app.hires_sources.swap(a, b);
+        if let (Some(x), Some(y)) = (app.hires_enabled.get_mut(a), app.hires_enabled.get_mut(b)) {
+            std::mem::swap(x, y);
+        }
+        edited = true;
     }
     if let Some(i) = remove {
         let gone = app.hires_sources.remove(i);
@@ -2388,7 +2329,7 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
 fn settings_artists(app: &mut App, ui: &mut Ui) {
     settings_section(ui, "Artist pages", None, None, |ui| {
         // The row and its link field are one unit in a search.
-        let desc = "A link to your own signature API. Artists get their handwritten signature, with “Signed by …” above it — beside About when Apple also letters them a wordmark; without a signature, their name is set in type.";
+        let desc = "A link to your own signature API. Artists get their handwritten signature, with “Signed by …” above it, standing in for their name in the page header; without a signature, their name is set in type.";
         if filter_show(ui, &format!("Signature service {desc} link")) {
             setting_row_shown(ui, "Signature service", Some(desc), |_| {});
             divider(ui);
@@ -2437,7 +2378,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.reactive_bg, "Pulse with the music");
         });
         divider(ui);
-        setting_row(ui, "Animated covers", Some("Where Apple Music has a clip for a song or its album, the cover moves in Now playing (and on artist pages), looping while the music plays and holding still when it's paused. Finding them sends each song's title and artist to Apple Music."), |ui| {
+        setting_row(ui, "Animated covers", Some("Where Apple Music has a clip for a song or its album, the cover moves in Now playing and on the album page, looping while the music plays and holding still when it's paused. Finding them sends each song's title and artist to Apple Music, remembered on disk so each song asks once."), |ui| {
             toggle(ui, &mut app.animated_covers, "Animated covers");
         });
         divider(ui);
@@ -2575,27 +2516,17 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
         });
         if linked {
             divider(ui);
-            status_pills(ui, &mut app.discord_options.status, &["online", "idle", "dnd", "invisible"]);
-            divider(ui);
             setting_row(ui, "Lead with the song", Some("Name the song, not the artist, in member lists."), |ui| {
                 toggle(ui, &mut app.discord_options.use_details, "song-first");
             });
             divider(ui);
-            text_option(ui, &mut app.discord_options.activity_name, "Activity name", "BitChord");
+            text_option(ui, &mut app.discord_options.activity_name, "Listening to :", "BitChord");
             divider(ui);
-            setting_row(ui, "Buttons on the card", Some("Two taps on the profile card: the song and this project."), |ui| {
-                toggle(ui, &mut app.discord_options.button1_visible, "song-button");
+            setting_row(ui, "Buttons on the card", Some("Two taps on the profile card, fixed: one opens the song on YouTube Music, one opens this project's page. The labels can't be changed, only switched off."), |ui| {
+                toggle(ui, &mut app.discord_options.button1_visible, crate::discord_link::DEFAULT_BUTTON_1);
                 ui.add_space(8.0);
-                toggle(ui, &mut app.discord_options.button2_visible, "project-button");
+                toggle(ui, &mut app.discord_options.button2_visible, crate::discord_link::DEFAULT_BUTTON_2);
             });
-            if app.discord_options.button1_visible {
-                divider(ui);
-                text_option(ui, &mut app.discord_options.button1_text, "First button", crate::discord_link::DEFAULT_BUTTON_1);
-            }
-            if app.discord_options.button2_visible {
-                divider(ui);
-                text_option(ui, &mut app.discord_options.button2_text, "Second button", crate::discord_link::DEFAULT_BUTTON_2);
-            }
         }
         divider(ui);
         let busy = app.lastfm_busy.load(Ordering::Relaxed);
@@ -2630,21 +2561,6 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
     if discord_enabled != app.discord_enabled {
         app.set_discord_enabled(discord_enabled);
     }
-}
-
-/// Presence status as pills, one per choice (the phone's DiscordScreen).
-fn status_pills(ui: &mut Ui, value: &mut String, choices: &[&str]) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Status").size(13.5).color(theme::text_dim()));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            for choice in choices {
-                let on = value.as_str() == *choice;
-                if pill(ui, choice, None, on).clicked() {
-                    *value = (*choice).to_owned();
-                }
-            }
-        });
-    });
 }
 
 /// A one-line option the listener types over (the card's labels).

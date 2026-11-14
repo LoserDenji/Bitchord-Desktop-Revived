@@ -1,0 +1,362 @@
+[33mcommit fdad8163a2805116bd7486dd9d822b9e582d6153[m[33m ([m[1;33mtag: [m[1;33mv2.0.2-test13[m[33m)[m
+Author: Inotspoke <pranjalsingh1809@gmail.com>
+Date:   Sat Nov 14 01:14:36 2026 +0530
+
+    update release workflow and updater
+
+[1mdiff --git a/.github/workflows/release.yml b/.github/workflows/release.yml[m
+[1mindex b73fb302..6383ba84 100644[m
+[1m--- a/.github/workflows/release.yml[m
+[1m+++ b/.github/workflows/release.yml[m
+[36m@@ -1,5 +1,10 @@[m
+ name: Release[m
+ [m
+[32m+[m[32m# Builds the downloads from the tagged source and attaches them all to the GitHub[m
+[32m+[m[32m# release: Windows (setup exe and portable zip), macOS (one universal dmg) and Linux[m
+[32m+[m[32m# (an install.sh tarball, a portable tarball and a .deb — no AppImage; the updater on[m
+[32m+[m[32m# Linux reads the tarballs, and a .deb-installed copy is only told that a new version[m
+[32m+[m[32m# is out, for apt to install over it).[m
+ on:[m
+   push:[m
+     tags: ["v*.*.*"][m
+[36m@@ -56,8 +61,8 @@[m [mjobs:[m
+           New-Item -ItemType Directory -Force dist | Out-Null[m
+           Copy-Item installer\Output\bitchord-setup-$v.exe "dist\BitChord-$v-windows-x64-setup.exe"[m
+           New-Item -ItemType Directory -Force portable\BitChord | Out-Null[m
+[32m+[m[32m          # The exe statically links the WebView2 loader, so there's no DLL to carry.[m
+           Copy-Item target\release\bitchord.exe portable\BitChord\[m
+[31m-          if (Test-Path target\release\WebView2Loader.dll) { Copy-Item target\release\WebView2Loader.dll portable\BitChord\ }[m
+           Copy-Item installer\portable.txt portable\BitChord\[m
+           Copy-Item README.md, LICENSE portable\BitChord\[m
+           Compress-Archive -Path portable\BitChord -DestinationPath "dist\BitChord-$v-windows-x64-portable.zip" -Force[m
+[36m@@ -67,6 +72,7 @@[m [mjobs:[m
+         with:[m
+           name: windows-artifacts[m
+           path: dist/*[m
+[32m+[m[32m          if-no-files-found: error[m
+ [m
+   macos:[m
+     name: macOS · universal dmg[m
+[36m@@ -118,9 +124,11 @@[m [mjobs:[m
+         with:[m
+           name: macos-artifacts[m
+           path: dist/*[m
+[32m+[m[32m          if-no-files-found: error[m
+ [m
+   linux:[m
+[31m-    name: Linux · AppImage, deb, rpm[m
+[32m+[m[32m    name: Linux · tarballs, deb[m
+[32m+[m[32m    # The oldest supported Ubuntu, so the binary runs on older glibc too.[m
+     runs-on: ubuntu-22.04[m
+     steps:[m
+       - uses: actions/checkout@v4[m
+[36m@@ -141,11 +149,9 @@[m [mjobs:[m
+             libayatana-appindicator3-dev \[m
+             libdbus-1-dev \[m
+             libssl-dev \[m
+[32m+[m[32m            dpkg-dev \[m
+             pkg-config[m
+ [m
+[31m-      - name: Packaging tools (rpmbuild, desktop-file-validate, file)[m
+[31m-        run: sudo apt-get install -y rpm file desktop-file-utils[m
+[31m-[m
+       - name: Work out the version[m
+         id: version[m
+         run: |[m
+[36m@@ -160,15 +166,35 @@[m [mjobs:[m
+       - name: Build[m
+         run: cargo build --release[m
+ [m
+[31m-      - name: AppImage, deb and rpm[m
+[32m+[m[32m      # The installer tarball: the binary, install.sh with the launcher and icon it[m
+[32m+[m[32m      # installs, README and LICENSE. The portable one: the binary, the marker that makes[m
+[32m+[m[32m      # it portable, README and LICENSE. The updater on Linux reads them too. And the[m
+[32m+[m[32m      # .deb, which installs over the last one and only tells about new versions.[m
+[32m+[m[32m      - name: Tarballs and .deb[m
+         run: |[m
+[31m-          chmod +x linux/package.sh[m
+[31m-          linux/package.sh target/release/bitchord "${{ steps.version.outputs.value }}" dist[m
+[32m+[m[32m          v="${{ steps.version.outputs.value }}"[m
+[32m+[m[32m          dir="bitchord-$v-linux-x86_64"[m
+[32m+[m[32m          mkdir -p out/"$dir"[m
+[32m+[m[32m          cp target/release/bitchord linux/install.sh linux/bitchord.desktop README.md LICENSE "out/$dir/"[m
+[32m+[m[32m          cp assets/icon/icon.png "out/$dir/bitchord.png"[m
+[32m+[m[32m          chmod 755 "out/$dir/bitchord" "out/$dir/install.sh"[m
+[32m+[m[32m          tar -czf "out/BitChord-$v-linux-x86_64.tar.gz" -C out "$dir"[m
+[32m+[m[32m          dir="bitchord-portable-$v-linux-x86_64"[m
+[32m+[m[32m          mkdir -p out/"$dir"[m
+[32m+[m[32m          cp target/release/bitchord linux/portable.txt README.md LICENSE "out/$dir/"[m
+[32m+[m[32m          chmod 755 "out/$dir/bitchord"[m
+[32m+[m[32m          tar -czf "out/BitChord-portable-$v-linux-x86_64.tar.gz" -C out "$dir"[m
+[32m+[m[32m          sh linux/deb.sh target/release/bitchord "$v" out[m
+[32m+[m[32m          ls -lh out[m
+ [m
+       - uses: actions/upload-artifact@v4[m
+         with:[m
+           name: linux-artifacts[m
+[31m-          path: dist/*[m
+[32m+[m[32m          path: |[m
+[32m+[m[32m            out/BitChord-${{ steps.version.outputs.value }}-linux-x86_64.tar.gz[m
+[32m+[m[32m            out/BitChord-portable-${{ steps.version.outputs.value }}-linux-x86_64.tar.gz[m
+[32m+[m[32m            out/bitchord_*_amd64.deb[m
+[32m+[m[32m          if-no-files-found: error[m
+ [m
+   release:[m
+     name: Publish[m
+[36m@@ -196,7 +222,7 @@[m [mjobs:[m
+ [m
+             - **Windows** — run the `-setup.exe`, or unzip the `-portable.zip`.[m
+             - **macOS** — one universal build for Apple Silicon and Intel: open the `.dmg` and drag BitChord into Applications. The app is unsigned (no Apple Developer ID), so the first launch needs one extra step: right-click BitChord → **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.[m
+[31m-            - **Linux** — install the `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/openSUSE), or run the `.AppImage` directly (`chmod +x` it first). The AppImage carries its own libraries — nothing else to install.[m
+[32m+[m[32m            - **Linux** — install the `.deb` (Debian, Ubuntu, Mint and friends), or download the other tarball, extract it and run `./install.sh` (installs into your user directory, with a menu entry and a `bitchord` command; it offers to install any missing libraries). For a run-anywhere copy, use the `-portable-` tarball. The installed and portable copies update themselves; a `.deb` install tells you when a new version is out, to install over it.[m
+           files: dist/*[m
+         env:[m
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}[m
+[1mdiff --git a/AGENTS.md b/AGENTS.md[m
+[1mindex 3fda75de..a6da9457 100644[m
+[1m--- a/AGENTS.md[m
+[1m+++ b/AGENTS.md[m
+[36m@@ -27,7 +27,7 @@[m [mBitChord Desktop Revived (`bitchord`) is a high-performance native desktop music[m
+ - `server/smoke/`: Integration/smoke test runner for the sync server.[m
+ [m
+ ### Packaging & OS Distribution[m
+[31m-- `linux/`: Linux desktop integration scripts (`bitchord.desktop`, `package.sh`, `install.sh`).[m
+[32m+[m[32m- `linux/`: Linux desktop integration scripts (`bitchord.desktop`, `deb.sh`, `install.sh`).[m
+ - `macos/`: macOS bundle configuration (`Info.plist`, `bundle.sh`).[m
+ - `installer/`: Inno Setup installer script (`bitchord.iss`) for Windows.[m
+ - `assets/`: Static fonts, SVG glyphs, theme presets, quality badges, and JS solver scripts.[m
+[1mdiff --git a/README.md b/README.md[m
+[1mindex de0c23c0..5ab63425 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -79,7 +79,7 @@[m [mDownload the latest build from [Releases](https://github.com/LoserDenji/Bitchord[m
+   <p><em>macOS installation walkthrough</em></p>[m
+ </div>[m
+ [m
+[31m-- **Linux** — install the `.deb` (Debian, Ubuntu, Mint) or `.rpm` (Fedora, openSUSE), or run the `.AppImage` directly: `chmod +x BitChord-<version>-linux-amd64.AppImage && ./BitChord-<version>-linux-amd64.AppImage`. The AppImage carries its own libraries (WebKitGTK, GTK, the tray's appindicator, ALSA) — nothing else to install.[m
+[32m+[m[32m- **Linux** — install the `.deb` (Debian, Ubuntu, Mint and friends), or download the other tarball, extract it and run `./install.sh` (installs into your user directory, with a menu entry and a `bitchord` command; it offers to install any missing libraries). For a run-anywhere copy, use the `-portable-` tarball. The installed and portable copies update themselves; a `.deb` install tells you when a new version is out, to install over it.[m
+ [m
+ ## Building from source[m
+ [m
+[1mdiff --git a/installer/bitchord.iss b/installer/bitchord.iss[m
+[1mindex 5b197ece..73cf2cdb 100644[m
+[1m--- a/installer/bitchord.iss[m
+[1m+++ b/installer/bitchord.iss[m
+[36m@@ -50,8 +50,8 @@[m [mCloseApplications=yes[m
+ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked[m
+ [m
+ [Files][m
+[32m+[m[32m; The exe statically links the WebView2 loader, so there's no DLL to ship.[m
+ Source: "{#BinDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion[m
+[31m-Source: "{#BinDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion[m
+ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion[m
+ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion[m
+ [m
+[1mdiff --git a/linux/deb.sh b/linux/deb.sh[m
+[1mnew file mode 100644[m
+[1mindex 00000000..a278539d[m
+[1m--- /dev/null[m
+[1m+++ b/linux/deb.sh[m
+[36m@@ -0,0 +1,68 @@[m
+[32m+[m[32m#!/bin/sh[m
+[32m+[m[32m# Build the .deb: the app in /usr/lib/bitchord, a `bitchord` command, and a menu entry[m
+[32m+[m[32m# with its icon. Beside the app goes deb.txt, which has it tell you when a new version[m
+[32m+[m[32m# is out instead of updating itself (apt owns the files). A new .deb installs over the[m
+[32m+[m[32m# old one.[m
+[32m+[m[32m#[m
+[32m+[m[32m#   linux/deb.sh <binary> <version> <out dir>[m
+[32m+[m[32m#[m
+[32m+[m[32m# Needs dpkg-deb and dpkg-shlibdeps (dpkg-dev), which work out the libraries it depends on.[m
+[32m+[m[32mset -e[m
+[32m+[m
+[32m+[m[32mbin=$1[m
+[32m+[m[32mversion=$2[m
+[32m+[m[32mout=$3[m
+[32m+[m[32m[ -f "$bin" ] && [ -n "$version" ] && [ -n "$out" ] || { echo "usage: $0 <binary> <version> <out dir>"; exit 1; }[m
+[32m+[m[32mroot=$(cd "$(dirname "$0")/.." && pwd)[m
+[32m+[m
+[32m+[m[32m# A nightly (2.1.0-nightly.20261111) comes after its version, and before the next, as[m
+[32m+[m[32m# in the app's own updater.[m
+[32m+[m[32mdebver=$(echo "$version" | sed 's/-nightly\./+nightly./')[m
+[32m+[m[32mcase $(uname -m) in[m
+[32m+[m[32m    x86_64) arch=amd64 ;;[m
+[32m+[m[32m    aarch64) arch=arm64 ;;[m
+[32m+[m[32m    *) arch=$(uname -m) ;;[m
+[32m+[m[32mesac[m
+[32m+[m
+[32m+[m[32mwork=$(mktemp -d)[m
+[32m+[m[32mtrap 'rm -rf "$work"' EXIT[m
+[32m+[m[32mpkg=$work/pkg[m
+[32m+[m
+[32m+[m[32minstall -Dm755 "$bin" "$pkg/usr/lib/bitchord/bitchord"[m
+[32m+[m[32mecho "Installed from the .deb. This file has bitchord tell you about new versions instead of updating itself." > "$pkg/usr/lib/bitchord/deb.txt"[m
+[32m+[m[32mmkdir -p "$pkg/usr/bin"[m
+[32m+[m[32mln -s ../lib/bitchord/bitchord "$pkg/usr/bin/bitchord"[m
+[32m+[m[32minstall -Dm644 "$root/linux/bitchord.desktop" "$pkg/usr/share/applications/bitchord.desktop"[m
+[32m+[m[32minstall -Dm644 "$root/assets/icon/icon.png" "$pkg/usr/share/icons/hicolor/256x256/apps/bitchord.png"[m
+[32m+[m[32minstall -Dm644 "$root/LICENSE" "$pkg/usr/share/doc/bitchord/copyright"[m
+[32m+[m[32mchmod 644 "$pkg/usr/lib/bitchord/deb.txt"[m
+[32m+[m
+[32m+[m[32m# The libraries it links, at the versions it was built against. The tray's[m
+[32m+[m[32m# appindicator is loaded at run time, so it's added by hand.[m
+[32m+[m[32mmkdir -p "$work/debian"[m
+[32m+[m[32mprintf 'Source: bitchord\n\nPackage: bitchord\nArchitecture: any\n' > "$work/debian/control"[m
+[32m+[m[32mshlibs=$(cd "$work" && dpkg-shlibdeps -O "$pkg/usr/lib/bitchord/bitchord" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')[m
+[32m+[m[32m[ -n "$shlibs" ] || { echo "dpkg-shlibdeps found no libraries"; exit 1; }[m
+[32m+[m[32mdepends="$shlibs, libayatana-appindicator3-1 | libappindicator3-1"[m
+[32m+[m
+[32m+[m[32mmkdir -p "$pkg/DEBIAN"[m
+[32m+[m[32mcat > "$pkg/DEBIAN/control" <<EOF[m
+[32m+[m[32mPackage: bitchord[m
+[32m+[m[32mVersion: $debver[m
+[32m+[m[32mArchitecture: $arch[m
+[32m+[m[32mMaintainer: LoserDenji <LoserDenji@users.noreply.github.com>[m
+[32m+[m[32mInstalled-Size: $(du -sk "$pkg/usr" | cut -f1)[m
+[32m+[m[32mDepends: $depends[m
+[32m+[m[32mSection: sound[m
+[32m+[m[32mPriority: optional[m
+[32m+[m[32mHomepage: https://github.com/LoserDenji/Bitchord-Desktop-Revived[m
+[32m+[m[32mDescription: Native BitChord client[m
+[32m+[m[32m A YouTube Music desktop client: search, browse and play music from[m
+[32m+[m[32m YouTube Music, with word-synced lyrics, themes, Listen Together and[m
+[32m+[m[32m Spotify transfer.[m
+[32m+[m[32mEOF[m
+[32m+[m
+[32m+[m[32mmkdir -p "$out"[m
+[32m+[m[32mdeb="$out/bitchord_${debver}_$arch.deb"[m
+[32m+[m[32mdpkg-deb --build --root-owner-group "$pkg" "$deb"[m
+[32m+[m[32mecho "Built $deb"[m
+[1mdiff --git a/linux/install.sh b/linux/install.sh[m
+[1mindex 14bfc64b..d524e250 100644[m
+[1m--- a/linux/install.sh[m
+[1m+++ b/linux/install.sh[m
+[36m@@ -4,7 +4,9 @@[m
+ # itself. Libraries it needs that are missing get installed with the system's package[m
+ # manager (that step asks for your password).[m
+ #[m
+[31m-# Run it from the extracted download.[m
+[32m+[m[32m# Run it from the extracted download, or straight from the web, which fetches the[m
+[32m+[m[32m# latest release first:[m
+[32m+[m[32m#   curl -fsSL https://raw.githubusercontent.com/LoserDenji/Bitchord-Desktop-Revived/main/linux/install.sh | sh[m
+ # `install.sh --uninstall` removes it again.[m
+ set -e[m
+ [m
+[36m@@ -29,8 +31,18 @@[m [mif [ "$1" = "--uninstall" ]; then[m
+ fi[m
+ [m
+ # The files to install: beside this script, or (run from the web) the latest release.[m
+[31m-here=$(cd "$(dirname "$0")" && pwd)[m
+[31m-[ -f "$here/bitchord" ] || { echo "Run install.sh from the extracted download."; exit 1; }[m
+[32m+[m[32mhere=$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)[m
+[32m+[m[32mif [ ! -f "$here/bitchord" ]; then[m
+[32m+[m[32m    repo=LoserDenji/Bitchord-Desktop-Revived[m
+[32m+[m[32m    arch=$(uname -m)[m
+[32m+[m[32m    tmp=$(mktemp -d)[m
+[32m+[m[32m    trap 'rm -rf "$tmp"' EXIT[m
+[32m+[m[32m    url=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | grep -o "https://[^\"]*/BitChord-[0-9][^\"/]*-linux-$arch\.tar\.gz" | head -n 1)[m
+[32m+[m[32m    [ -n "$url" ] || { echo "No Linux $arch download in the latest release."; exit 1; }[m
+[32m+[m[32m    echo "Downloading $(basename "$url")"[m
+[32m+[m[32m    curl -fL# "$url" | tar -xz -C "$tmp"[m
+[32m+[m[32m    here=$(dirname "$(find "$tmp" -name bitchord -type f | head -n 1)")[m
+[32m+[m[32mfi[m
+ [m
+ mkdir -p "$lib" "$bin" "$data/applications" "$(dirname "$icon")"[m
+ # Put the new binary next to the old one and rename it over, so a copy that's[m
+[1mdiff --git a/linux/package.sh b/linux/package.sh[m
+[1mdeleted file mode 100644[m
+[1mindex 01ef291a..00000000[m
+[1m--- a/linux/package.sh[m
+[1m+++ /dev/null[m
+[36m@@ -1,170 +0,0 @@[m
+[31m-#!/bin/sh[m
+[31m-# Build the Linux packages from a built binary:[m
+[31m-#   linux/package.sh target/release/bitchord 2.0.2 dist[m
+[31m-# Writes into the out dir:[m
+[31m-#   BitChord-<v>-linux-amd64.AppImage — one file that runs on any distro: WebKitGTK[m
+[31m-#     (sign-in windows), GTK, the tray's appindicator and ALSA are packed inside.[m
+[31m-#   BitChord-<v>-linux-amd64.deb      — for Debian, Ubuntu, Mint and friends.[m
+[31m-#   BitChord-<v>-linux-x86_64.rpm     — for Fedora, openSUSE and friends.[m
+[31m-# The deb and rpm expect the runtime libraries from the system (see the[m
+[31m-# Depends/Requires lines below); the AppImage carries them all.[m
+[31m-#[m
+[31m-# Needs on the build box: dpkg-deb, rpmbuild, curl, desktop-file-utils, file,[m
+[31m-# and the WebKitGTK 4.1 runtime installed (linuxdeploy reads it from there).[m
+[31m-set -e[m
+[31m-[m
+[31m-bin=$1[m
+[31m-version=$2[m
+[31m-out=$3[m
+[31m-[ -n "$bin" ] && [ -n "$version" ] && [ -n "$out" ] || { echo "usage: $0 <binary> <version> <out dir>"; exit 1; }[m
+[31m-[ -f "$bin" ] || { echo "no such binary: $bin"; exit 1; }[m
+[31m-[m
+[31m-here=$(cd "$(dirname "$0")" && pwd)[m
+[31m-root=$(cd "$here/.." && pwd)[m
+[31m-icon="$root/assets/icon/icon.png"[m
+[31m-mkdir -p "$out"[m
+[31m-out=$(cd "$out" && pwd)[m
+[31m-[m
+[31m-work=$(mktemp -d)[m
+[31m-trap 'rm -rf "$work"' EXIT[m
+[31m-[m
+[31m-# The menu entry and the icon go into every package.[m
+[31m-desktop=$work/bitchord.desktop[m
+[31m-cp "$here/bitchord.desktop" "$desktop"[m
+[31m-iconpath=usr/share/icons/hicolor/256x256/apps/bitchord.png[m
+[31m-[m
+[31m-# ---------------------------------------------------------------- AppImage ----[m
+[31m-# linuxdeploy packs the binary with every library it links (the way Tauri's[m
+[31m-# AppImages are built), and its GTK plugin wires up the input-method, pixbuf[m
+[31m-# and gio modules. Two passes: deploy first, then add WebKit's helper[m
+[31m-# processes — which linuxdeploy can't see — and only then build the image.[m
+[31m-curl -sSLo "$work/linuxdeploy.AppImage" \[m
+[31m-    https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage[m
+[31m-curl -sSLo "$work/plugin-gtk.AppImage" \[m
+[31m-    https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous/linuxdeploy-plugin-gtk-x86_64.AppImage[m
+[31m-chmod +x "$work/linuxdeploy.AppImage" "$work/plugin-gtk.AppImage"[m
+[31m-[m
+[31m-appdir=$work/AppDir[m
+[31m-mkdir -p "$appdir/usr/bin"[m
+[31m-cp "$bin" "$appdir/usr/bin/bitchord"[m
+[31m-chmod 755 "$appdir/usr/bin/bitchord"[m
+[31m-cp "$desktop" "$appdir/bitchord.desktop"[m
+[31m-mkdir -p "$appdir/$(dirname "$iconpath")"[m
+[31m-cp "$icon" "$appdir/$iconpath"[m
+[31m-[m
+[31m-# Sourced by the AppRun linuxdeploy generates, after its GTK hook: the tray[m
+[31m-# and webview libraries can land in the multiarch dir, and WebKit's sign-in[m
+[31m-# windows need a hand from outside the sandbox.[m
+[31m-mkdir -p "$appdir/apprun-hooks"[m
+[31m-cat > "$appdir/apprun-hooks/zz-bitchord.sh" <<'HOOK'[m
+[31m-# WebKit looks its helpers up next to its own library, which may sit in the[m
+[31m-# multiarch dir that the stock AppRun doesn't put on the search path.[m
+[31m-export LD_LIBRARY_PATH="${APPDIR}/usr/lib/$(uname -m)-linux-gnu:${APPDIR}/usr/lib:${LD_LIBRARY_PATH}"[m
+[31m-# The WebKit sandbox needs bubblewrap, which isn't inside the AppImage; turn[m
+[31m-# it off (only the sign-in windows use WebKit) unless the user asks for it.[m
+[31m-export WEBKIT_FORCE_SANDBOX="${WEBKIT_FORCE_SANDBOX:-0}"[m
+[31m-# Older NVIDIA drivers crash WebKit's DMABUF renderer; the main UI never uses[m
+[31m-# WebKit, so prefer the safe path.[m
+[31m-export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"[m
+[31m-HOOK[m
+[31m-[m
+[31m-# The runners have no FUSE; this makes linuxdeploy and the plugin self-extract.[m
+[31m-export APPIMAGE_EXTRACT_AND_RUN=1[m
+[31m-export ARCH=x86_64[m
+[31m-export LINUXDEPLOY_PLUGIN_GTK="$work/plugin-gtk.AppImage"[m
+[31m-[m
+[31m-"$work/linuxdeploy.AppImage" \[m
+[31m-    --appdir "$appdir" \[m
+[31m-    --executable "$appdir/usr/bin/bitchord" \[m
+[31m-    --desktop-file "$appdir/bitchord.desktop" \[m
+[31m-    --icon-file "$appdir/$iconpath"[m
+[31m-[m
+[31m-webkit_lib=$(find "$appdir/usr/lib" -name 'libwebkit2gtk-4.1.so.*' | head -n 1)[m
+[31m-[ -n "$webkit_lib" ] || { echo "WebKitGTK was not deployed - is libwebkit2gtk-4.1-0 installed?"; exit 1; }[m
+[31m-helper_src=/usr/lib/$(uname -m)-linux-gnu/webkit2gtk-4.1[m
+[31m-helper_dst=$(dirname "$webkit_lib")/webkit2gtk-4.1[m
+[31m-mkdir -p "$helper_dst"[m
+[31m-set --[m
+[31m-for proc in WebKitWebProcess WebKitNetworkProcess; do[m
+[31m-    cp "$helper_src/$proc" "$helper_dst/$proc"[m
+[31m-    set -- "$@" --deploy-deps-only "$helper_dst/$proc"[m
+[31m-done[m
+[31m-OUTPUT="$out/Bit

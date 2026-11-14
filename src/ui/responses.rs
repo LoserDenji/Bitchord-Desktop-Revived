@@ -240,16 +240,6 @@ impl App {
                 if self.page == Page::Artist(a.id.clone()) {
                     self.loading = false;
                 }
-                let apple_key = format!("artist:{}", a.id);
-                let answered = self.apple_artists.get(&a.id).is_some_and(Option::is_some);
-                let cooling = self.apple_missed.get(&apple_key).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(120));
-                if !answered && !cooling {
-                    let id = a.id.clone();
-                    let name = a.name.clone();
-                    if self.apple_waiting.insert(apple_key) {
-                        self.backend.request(Req::AppleArtist { id, name });
-                    }
-                }
                 // A shelf page that opened before its artist page was here gets its
                 // request out now, with the More link the page carries.
                 let pending = self.shelf_pending.take_if(|(id, _)| *id == a.id);
@@ -342,20 +332,13 @@ impl App {
                     self.art_changed = now;
                 }
             }
-            Resp::AppleArtist { id, info } => {
-                // A miss is cooled down rather than cached for the session: Apple's
-                // search sometimes fails one time and answers the next.
-                let key = format!("artist:{id}");
-                self.apple_waiting.remove(&key);
-                match info {
-                    Some(artwork) => {
-                        self.apple_missed.remove(&key);
-                        self.apple_artists.insert(id, Some(artwork));
-                    }
-                    None => {
-                        self.apple_artists.remove(&id);
-                        self.apple_missed.insert(key, std::time::Instant::now());
-                    }
+            Resp::CanvasUrl { id, url } => {
+                // Apple's answer is in (`canvas` remembers a miss on disk): a found
+                // clip goes up, a miss hands the song to Spotify's canvas.
+                self.canvas_apple_waiting.remove(&id);
+                self.canvas_apple_done.insert(id.clone());
+                if let Some(url) = url {
+                    self.canvas_covers.insert(id, url);
                 }
             }
             Resp::ArtistSignature { key, signature } => {
@@ -370,24 +353,12 @@ impl App {
                     }
                 }
             }
-            Resp::AppleCover { key, motion } => {
-                self.apple_waiting.remove(&key);
-                match motion.and_then(|m| m.square) {
-                    Some(url) => {
-                        self.apple_missed.remove(&key);
-                        self.apple_covers.insert(key, Some(url));
-                    }
-                    None => {
-                        self.apple_missed.insert(key, std::time::Instant::now());
-                    }
-                }
-            }
             Resp::SpotifyCanvas { key, url } => {
                 self.canvas_waiting.remove(&key);
                 match url {
                     Some(url) => {
                         self.canvas_missed.remove(&key);
-                        self.canvas_covers.insert(key, Some(url));
+                        self.canvas_covers.insert(key, url);
                     }
                     None => {
                         self.canvas_missed.insert(key, std::time::Instant::now());

@@ -88,6 +88,25 @@ jobs:
         with:
           key: macos
 
+      # The runner image ships several Xcode copies (~12 GB each) plus simulators and
+      # toolchains nothing here uses. A universal build compiles the app twice, and
+      # hdiutil's dmg staging needs a few GB on top — without this, the dmg step dies
+      # with "No space left on device".
+      - name: Free disk space
+        run: |
+          echo "Free at start: $(df -h / | awk 'NR==2 {print $4}')"
+          # Keep only the Xcode xcode-select points at; the others are dead weight.
+          selected="$(xcode-select -p | cut -d/ -f1-3)"
+          for app in /Applications/Xcode*.app; do
+            [ "$app" = "$selected" ] || sudo rm -rf "$app"
+          done
+          sudo rm -rf /Library/Developer/CoreSimulator \
+            ~/Library/Developer/CoreSimulator ~/Library/Developer/Xcode \
+            ~/Library/Android/sdk /usr/local/lib/android /usr/local/.ghcup \
+            ~/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          brew cleanup --prune=all >/dev/null 2>&1 || true
+          echo "Free after cleanup: $(df -h / | awk 'NR==2 {print $4}')"
+
       - name: Work out the version
         id: version
         run: |
