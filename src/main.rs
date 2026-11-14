@@ -5,6 +5,7 @@ mod artist_signature;
 mod autostart;
 mod canvas;
 mod fullscreen;
+mod hls;
 mod proxy;
 mod renderer;
 mod art;

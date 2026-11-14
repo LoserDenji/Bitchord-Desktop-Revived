@@ -215,7 +215,7 @@ mod tests {
         let http = reqwest::Client::new();
         let s = crate::innertube::audio_stream(&http, "zuO2fClon98", &vd, true).await.unwrap();
         let shared = crate::stream::Shared::new(s.size, s.duration_ms, s.loudness_db, crate::stream::Format::from_opus(s.opus), None, false);
-        crate::stream::download(http.clone(), s.url, crate::innertube::UA.to_owned(), shared.clone(), None, crate::stream::Ranging::Query).await;
+        crate::stream::download(http.clone(), crate::stream::Media::File(s.url), crate::innertube::UA.to_owned(), shared.clone(), None, crate::stream::Ranging::Query).await;
         let opus = crate::stream::decoder(shared, true).unwrap();
         assert_eq!(opus.sample_rate().get(), 48_000);
         let (tx, rx) = rodio::queue::queue(false);
@@ -242,7 +242,7 @@ mod tests {
                 let s = crate::innertube::audio_stream(&http, id, &vd, opus).await.unwrap();
                 assert_eq!(s.opus, opus);
                 let shared = crate::stream::Shared::new(s.size, s.duration_ms, s.loudness_db, crate::stream::Format::from_opus(s.opus), None, false);
-                crate::stream::download(http.clone(), s.url, crate::innertube::UA.to_owned(), shared.clone(), None, crate::stream::Ranging::Query).await;
+                crate::stream::download(http.clone(), crate::stream::Media::File(s.url), crate::innertube::UA.to_owned(), shared.clone(), None, crate::stream::Ranging::Query).await;
                 assert!(shared.error().is_none(), "{:?}", shared.error());
                 let mut d = crate::stream::decoder(shared.clone(), true).unwrap();
                 let (ch, rate) = (d.channels().get() as usize, d.sample_rate().get() as usize);
