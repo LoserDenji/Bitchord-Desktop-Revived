@@ -482,6 +482,18 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         return;
     }
     let rows = Rows::new(app, now);
+    // A song played from here starts its radio, as in YouTube Music, rather than the other
+    // results queued after it; the one playing pauses or resumes.
+    let current = app.current_id().map(str::to_owned);
+    let play = |t: &Track| {
+        if pick {
+            Action::TransferPick(t.clone())
+        } else if current.as_deref() == Some(t.id.as_str()) {
+            Action::TogglePlay
+        } else {
+            Action::Radio(t.clone())
+        }
+    };
     let Some(r) = &app.search else { return };
     let acts = &mut app.actions;
     let liked = &app.liked;
@@ -510,10 +522,10 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         ui.vertical(|ui| {
             ui.label(RichText::new("Songs").font(theme::bold(24.0)));
             ui.add_space(8.0);
-            for (i, t) in r.tracks.iter().take(4).enumerate() {
+            for t in r.tracks.iter().take(4) {
                 let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
                 if track_row(ui, t, &o, acts).clicked() {
-                    acts.push(if pick { Action::TransferPick(t.clone()) } else { Action::Play(r.tracks.clone(), i) });
+                    acts.push(play(t));
                 }
             }
         });
@@ -524,10 +536,10 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         ui.add_space(26.0);
         ui.label(RichText::new("Videos").font(theme::bold(24.0)));
         ui.add_space(10.0);
-        for (i, t) in r.videos.iter().take(6).enumerate() {
+        for t in r.videos.iter().take(6) {
             let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
             if track_row(ui, t, &o, acts).clicked() {
-                acts.push(if pick { Action::TransferPick(t.clone()) } else { Action::Play(r.videos.clone(), i) });
+                acts.push(play(t));
             }
         }
     }
@@ -535,10 +547,10 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         ui.add_space(26.0);
         ui.label(RichText::new("More songs").font(theme::bold(24.0)));
         ui.add_space(10.0);
-        for (i, t) in r.tracks.iter().enumerate().skip(4) {
+        for t in r.tracks.iter().skip(4) {
             let o = RowOpts { pick, ..rows.opts(liked, t, None, true) };
             if track_row(ui, t, &o, acts).clicked() {
-                acts.push(if pick { Action::TransferPick(t.clone()) } else { Action::Play(r.tracks.clone(), i) });
+                acts.push(play(t));
             }
         }
     }
@@ -2404,6 +2416,10 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.reactive_bg, "Pulse with the music");
         });
         divider(ui);
+        setting_row(ui, "Accent-coloured controls", Some("The play button and volume slider in the accent colour, like the progress line."), |ui| {
+            toggle(ui, &mut app.accent_controls, "Accent-coloured controls");
+        });
+        divider(ui);
         setting_row(ui, "Animated covers", Some("Where Apple Music has a clip for a song or its album, the cover moves in Now playing and on the album page, looping while the music plays and holding still when it's paused. Finding them sends each song's title and artist to Apple Music, remembered on disk so each song asks once."), |ui| {
             toggle(ui, &mut app.animated_covers, "Animated covers");
         });
@@ -2457,7 +2473,35 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
                 app.hidden_playlists.clear();
             }
         });
+        divider(ui);
+        settings_zoom(ui);
     });
+}
+
+/// Settings › Appearance › Zoom: the size of everything, as Ctrl + plus / minus sets it.
+fn settings_zoom(ui: &mut Ui) {
+    const STEPS: [f32; 9] = [0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+    let pct = |z: f32| format!("{}%", (z * 100.0).round() as i32);
+    let zoom = ui.ctx().zoom_factor();
+    let mut pick = None;
+    setting_row(ui, "Zoom", Some("Makes everything bigger or smaller. Ctrl + plus and Ctrl + minus do the same, and Ctrl + 0 goes back to 100%."), |ui| {
+        let btn = dropdown_button(ui, &pct(zoom), 120.0, "Zoom");
+        egui::Popup::menu(&btn).show(|ui| {
+            ui.set_width(120.0);
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            ui.add_space(4.0);
+            for z in STEPS {
+                if option_row(ui, &pct(z), (z - zoom).abs() < 0.005).clicked() {
+                    pick = Some(z);
+                    ui.close();
+                }
+            }
+            ui.add_space(4.0);
+        });
+    });
+    if let Some(z) = pick {
+        ui.ctx().set_zoom_factor(z);
+    }
 }
 
 /// Settings › Window.

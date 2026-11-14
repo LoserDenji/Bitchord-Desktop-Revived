@@ -41,6 +41,9 @@ pub struct Queue {
     /// Set on the first shuffle, and taken back to restore the original order (see
     /// [`Queue::shuffle_toggle`]). Songs queued by hand while it's on stay at the end.
     pub shuffle_original: Option<Vec<Track>>,
+    /// Songs added to the queue by hand (play next, add to queue, a radio's picks) rather
+    /// than played from the list the queue was started from.
+    elsewhere: std::collections::HashSet<String>,
 }
 
 /// How many songs before and after the current one a saved session keeps: liked-songs
@@ -50,7 +53,19 @@ const SAVED_AFTER: usize = 150;
 
 impl Queue {
     pub fn new(repeat: Repeat) -> Self {
-        Self { tracks: Vec::new(), index: None, repeat, fill: None, shuffle_original: None }
+        Self { tracks: Vec::new(), elsewhere: Default::default(), index: None, repeat, fill: None, shuffle_original: None }
+    }
+
+    /// The song playing was added by hand, not played from the list the queue was
+    /// started from.
+    pub fn plays_elsewhere(&self) -> bool {
+        self.current().is_some_and(|t| self.elsewhere.contains(&t.id))
+    }
+
+    fn note_added(&mut self, id: &str) {
+        if !self.tracks.iter().any(|t| t.id == id) {
+            self.elsewhere.insert(id.to_owned());
+        }
     }
 
     pub fn current(&self) -> Option<&Track> {
@@ -72,6 +87,7 @@ impl Queue {
         self.index = Some(start.min(tracks.len() - 1));
         self.tracks = tracks;
         self.shuffle_original = None;
+        self.elsewhere.clear();
         true
     }
 
@@ -82,6 +98,7 @@ impl Queue {
         self.index = Some(index);
         self.fill = None;
         self.shuffle_original = None;
+        self.elsewhere.clear();
     }
 
     /// Next, or the end of a song: true when there's a song to play. At the end of a
@@ -182,6 +199,7 @@ impl Queue {
     /// Play `t` after the current song: true when nothing was playing, so it starts now.
     pub fn play_next(&mut self, t: Track) -> bool {
         let at = self.index.map_or(0, |i| i + 1).min(self.tracks.len());
+        self.note_added(&t.id);
         self.tracks.insert(at, t);
         if self.index.is_some() {
             return false;
@@ -192,6 +210,7 @@ impl Queue {
 
     /// Add `t` at the end: true when nothing was playing, so it starts now.
     pub fn enqueue(&mut self, t: Track) -> bool {
+        self.note_added(&t.id);
         self.tracks.push(t);
         if self.index.is_some() {
             return false;
@@ -237,7 +256,9 @@ impl Queue {
     pub fn add_radio(&mut self, seed: &str, tracks: Vec<Track>) -> bool {
         let have: std::collections::HashSet<String> = self.tracks.iter().map(|t| t.id.clone()).collect();
         let was_at_end = self.at_end();
-        self.tracks.extend(tracks.into_iter().filter(|t| t.id != seed && !have.contains(&t.id)));
+        let added: Vec<Track> = tracks.into_iter().filter(|t| t.id != seed && !have.contains(&t.id)).collect();
+        self.elsewhere.extend(added.iter().map(|t| t.id.clone()));
+        self.tracks.extend(added);
         was_at_end
     }
 

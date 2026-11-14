@@ -541,6 +541,8 @@ pub struct App {
     appearance: theme::Appearance,
     anim_bg: bool,
     reactive_bg: bool,
+    /// The play button and volume slider in the accent colour, like the progress line.
+    accent_controls: bool,
     /// Skip the parts of music videos SponsorBlock marks as not music.
     sponsorblock: bool,
     /// Crossfade between songs, and over how many seconds.
@@ -986,6 +988,7 @@ impl App {
             chrome_applied: None,
             // Dev hook: YTM_APPEARANCE=light|dark|system tries a mode without saving it.
             appearance: theme::Appearance::from_key(&dev_var("YTM_APPEARANCE").map(str::to_owned).or_else(|| get("appearance")).unwrap_or_default()),
+            accent_controls: get("accent_controls").is_some_and(|v| v == "1"),
             anim_bg: get("anim_bg").is_none_or(|v| v == "1"),
             reactive_bg: get("reactive_bg").is_none_or(|v| v == "1"),
             sponsorblock: get("sponsorblock").is_some_and(|v| v == "1"),
@@ -1073,6 +1076,7 @@ impl App {
             Ok(p) if p.starts_with("album:") => app.go(Page::Album(p[6..].to_owned())),
             Ok(p) if p.starts_with("artist:") => app.go(Page::Artist(p[7..].to_owned())),
             Ok(p) if p.starts_with("playlist:") => app.go(Page::Playlist(p[9..].to_owned())),
+            Ok(p) if p.starts_with("search:") => app.go(Page::Search(p[7..].to_owned())),
             _ => {}
         }
         // YTM_UPLOAD=<file> uploads that file as if it had been picked.
@@ -1614,6 +1618,7 @@ impl eframe::App for App {
         let bar_strip = egui::Rect::from_min_max(egui::pos2(screen.left(), screen.bottom() - self.bar_height()), screen.max);
         titlebar::set_fullscreen(&ctx, self.fullscreen);
         // The mini player, or nothing but the background while the window changes size.
+        dev::dev_memory(&ctx, now);
         let layout = self.mini.layout(&ctx);
         // The strip's window is cut to the same corner as the artwork it frames; the
         // full window keeps its corners.
@@ -1841,6 +1846,7 @@ impl eframe::App for App {
         if dev_var("YTM_FONT").is_none() {
             storage.set_string("font", theme::font_choice());
         }
+        storage.set_string("accent_controls", b(self.accent_controls));
         storage.set_string("anim_bg", b(self.anim_bg));
         storage.set_string("reactive_bg", b(self.reactive_bg));
         storage.set_string("animated_covers", b(self.animated_covers));

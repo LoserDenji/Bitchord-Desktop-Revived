@@ -451,6 +451,37 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
 
 // ------------------------------------------------------------------ top bar
 
+/// Round button with a clockwise arrow, drawn like the icon font's (Lucide's rotate-cw),
+/// which the bundled subset doesn't have.
+fn refresh_button(ui: &mut Ui) -> egui::Response {
+    const SIZE: f32 = 18.0;
+    let d = SIZE + 18.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(d), Sense::click());
+    let resp = named(resp, "Refresh").on_hover_text("Refresh (F5)").on_hover_cursor(egui::CursorIcon::PointingHand);
+    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
+    if h > 0.0 {
+        ui.painter().circle_filled(rect.center(), d / 2.0, theme::glass(0.10 * h));
+    }
+    let color = theme::lerp_color(theme::text_dim(), theme::text(), h);
+    let press = if resp.is_pointer_button_down_on() { 0.9 } else { 1.0 };
+    // On Lucide's 24-unit grid, centred on (12, 12).
+    let unit = SIZE * press / 24.0;
+    let at = |x: f32, y: f32| rect.center() + vec2(x - 12.0, y - 12.0) * unit;
+    let stroke = egui::Stroke::new(2.0 * unit, color);
+    // A circle of radius 9 from three o'clock round to the top right, then on to the arrow.
+    let mut arc: Vec<Pos2> = (0..=40)
+        .map(|i| {
+            let a = (i as f32 / 40.0) * 315.0_f32.to_radians();
+            at(12.0 + 9.0 * a.cos(), 12.0 + 9.0 * a.sin())
+        })
+        .collect();
+    arc.push(at(21.0, 8.0));
+    let painter = ui.painter();
+    painter.add(egui::Shape::line(arc, stroke));
+    painter.add(egui::Shape::line(vec![at(21.0, 3.0), at(21.0, 8.0), at(16.0, 8.0)], stroke));
+    resp
+}
+
 pub fn top_bar(app: &mut App, ui: &mut Ui) {
     // The search field lives on the Search page: nothing here to anchor suggestions to.
     // Its focus flag is left alone here: the page still has to see it before the box
@@ -478,6 +509,14 @@ pub fn top_bar(app: &mut App, ui: &mut Ui) {
     }
     if resp.clicked() {
         app.actions.push(Action::Go(Page::Settings));
+    }
+    // The refresh button, beside the account circle (this fork has no back/forward row
+    // in the top bar: they live on the sidebar's logo line).
+    {
+        let mut rui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(r.left() - 68.0, panel.top()), Vec2::splat(44.0))).layout(egui::Layout::centered_and_justified(egui::Align::Center)));
+        if refresh_button(&mut rui).clicked() {
+            app.refresh();
+        }
     }
     if app.loading {
         let spin = Rect::from_min_size(pos2(r.left() - 34.0, r.top() + 8.0), Vec2::splat(20.0));
@@ -766,6 +805,16 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         let c = theme::lerp_color(theme::text_dim(), theme::text(), h);
         if enabled { c } else { c.gamma_multiply(0.45) }
     };
+    // Accent-coloured controls: the play state and the volume slider take the accent
+    // colour, like the progress line (this fork's transport is glyphs only, so the
+    // glyphs carry it rather than a filled circle).
+    let control = |h: f32| {
+        if app.accent_controls {
+            theme::lerp_color(theme::with_alpha(accent, 0.55), accent, h)
+        } else {
+            ink(h)
+        }
+    };
 
     // Transport: shuffle | previous · play · next | repeat. The glyphs alone carry the
     // state; no button fills.
@@ -802,7 +851,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     } else {
         // The glyphs cross-fade rather than swap: the site keeps its pause mark up
         // through a buffer, and a hard cut between the two weights flickers.
-        let fg = ink(0.55 + 0.45 * h);
+        let fg = control(0.55 + 0.45 * h);
         if morph < 1.0 {
             glyphs::draw(ui, c, 28.0, glyphs::PLAY, theme::with_alpha(fg, 1.0 - morph));
         }
@@ -1096,8 +1145,14 @@ fn volume_slider(app: &mut App, ui: &mut Ui, slider: Rect, salt: &str) {
     let track_r = Rect::from_center_size(slider.center(), vec2(slider.width(), 4.0));
     ui.painter().rect_filled(track_r, 2.0, theme::glass(0.15));
     let fill = Rect::from_min_size(track_r.min, vec2(track_r.width() * vol, 4.0));
-    ui.painter().rect_filled(fill, 2.0, theme::lerp_color(theme::text_dim(), theme::text(), vh));
-    ui.painter().circle_filled(pos2(fill.right(), track_r.center().y), 2.0 + 4.5 * vh, theme::text());
+    let (bar, knob) = if app.accent_controls {
+        let a = app.accent_color();
+        (a, a)
+    } else {
+        (theme::lerp_color(theme::text_dim(), theme::text(), vh), theme::text())
+    };
+    ui.painter().rect_filled(fill, 2.0, bar);
+    ui.painter().circle_filled(pos2(fill.right(), track_r.center().y), 2.0 + 4.5 * vh, knob);
     if let Some(p) = vresp.interact_pointer_pos()
         && (vresp.dragged() || vresp.clicked())
     {
@@ -1130,6 +1185,25 @@ pub fn queue_drawer(app: &mut App, ui: &mut Ui) {
     queue_list(app, ui, "drawer", 14.0);
 }
 
+/// "Playing from playlist", and its name, which opens it.
+fn playing_from(app: &mut App, ui: &mut Ui) {
+    let Some((kind, name, target)) = app.playing_from() else { return };
+    ui.label(egui::RichText::new(format!("Playing from {kind}")).font(theme::regular(12.5)).color(theme::text_dim()));
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
+    let r = text_at(ui, pos2(rect.left(), rect.top() + 1.0), &name, theme::semibold(15.0), theme::text(), w);
+    let resp = named(ui.interact(r, ui.scope_id().with("playing-from"), Sense::click()), &name).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.hovered() {
+        ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, theme::text()));
+    }
+    if resp.clicked() {
+        // Liked Music is Library › Songs, where it was played from.
+        let liked = matches!(&target, Target::Playlist(id) if id == super::lists::LIKED_MUSIC);
+        app.actions.push(if liked { Action::Go(Page::Library(LibTab::Songs)) } else { Action::Open(target) });
+    }
+    ui.add_space(8.0);
+}
+
 /// Current track plus everything after it. Shared by the drawer and now playing.
 /// `bar_inset`: the strip at the right that stays clear of the rows, where the panel's
 /// scroll bar hugs the edge — so it never crosses the remove ✕ or the ⋯ menu, and a
@@ -1147,6 +1221,7 @@ pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
                 return;
             }
             let start = app.queue.index.unwrap_or(0);
+            playing_from(app, ui);
             ui.checkbox(&mut app.autoplay, egui::RichText::new("Autoplay similar songs").color(theme::text_dim())).on_hover_cursor(egui::CursorIcon::PointingHand);
             ui.add_space(6.0);
             let accent = app.accent_color();
