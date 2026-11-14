@@ -74,7 +74,7 @@ Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord
 The app isn't notarized, so the first time, right-click it and pick **Open**, or run:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/ytm-rs.app
+xattr -dr com.apple.quarantine /Applications/bitchord.app
 ```
 
 Sign-ins are kept in your login Keychain. Jam links don't open the app on macOS yet; type the code on the **Listen together** page instead.
@@ -91,9 +91,9 @@ Sign-ins are kept in your login Keychain. Jam links don't open the app on macOS 
 curl -fsSL https://raw.githubusercontent.com/LoserDenji/Bitchord-Desktop-Revived/main/linux/install.sh | sh
 ```
 
-This installs bitchord for your user (no root) in `~/.local/lib/ytm-rs`, with a `ytm-rs` command and an app menu entry. If WebKitGTK or other required libraries are missing, it installs them too (that step asks for your password). You can also download `ytm-rs-<version>-linux-x86_64.tar.gz`, extract it and run `./install.sh`.
+This installs bitchord for your user (no root) in `~/.local/lib/ytm-rs`, with a `ytm-rs` command and an app menu entry. If WebKitGTK or other required libraries are missing, it installs them too (that step asks for your password). You can also download `bitchord-<version>-linux-x86_64.tar.gz`, extract it and run `./install.sh`.
 
-On Debian, Ubuntu and their derivatives you can instead download `ytm-rs_<version>_amd64.deb` and open it, or run `sudo apt install ./ytm-rs_<version>_amd64.deb`. It doesn't update itself: when a new version is out, the app says so and links to the new `.deb`, which installs over the old one. To uninstall it, run `sudo apt remove ytm-rs`.
+On Debian, Ubuntu and their derivatives you can instead download `bitchord_<version>_amd64.deb` and open it, or run `sudo apt install ./ytm-rs_<version>_amd64.deb`. It doesn't update itself: when a new version is out, the app says so and links to the new `.deb`, which installs over the old one. To uninstall it, run `sudo apt remove ytm-rs`.
 
 Sign-ins are kept in your keyring (GNOME Keyring or KWallet). To uninstall, run `~/.local/lib/ytm-rs/install.sh --uninstall`.
 
