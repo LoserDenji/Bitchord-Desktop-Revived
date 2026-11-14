@@ -24,15 +24,15 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="https://media.discordapp.net/attachments/1565450418471833781/1569335154311299234/Screenshot_2026-11-09_at_18.27.30.png?ex=6af314c1&is=6af1c341&hm=47c091f0af19b109cf5dbff12791239ac4b349ae8be2526a57b980e018e89db2&=&format=webp&quality=lossless" alt="Full player with artwork, lyrics and controls"></td>
-    <td width="50%"><img src="https://media.discordapp.net/attachments/1565450418471833781/1569333526027964567/Screenshot_2026-11-09_at_18.19.42.png?ex=6af3133d&is=6af1c1bd&hm=bdce548debc924703a7aaeca72edd0a43176d67c3c80bf491eb0965f01aee4f1&=&format=webp&quality=lossless" alt="Browse view with shelves and playback controls"></td>
+    <td width="50%"><img src="https://cdn.discordapp.com/attachments/1565450418471833781/1569333528259203203/Screenshot_2026-11-09_at_18.20.57.png?ex=6af901fd&is=6af7b07d&hm=42d0ea37750dd142aa2ce2c95beba1d7673637db09a617bd2360f23b5eb1576d&" alt="Full player with artwork, lyrics and controls"></td>
+    <td width="50%"><img src="https://cdn.discordapp.com/attachments/1565450418471833781/1569333526027964567/Screenshot_2026-11-09_at_18.19.42.png?ex=6af901fd&is=6af7b07d&hm=8adf5beb5d230d352acf02ca7752c9a9077be2841eac78fd7290245b49b5d9f2&" alt="Browse view with shelves and playback controls"></td>
   </tr>
   <tr>
     <td align="center"><b>Player</b> — artwork, lyrics, queue and playback in one view</td>
     <td align="center"><b>Browse</b> — your music, shelves and navigation</td>
   </tr>
   <tr>
-    <td colspan="2"><img src="https://media.discordapp.net/attachments/1565450418471833781/1569333525344288789/Screenshot_2026-11-09_at_18.19.28.png?ex=6af3133d&is=6af1c1bd&hm=47904130526ca95c2669dbf415fb0addf5cf389f2de85ec659ea20b1709afd15&=&format=webp&quality=lossless" alt="BitChord interface and playback" width="100%"></td>
+    <td colspan="2"><img src="https://media.discordapp.net/attachments/1565450418471833781/1569333526925672529/Screenshot_2026-11-09_at_18.20.25.png?ex=6af901fd&is=6af7b07d&hm=b2b330b95238ee21839aa46ba3c4730031bf27cd9dfb9c4e756046805241f6b1" alt="BitChord interface and playback" width="100%"></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><b>Desktop experience</b> — native UI, fast playback, and quality controls</td>
