@@ -43,6 +43,7 @@ mod turnstile;
 mod ui;
 mod update;
 mod vault;
+mod video;
 mod webmusic;
 mod ytdlp;
 mod ytm;
