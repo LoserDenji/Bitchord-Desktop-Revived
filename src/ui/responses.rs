@@ -15,14 +15,12 @@ use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, de
 impl App {
     pub(super) fn pump(&mut self, now: f64) {
         let cover = self.media_cover.lock().unwrap().take();
-        // The listed track's art, with what plays's title, artists and length.
+        // The listed track's art.
         if let Some((id, file)) = cover
             && self.current().is_some_and(|t| t.id == id)
-            && self.mix_hold().is_none()
-            && let Some(track) = self.playing_track().cloned()
             && let Some(m) = &mut self.media
         {
-            m.set_track(&track.title, &track.artist_line(), track.album.as_ref().map(|a| a.name.as_str()), Some(&file), track.duration);
+            m.set_cover(&file);
         }
         while let Ok(r) = self.ch.resp_rx.try_recv() {
             self.on_resp(r, now);
@@ -92,10 +90,24 @@ impl App {
                 MediaControlEvent::Toggle => self.toggle(),
                 MediaControlEvent::Next => self.next(),
                 MediaControlEvent::Previous => self.prev(),
-                _ => {}
+                MediaControlEvent::SetVolume(v) => {
+                    if let Some(v) = crate::media::volume_from_os(v) {
+                        self.audio.set_volume(v);
+                    }
+                }
+                // Seeks go the way the seek bar's do: to the host in a jam, to the start
+                // point of a song not loaded yet, and none without a length to keep them in.
+                ev => {
+                    let len = self.audio.status.duration().or(self.current().and_then(|t| t.duration).map(|d| Duration::from_secs(d as u64)));
+                    if let Some(len) = len
+                        && let Some(at) = crate::media::seek_target(&ev, self.audio.status.position(), len)
+                    {
+                        self.apply(Action::Seek(at.as_secs_f32()));
+                    }
+                }
             }
         }
-        if self.buffering && self.playing() {
+        if self.buffering && self.audio.status.started(self.generation) {
             self.buffering = false;
             self.skip_streak = 0;
             self.prefetch_next();
