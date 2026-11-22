@@ -171,16 +171,18 @@ impl App {
                     self.toast("Sign in to like songs");
                     return;
                 }
-                // Liked again while its unlike waits: that unlike just doesn't go.
-                if like && self.unliking_soon(&t.id) {
-                    return self.undo();
+                if !like && self.unliking_soon(&t.id) {
+                    return;
                 }
-                self.rating(|id| id == t.id);
+                let restored = self.rating(|id| like && id == t.id);
                 if !like && self.liked.contains(&t.id) {
-                    return self.unlike_soon(vec![t.clone()], Req::Like { video_id: t.id, like });
+                    let send = Req::Unlike(t.id.clone());
+                    return self.unlike_soon(vec![t], send);
                 }
-                // Optimistic: update the like state and the cached Liked songs list now.
-                self.set_liked(std::slice::from_ref(&t), like);
+                // Keep the original taste order when a re-like undid the pending unlike.
+                if !restored {
+                    self.set_liked(std::slice::from_ref(&t), like);
+                }
                 self.backend.request(Req::Like { video_id: t.id, like });
             }
             Action::LikeMany(tracks, like) => {
@@ -188,24 +190,19 @@ impl App {
                     self.toast("Sign in to like songs");
                     return;
                 }
-                // Liking songs whose unlike waits: those stay liked, so it doesn't go.
-                if like && tracks.iter().any(|t| self.unliking_soon(&t.id)) {
-                    self.undo();
-                } else if like {
+                if like {
                     self.rating(|id| tracks.iter().any(|t| t.id == id));
                 }
                 let tracks: Vec<Track> = tracks.into_iter().filter(|t| self.liked.contains(&t.id) != like).collect();
                 if tracks.is_empty() { return; }
-                if like {
-                    self.set_liked(&tracks, true);
-                } else {
-                    // Unlikes go a few a second (YouTube Music drops faster ones): each song
-                    // leaves the list when its unlike goes through, not all at once.
-                    self.unliking.extend(tracks.iter().map(|t| (t.id.clone(), t.clone())));
+                if !like {
+                    let send = Req::LikeMany { video_ids: tracks.iter().map(|t| t.id.clone()).collect(), like };
+                    return self.unlike_soon(tracks, send);
                 }
+                self.set_liked(&tracks, true);
                 if tracks.len() > 10 {
                     // One at a time, then checked: a few hundred take a few minutes.
-                    self.toast(format!("{} {} songs…", if like { "Liking" } else { "Removing likes from" }, tracks.len()));
+                    self.toast(format!("Liking {} songs…", tracks.len()));
                 }
                 self.backend.request(Req::LikeMany { video_ids: tracks.into_iter().map(|t| t.id).collect(), like });
             }

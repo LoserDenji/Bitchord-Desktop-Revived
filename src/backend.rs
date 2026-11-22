@@ -459,8 +459,8 @@ pub enum Resp {
     /// What was asked to play (a `Req::PlayCollection`), its name, and its songs.
     PlayQueue { target: Target, title: String, tracks: Vec<Track> },
     Liked { video_id: String, like: bool },
-    /// A run of likes or unlikes: `taken` just went through, `done` of `total` tried.
-    LikeProgress { taken: Vec<String>, done: usize, total: usize, like: bool },
+    /// A run of likes or unlikes: `done` of `total` tried.
+    LikeProgress { done: usize, total: usize, like: bool },
     /// The songs YouTube Music took, and the ones it refused.
     LikedMany { video_ids: Vec<String>, failed: Vec<String>, like: bool },
     /// The song `song`'s music video (`None`: it has none, or none was sure).
@@ -3231,8 +3231,8 @@ impl Backend {
     /// counted so (songs that can't be played are liked but not listed).
     async fn like_many(&self, ids: Vec<String>, like: bool) -> anyhow::Result<Resp> {
         let total = ids.len();
-        let (done, failed) = like_many(&self.api, ids, like, |taken, n| {
-            let _ = self.tx.send(Resp::LikeProgress { taken: taken.into_iter().map(str::to_owned).collect(), done: n, total, like });
+        let (done, failed) = like_many(&self.api, ids, like, |_, n| {
+            let _ = self.tx.send(Resp::LikeProgress { done: n, total, like });
             self.wake();
         })
         .await;

@@ -558,11 +558,7 @@ impl App {
                     }
                 }
             }
-            Resp::LikeProgress { taken, done, total, like } => {
-                if !like {
-                    let tracks: Vec<Track> = taken.iter().filter_map(|id| self.unliking.remove(id)).collect();
-                    self.set_liked(&tracks, false);
-                }
+            Resp::LikeProgress { done, total, like } => {
                 if done == 0 {
                     // A Spotify transfer is adding to Liked Music (maybe paused): this waits for it.
                     self.toast("Waiting for the transfer to finish adding to Liked Music…");
@@ -919,14 +915,6 @@ impl App {
     /// Liking or unliking many songs at once has finished: `failed` are the ones YouTube
     /// Music refused.
     fn on_liked_many(&mut self, video_ids: Vec<String>, failed: Vec<String>, like: bool) {
-        // Any left (a retry took them) leave the list now.
-        if !like {
-            let rest: Vec<Track> = video_ids.iter().filter_map(|id| self.unliking.remove(id)).collect();
-            self.set_liked(&rest, false);
-            for id in &failed {
-                self.unliking.remove(id);
-            }
-        }
         log::debug!("like={like} answered: {} taken, {} refused {:?}", video_ids.len(), failed.len(), failed.iter().take(5).collect::<Vec<_>>());
         self.lists.edits.confirm_likes(&video_ids, &failed);
         // The refused ones come back as they were with a reload.
@@ -1039,7 +1027,6 @@ impl App {
         self.lists.clear();
         self.lists.edits = Default::default();
         self.liked.clear();
-        self.unliking.clear();
         self.queue.fill = None;
         self.play_pending = None;
         if self.page_list().is_some() || matches!(self.page, Page::Artist(_)) {

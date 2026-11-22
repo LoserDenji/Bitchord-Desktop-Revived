@@ -569,8 +569,6 @@ pub struct App {
     /// Files chosen in the upload dialog, handed over from its thread.
     picked_uploads: Arc<std::sync::Mutex<Option<Vec<std::path::PathBuf>>>>,
     liked: HashSet<String>,
-    /// Songs whose unlike is queued and hasn't gone through yet.
-    unliking: HashMap<String, Track>,
     selection: Selection,
     account_name: Option<String>,
     account_avatar: Option<String>,
@@ -1196,7 +1194,6 @@ impl App {
             all_downloaded: HashMap::new(),
             picked_uploads: Default::default(),
             liked: HashSet::new(),
-            unliking: HashMap::new(),
             selection: Selection::default(),
             account_name: None,
             account_avatar: None,

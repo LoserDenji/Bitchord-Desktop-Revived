@@ -301,7 +301,7 @@ impl Queue {
         if self.fingerprint() != s.left {
             return None;
         }
-        let waiting = self.fill.as_ref().is_some_and(|f| f.ran_out);
+        let waiting = self.fill.as_ref().is_some_and(|f| f.ran_out) || s.fill.as_ref().is_some_and(|f| f.ran_out);
         (self.tracks, self.elsewhere, self.index, self.fill, self.shuffle_original) =
             (s.tracks, s.elsewhere, s.index, s.fill, s.shuffle_original);
         for (tracks, more) in s.pages {
@@ -582,6 +582,26 @@ mod tests {
         assert_eq!(q.restore(saved, |_| true), Some(false));
         let f = q.fill_from("PL1", 7, vec![track("d")], false, true).unwrap();
         assert!(f.ran_out);
+    }
+
+    #[test]
+    fn undoing_a_clear_resumes_playback_that_was_waiting_for_the_playlist() {
+        for page_during_undo in [false, true] {
+            let mut q = queue(&["a"], 0, Repeat::Off);
+            q.fill = filling("PL1", 7, false);
+            assert!(!q.advance());
+            let mut saved = q.clear().unwrap();
+            if page_during_undo {
+                assert!(q.fill_saved(Some(&mut saved), "PL1", 7, vec![track("b")], false, true).is_none());
+            }
+            assert_eq!(q.restore(saved, |_| true), Some(page_during_undo));
+            if !page_during_undo {
+                let f = q.fill_from("PL1", 7, vec![track("b")], false, true).unwrap();
+                assert!(f.ran_out);
+            }
+            assert!(q.advance());
+            assert_eq!(q.current().unwrap().id, "b");
+        }
     }
 
     #[test]

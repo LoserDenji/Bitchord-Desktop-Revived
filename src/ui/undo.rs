@@ -14,7 +14,7 @@ pub enum Undo {
     Queue(queue::Saved),
     /// Likes taken away: the songs liked before, what to put back in Liked Music, and the
     /// request that takes them away there.
-    Unlike { liked: Vec<String>, was: Unliked, send: Req },
+    Unlike { liked: Vec<String>, was: Unliked, taste: Vec<(usize, Track)>, send: Req },
     /// Rows taken out of a playlist.
     Removal { id: String, rows: Vec<Taken> },
     /// A playlist deleted, and its card with its place in the library.
@@ -66,10 +66,15 @@ impl App {
     /// Likes of `tracks` taken away here at once, and from YouTube Music (by `send`) once
     /// the Undo is gone.
     pub(super) fn unlike_soon(&mut self, tracks: Vec<Track>, send: Req) {
+        // Save the actual taste entries and their positions; undo isn't a new like.
+        let taste = self.listening.liked.iter().enumerate()
+            .filter(|(_, t)| !crate::local::is_local(&t.id) && tracks.iter().any(|removed| removed.id == t.id))
+            .map(|(i, t)| (i, t.clone()))
+            .collect();
         let liked = tracks.iter().filter(|t| self.liked.contains(&t.id)).map(|t| t.id.clone()).collect();
         let was = self.lists.unliking(&tracks);
         self.set_liked(&tracks, false);
-        self.toast_undo("Removed from liked songs", Undo::Unlike { liked, was, send });
+        self.toast_undo("Removed from liked songs", Undo::Unlike { liked, was, taste, send });
     }
 
     /// The like of `id` waits for its Undo to be taken away.
@@ -77,15 +82,20 @@ impl App {
         matches!(&self.undo, Some(Undo::Unlike { liked, .. }) if liked.iter().any(|l| l == id))
     }
 
-    /// Songs about to be liked or disliked anew: an unlike waiting for its Undo doesn't go
-    /// for them (sent after, it would take that away). An unlike of others goes now, ahead
-    /// of this.
-    pub(super) fn rating(&mut self, rated: impl Fn(&str) -> bool) {
-        match &self.undo {
-            Some(Undo::Unlike { send: Req::Like { video_id, .. }, .. }) if rated(video_id) => self.undo = None,
-            Some(Undo::Unlike { .. }) => self.settle(),
-            _ => {}
+    /// A re-like cancels the pending unlike (the whole selection for a bulk unlike).
+    /// An unlike of other songs is sent before the new rating.
+    pub(super) fn rating(&mut self, reliked: impl Fn(&str) -> bool) -> bool {
+        let restore = match &self.undo {
+            Some(Undo::Unlike { send: Req::Unlike(id), .. }) => reliked(id),
+            Some(Undo::Unlike { send: Req::LikeMany { video_ids, .. }, .. }) => video_ids.iter().any(|id| reliked(id)),
+            _ => false,
+        };
+        if restore {
+            self.undo();
+        } else if matches!(&self.undo, Some(Undo::Unlike { .. })) {
+            self.settle();
         }
+        restore
     }
 
     /// Gone from here at once, and from YouTube Music once the Undo is: it can't bring
@@ -137,10 +147,20 @@ impl App {
                     self.prefetch_next();
                 }
             }
-            Undo::Unlike { liked, was, .. } => {
+            Undo::Unlike { liked, was, taste, .. } => {
                 self.toast = None;
                 self.liked.extend(liked);
                 self.lists.unlike_undone(was);
+                if !taste.is_empty() {
+                    // First-run seeding may have already put some of these back.
+                    for (i, t) in taste {
+                        let liked = &mut self.listening.liked;
+                        if !liked.iter().any(|old| old.id == t.id) {
+                            liked.insert(i.min(liked.len()), t);
+                        }
+                    }
+                    self.listening.store(self.backend.data_dir());
+                }
                 self.after_put_back(LIKED_MUSIC);
             }
             Undo::Removal { id, rows } => {
