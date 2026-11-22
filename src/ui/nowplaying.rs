@@ -231,6 +231,11 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     // Artwork alone: centered.
     let col_art = Rect::from_center_size(content.center(), vec2(content.width().min(content.height() * 0.9), content.height()));
     let slide = 72.0;
+    // The volume dial's wake zone: the whole margin the sleeve leaves at the window's
+    // left edge, out to the art itself, not the old sliver beside it. Where nothing
+    // of the sleeve rests at the left (a right-side sleeve, narrow lyrics) the edge
+    // keeps its sliver; a centred artwork (artwork alone) answers to the margin.
+    let mut strip_right = content.left() + 8.0;
     let right = if lyrics_only {
         // No cover column next to the panel: the artwork fades in from the left as the panel leaves.
         let px = (art_side(cs, col_art) * ppp) as u32;
@@ -253,6 +258,9 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
             Rect::from_min_size(content.min, vec2(col_w, content.height()))
         };
         let col = Rect::from_min_max(col_art.min.lerp(col_panel.min, glide), col_art.max.lerp(col_panel.max, glide));
+        if cs.side != Side::Right {
+            strip_right = ((col.center().x - art_side(cs, col) / 2.0 - 6.0).min(content.left() + 96.0)).max(full.left() + 44.0);
+        }
         // One image size for the whole glide, the bigger of its two ends.
         let px = (art_side(cs, col_art).max(art_side(cs, col_panel)) * ppp) as u32;
         cover_column(app, ui, col, &track, &heard, no_lyrics, now, px);
@@ -326,28 +334,29 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         app.np_tab = if on { NpTab::Art } else { NpTab::UpNext };
     }
 
-    edge_volume(app, ui, full, content);
+    edge_volume(app, ui, full, content, strip_right);
 }
 
 /// The volume along the view's left edge: the margin stays empty until the pointer
-/// comes into it, then a bar grows in — dragged or clicked like any slider, its foot
-/// a mute, the wheel a nudge. The view keeps its breathing room; the edge only has
+/// comes into it, then osu!'s volume dial grows in — the level a neon arc round a
+/// dark disc, the number in its middle, the speaker a mute. Dragged across like a
+/// slider, the wheel a nudge. The view keeps its breathing room; the edge only has
 /// to be asked.
-fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
+fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_right: f32) {
     let open_id = egui::Id::unique("np-vol-open");
     let was = ui.ctx().data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     // The window's resize border owns the outermost sliver in a layer above this
     // one, so the hover is read from the pointer's position rather than egui's
     // `rect_contains_pointer`, which would report the border's verdict instead.
     let hover = |r: Rect| ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p));
-    // The strip that wakes the bar starts past the resize border; once awake, the
-    // bar's own ground holds it — and any press, so a drag past the track doesn't
-    // leave the knob behind a closing bar.
-    let strip = Rect::from_min_max(pos2(full.left() + 5.0, content.top()), pos2(full.left() + 38.0, content.bottom()));
-    let h = (content.height() * 0.55).clamp(150.0, 320.0);
-    let track = Rect::from_center_size(pos2(full.left() + 16.0, content.center().y), vec2(6.0, h));
-    let ground = Rect::from_min_max(pos2(full.left(), track.top() - 6.0), pos2(full.left() + 34.0, track.bottom() + 42.0));
-    let open = hover(strip) || (was && (hover(ground) || ui.input(|i| i.pointer.any_down())));
+    // The strip that wakes the dial runs from past the resize border to the sleeve.
+    // Once awake, the dial's own ground holds it — and any press, so a drag off the
+    // dial doesn't drop it mid-turn.
+    let strip = Rect::from_min_max(pos2(full.left() + 5.0, content.top()), pos2(strip_right, content.bottom()));
+    let r = 62.0;
+    let at = pos2(strip.center().x.max(full.left() + r + 8.0), content.center().y);
+    let dial = Rect::from_center_size(at, Vec2::splat(r * 2.0));
+    let open = hover(strip) || (was && (hover(dial.expand(10.0)) || ui.input(|i| i.pointer.any_down())));
     ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
     let reveal = theme::anim_bool(ui.ctx(), "np-vol-reveal", open, 0.15);
     if reveal <= 0.001 {
@@ -355,12 +364,15 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
     }
     let vol = app.audio.volume();
     let resp = ui
-        .interact(track.expand2(vec2(5.0, 0.0)), egui::Id::unique("np-vol"), Sense::click_and_drag())
-        .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+        .interact(dial, egui::Id::unique("np-vol"), Sense::click_and_drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
     let vh = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.dragged(), 0.15);
     resp.widget_info(|| egui::WidgetInfo::slider(true, vol as f64, "Volume"));
-    if let Some(p) = resp.interact_pointer_pos() && (resp.dragged() || resp.clicked()) {
-        app.audio.set_volume(((track.bottom() - p.y) / track.height()).clamp(0.0, 1.0));
+    // Across the dial like a slider: its left edge silence, its right edge full.
+    if let Some(p) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked())
+    {
+        app.audio.set_volume(((p.x - dial.left()) / dial.width()).clamp(0.0, 1.0));
     }
     if resp.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
@@ -368,31 +380,54 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
             app.audio.set_volume((vol + scroll / 600.0).clamp(0.0, 1.0));
         }
     }
-    // The pill the bar sits in, glass over whatever cover the background carries.
-    let pill = Rect::from_min_max(pos2(track.left() - 8.0, track.top() - 8.0), pos2(track.right() + 8.0, track.bottom() + 40.0));
-    ui.painter().rect_filled(pill, pill.width() / 2.0, theme::shade(0.30 * reveal));
-    let tw = 3.0 + 1.5 * vh;
-    let tr = Rect::from_center_size(track.center(), vec2(tw, track.height()));
-    ui.painter().rect_filled(tr, tw / 2.0, theme::with_alpha(Color32::WHITE, 0.22 * reveal));
-    let now = app.audio.volume();
-    let fill = Rect::from_min_size(pos2(tr.left(), tr.bottom() - tr.height() * now), vec2(tw, tr.height() * now));
-    let (bar, knob) = if app.accent_controls { let a = app.accent_color(); (a, a) } else { (Color32::WHITE, Color32::WHITE) };
-    ui.painter().rect_filled(fill, tw / 2.0, theme::with_alpha(bar, reveal));
-    let knob_at = pos2(tr.center().x, tr.bottom() - tr.height() * now);
-    ui.painter().circle_filled(knob_at, 4.5 + 1.5 * vh, theme::with_alpha(knob, reveal));
-    if vh > 0.0 {
-        // How loud it stands, said beside the knob only while the bar is being held.
-        let at = pos2(pill.right() + 6.0, knob_at.y);
-        ui.painter().text(at, egui::Align2::LEFT_CENTER, format!("{}%", (now * 100.0).round()), theme::semibold(11.5), theme::with_alpha(theme::text(), vh * reveal));
+    // The disc: darker than the old pill, so the gauge reads over whatever the
+    // background carries, with a rim to lift it off the art.
+    ui.painter().circle_filled(at, r, theme::shade(0.60 * reveal));
+    ui.painter().circle_stroke(at, r, egui::Stroke::new(1.0, theme::glass(0.10 * reveal)));
+    // The level as a neon arc: from the dial's foot, round the left and over the
+    // top, its length the volume — a notch stays at the foot, as in the reference,
+    // so full never closes. egui can't blur; layered strokes stand in for the glow,
+    // lit a touch stronger while it has the pointer.
+    let accent = if app.accent_controls { app.accent_color() } else { Color32::WHITE };
+    let sweep = std::f32::consts::PI * 5.0 / 3.0;
+    let len = sweep * vol.clamp(0.0, 1.0);
+    let steps = 48;
+    let arc_r = r - 9.0;
+    let pts: Vec<Pos2> = (0..=steps)
+        .map(|i| {
+            let a = -std::f32::consts::FRAC_PI_2 - len * i as f32 / steps as f32;
+            at + vec2(a.cos(), -a.sin()) * arc_r
+        })
+        .collect();
+    for (w, a) in [(9.0, 0.10), (5.5, 0.22), (2.8 + 0.6 * vh, 1.0)] {
+        ui.painter().add(egui::Shape::Path(egui::epaint::PathShape::line(pts.clone(), egui::epaint::PathStroke::new(w, theme::with_alpha(accent, a * reveal)))));
     }
-    // The mute at the pill's foot, the player bar's own trip.
-    let m = Rect::from_center_size(pos2(pill.center().x, pill.bottom() - 15.0), Vec2::splat(26.0));
-    let mresp = ui.interact(m, egui::Id::unique("np-vol-mute"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Round caps: egui paths end square, the reference's glow doesn't.
+    if len > 0.01 {
+        for p in [pts[0], *pts.last().unwrap()] {
+            ui.painter().circle_filled(p, 1.5, theme::with_alpha(accent, reveal));
+        }
+    }
+    // The level, said the way the reference says it: MAX at the top of the dial, the
+    // bare number under way.
+    let label = if vol >= 0.995 { "MAX".to_owned() } else { format!("{}", (vol * 100.0).round()) };
+    ui.painter().text(pos2(at.x, at.y - 15.0), egui::Align2::CENTER_CENTER, &label, theme::bold(26.0), theme::with_alpha(Color32::WHITE, reveal));
+    // The speaker in its puck at the dial's heart: a click mutes (the player bar's
+    // own trip), a hover rings it in the accent, as the reference's hovered icon.
+    let chip = Rect::from_center_size(pos2(at.x, at.y + 26.0), Vec2::splat(34.0));
+    let mresp = ui.interact(chip, egui::Id::unique("np-vol-mute"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let mh = theme::anim_bool(ui.ctx(), mresp.id.with("h"), mresp.hovered(), 0.15);
+    ui.painter().circle_filled(chip.center(), 17.0, theme::glass(0.10 * reveal));
     if mh > 0.0 {
-        ui.painter().circle_filled(m.center(), 15.0, theme::glass(0.09 * mh));
+        ui.painter().circle_stroke(chip.center(), 19.0, egui::Stroke::new(2.0, theme::with_alpha(accent, mh * reveal)));
     }
-    glyphs::draw(ui, m.center(), 15.0, glyphs::VOLUME[glyphs::volume_step(now)], theme::lerp_color(theme::text_dim(), theme::text(), mh.max(reveal)));
+    glyphs::draw(ui, chip.center(), 17.0, glyphs::VOLUME[glyphs::volume_step(vol)], theme::with_alpha(Color32::WHITE, reveal));
+    if mresp.hovered() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            app.audio.set_volume((vol + scroll / 600.0).clamp(0.0, 1.0));
+        }
+    }
     if mresp.clicked() {
         super::shell::toggle_mute(app, ui.ctx());
     }
