@@ -143,6 +143,8 @@ pub enum Req {
     /// A song's music video, for Now playing's Song/Video switch.
     MusicVideo(Track),
     Like { video_id: String, like: bool },
+    /// Take away just this like, not the other half's.
+    Unlike(String),
     /// Several likes (or unlikes) one after another, for a selection.
     LikeMany { video_ids: Vec<String>, like: bool },
     CreatePlaylist { title: String, video_ids: Vec<String> },
@@ -207,7 +209,7 @@ impl Req {
             Req::Play { .. } => "Playback",
             Req::Prefetch { .. } => "Prefetch",
             Req::VideoStream { .. } | Req::MusicVideo(_) => "Video",
-            Req::Like { .. } | Req::LikeMany { .. } => "Like",
+            Req::Like { .. } | Req::LikeMany { .. } | Req::Unlike(_) => "Like",
             Req::CreatePlaylist { .. } => "Create playlist",
             Req::EditPlaylist { .. } => "Edit playlist",
             Req::AddToPlaylist { .. } => "Add to playlist",
@@ -467,6 +469,8 @@ pub enum Resp {
     Subscribed { channel_id: String, on: bool, ok: bool },
     PlaylistCreated { id: String, songs: usize },
     PlaylistChanged { id: String, message: &'static str },
+    /// A playlist wasn't deleted, though it's left the library here already.
+    DeleteFailed { error: String },
     Collaboration(ytm::Collaboration),
     /// Playback for `generation` failed before reaching the audio engine.
     PlayError { generation: u64, msg: String },
@@ -1179,6 +1183,16 @@ impl Backend {
         });
     }
 
+    /// A request answered before this returns (or given up on after a few seconds), its
+    /// answer dropped: for the app closing, which can't wait for one.
+    pub fn request_now(&self, req: Req) {
+        let what = req.name();
+        // In the runtime: a timeout made outside it panics.
+        if self.rt.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(3), self.handle(req)).await }).is_err() {
+            log::warn!("{what}: no answer before closing");
+        }
+    }
+
     async fn handle(&self, req: Req) -> Option<Resp> {
         let api = &*self.api;
         // Personalised pages ask as the account when signed in, like music.youtube.com.
@@ -1505,6 +1519,13 @@ impl Backend {
                     ytm::set_like(api, &video_id, like).await?;
                     Resp::Liked { video_id, like }
                 }
+                Req::Unlike(video_id) => match ytm::set_like(api, &video_id, false).await {
+                    Ok(_) => Resp::Liked { video_id, like: false },
+                    Err(e) => {
+                        log::warn!("unliking {video_id}: {e:#}");
+                        Resp::LikedMany { video_ids: Vec::new(), failed: vec![video_id], like: false }
+                    }
+                },
                 Req::LikeMany { video_ids, like } => self.like_many(video_ids, like).await?,
                 Req::CreatePlaylist { title, video_ids } => {
                     let id = match video_ids.as_slice() {
@@ -1526,10 +1547,13 @@ impl Backend {
                     ytm::remove_videos(api, &playlist_id, &items).await?;
                     Resp::PlaylistChanged { id: playlist_id, message: "Removed from playlist" }
                 }
-                Req::DeletePlaylist(id) => {
-                    ytm::delete_playlist(api, &id).await?;
-                    Resp::PlaylistChanged { id, message: "Playlist deleted" }
-                }
+                Req::DeletePlaylist(id) => match ytm::delete_playlist(api, &id).await {
+                    Ok(_) => Resp::PlaylistChanged { id, message: "Playlist deleted" },
+                    Err(e) => {
+                        log::warn!("deleting playlist {id}: {e:#}");
+                        Resp::DeleteFailed { error: format!("Couldn't delete the playlist: {e}") }
+                    }
+                },
                 Req::Collaboration(id) => Resp::Collaboration(ytm::collaboration(api, &id).await?),
                 Req::SetCollaboration { info, change } => {
                     ytm::set_collaboration(api, &info, change).await?;

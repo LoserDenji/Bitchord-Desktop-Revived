@@ -361,6 +361,8 @@ impl App {
                 if l.artists_failed {
                     l.artists = self.library.as_ref().map(|o| o.artists.clone()).unwrap_or_default();
                 }
+                // One deleted here, waiting on its Undo, stays out.
+                l.playlists.retain(|c| !matches!(&c.target, Target::Playlist(p) if self.deleting_soon(p)));
                 self.library = Some(l);
                 self.loading = false;
             }
@@ -580,6 +582,11 @@ impl App {
                 self.go(Page::Playlist(id));
             }
             Resp::PlaylistChanged { id, message } => self.on_playlist_changed(id, message),
+            Resp::DeleteFailed { error } => {
+                // It's still there: the library lists it again.
+                self.request_library();
+                self.toast(error);
+            }
             Resp::Subscribed { channel_id, on, ok } => {
                 // As it now stands, over a reload fetched before the change.
                 let now = self.subscriptions.finish(&channel_id, on, ok);
@@ -952,15 +959,7 @@ impl App {
             if self.queue.fill.as_ref().is_some_and(|f| f.id == id) {
                 self.queue.fill = None;
             }
-            let gone = Page::Playlist(id);
-            if self.page == gone {
-                self.go(Page::Library(LibTab::Playlists));
-            }
-            // Back and Forward skip it.
-            self.back.retain(|p| *p != gone);
-            self.back.dedup();
-            self.forward.retain(|p| *p != gone);
-            self.forward.dedup();
+            self.leave_playlist(&id);
         } else {
             if message == "Removed from playlist" {
                 self.lists.edits.confirm_removal(&id);
@@ -971,7 +970,10 @@ impl App {
                 self.load_list(&id, false, true);
             }
         }
-        self.toast(message);
+        // These the toast said when they were made (and another now would take an Undo's place).
+        if !matches!(message, "Removed from playlist" | "Playlist deleted") {
+            self.toast(message);
+        }
     }
 
     /// A song couldn't play: skip it, or stop when skipping can't help.
@@ -1010,6 +1012,8 @@ impl App {
     /// Signed in or out: what belonged to the last account goes, and the new one's home,
     /// library and likes load.
     fn on_logged_in(&mut self, v: bool, now: f64) {
+        // An Undo made meanwhile was the last account's: it isn't sent as this one.
+        self.undo = None;
         self.logged_in = v;
         self.channels = None;
         self.channels_asked = None;

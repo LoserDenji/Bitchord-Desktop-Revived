@@ -725,6 +725,7 @@ pub fn refused(app: &App, a: &Action) -> bool {
         | Action::Open(Target::Song(_))
         | Action::QueueJump(_)
         | Action::QueueRemove(_)
+        | Action::QueueClear
         | Action::QueueMove(..)
         | Action::Seek(_) => true,
         _ => false,
