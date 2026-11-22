@@ -474,7 +474,7 @@ pub fn melt_edges(ui: &Ui, rect: Rect, bg: Color32, side: f32, top: f32, bottom:
     if side > 0.0 {
         let s = side.min(rect.width() / 2.0);
         super::shell::hgradient(p, Rect::from_min_max(rect.left_top(), pos2(rect.left() + s, rect.bottom())), theme::with_alpha(bg, 0.9), theme::with_alpha(bg, 0.0));
-        super::shell::hgradient(p, Rect::from_min_max(pos2(rect.right() - s, rect.top()), rect.right_bottom()), theme::with_alpha(bg, 0.0), theme::with_alpha(bg, 0.85));
+        super::shell::hgradient(p, Rect::from_min_max(pos2(rect.right() - s, rect.top()), rect.right_bottom()), theme::with_alpha(bg, 0.0), bg);
     }
     if top > 0.0 {
         super::shell::vgradient(p, Rect::from_min_max(rect.left_top(), pos2(rect.right(), rect.top() + top.min(rect.height() / 2.0))), theme::with_alpha(bg, 0.85), theme::with_alpha(bg, 0.0));
