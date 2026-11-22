@@ -602,8 +602,9 @@ fn cover_xfade(ui: &Ui, site: egui::Id, rect: Rect, radius: f32, url: &str, uv: 
     dissolve(ui, site, url, uv, ready, &mut |u, uv, a| paint_remote(ui, u, rect, radius, uv, tint.gamma_multiply(a)));
 }
 
-/// Album/playlist/artist/song card with hover zoom, scrim and a play button.
-pub fn card(ui: &mut Ui, c: &Card, width: f32, liked: bool, acts: &mut Vec<Action>) {
+/// Album/playlist/artist/song card with hover zoom, scrim and a play button. `pin`: see
+/// [`card_menu_contents`].
+pub fn card(ui: &mut Ui, c: &Card, width: f32, liked: bool, pin: Option<bool>, acts: &mut Vec<Action>) {
     let height = width + 58.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -647,9 +648,9 @@ pub fn card(ui: &mut Ui, c: &Card, width: f32, liked: bool, acts: &mut Vec<Actio
     // On the subtitle line, whose width leaves room for it, so a two-line title never sits under it.
     let more_rect = Rect::from_center_size(pos2(rect.right() - 16.0, sub_y + 8.0), Vec2::splat(30.0));
     let more = more_button(ui, more_rect, resp.id.with("more"), "Options");
-    egui::Popup::menu(&more).show(|ui| card_menu_contents(ui, c, liked, acts));
+    egui::Popup::menu(&more).show(|ui| card_menu_contents(ui, c, liked, pin, acts));
     // Right-click anywhere on the tile opens the same menu.
-    egui::Popup::context_menu(&resp).show(|ui| card_menu_contents(ui, c, liked, acts));
+    egui::Popup::context_menu(&resp).show(|ui| card_menu_contents(ui, c, liked, pin, acts));
 
     if play_hit {
         match &c.target {
@@ -700,7 +701,7 @@ pub fn video_card(ui: &mut Ui, c: &Card, width: f32, acts: &mut Vec<Action>) {
         let sub = galley(ui, &c.subtitle, theme::regular(12.0), theme::with_alpha(Color32::WHITE, 0.72), width - 32.0);
         ui.painter().galley(pos2(rect.left() + 16.0, rect.top() + 16.0 + title_h), sub, theme::with_alpha(Color32::WHITE, 0.72));
     }
-    egui::Popup::context_menu(&resp).show(|ui| card_menu_contents(ui, c, false, acts));
+    egui::Popup::context_menu(&resp).show(|ui| card_menu_contents(ui, c, false, None, acts));
     if play_hit {
         match &c.target {
             _ if active.is_some() => acts.push(Action::TogglePlay),
@@ -795,7 +796,8 @@ pub fn download_veil(ui: &Ui, img: Rect, radius: f32, id: &str) {
     ui.painter().with_clip_rect(Rect::from_min_max(img.min, pos2(img.right(), y))).rect_filled(img, radius, theme::shade(0.62 * on));
 }
 
-pub(crate) fn card_menu_contents(ui: &mut Ui, c: &Card, liked: bool, acts: &mut Vec<Action>) {
+/// A card's menu. `pin`: whether the playlist is pinned, where pinning it is offered.
+pub(crate) fn card_menu_contents(ui: &mut Ui, c: &Card, liked: bool, pin: Option<bool>, acts: &mut Vec<Action>) {
     match &c.target {
         Target::Song(t) => song_menu(ui, t, liked, None, acts),
         t => {
@@ -813,6 +815,11 @@ pub(crate) fn card_menu_contents(ui: &mut Ui, c: &Card, liked: bool, acts: &mut 
             if matches!(t, Target::Album(_) | Target::Playlist(_)) && menu_action(ui, Some(icon::DOWNLOAD), "Download") {
                 acts.push(Action::DownloadMany(Some(t.clone()), c.title.clone(), None));
             }
+            if let (Some(pinned), Target::Playlist(id)) = (pin, t)
+                && menu_action(ui, Some(if pinned { icon::PIN_OFF } else { icon::PIN }), if pinned { "Unpin playlist" } else { "Pin playlist" })
+            {
+                acts.push(Action::Pin(id.clone(), !pinned));
+            }
             ui.separator();
             if menu_action(ui, None, "Copy link") {
                 acts.push(Action::Share(t.clone()));
@@ -820,6 +827,16 @@ pub(crate) fn card_menu_contents(ui: &mut Ui, c: &Card, liked: bool, acts: &mut 
             ui.add_space(3.0);
         }
     }
+}
+
+/// A font icon turned about its middle.
+pub fn icon_turned(ui: &Ui, center: Pos2, glyph: char, size: f32, color: Color32, degrees: f32) {
+    let g = ui.painter().layout_no_wrap(glyph.to_string(), theme::icon_font(size), color);
+    let ink = if g.mesh_bounds.is_positive() { g.mesh_bounds.center().to_vec2() } else { g.size() / 2.0 };
+    let angle = degrees.to_radians();
+    // Text turns about the corner it's placed by.
+    let pos = center - egui::emath::Rot2::from_angle(angle) * ink;
+    ui.painter().add(egui::epaint::TextShape::new(pos, g, color).with_angle(angle));
 }
 
 fn more_button(ui: &mut Ui, rect: Rect, id: egui::Id, label: &str) -> Response {

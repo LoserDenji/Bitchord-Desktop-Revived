@@ -225,7 +225,7 @@ fn card_row(ui: &mut Ui, id: &str, title: &str, cards: &[Card], acts: &mut Vec<A
         h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
             ui.spacing_mut().item_spacing.x = 20.0;
             for c in cards {
-                card(ui, c, tile, false, acts);
+                card(ui, c, tile, false, None, acts);
             }
         });
     });
@@ -299,7 +299,7 @@ fn card_row_all(ui: &mut Ui, id: &str, title: &str, cards: &[Card], all: bool, a
     h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
         for c in cards {
-            card(ui, c, tile, false, acts);
+            card(ui, c, tile, false, None, acts);
         }
     });
 }
@@ -610,7 +610,7 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
                         ui.spacing_mut().item_spacing.x = 20.0;
                         for c in cards {
                             let is_liked = matches!(&c.target, Target::Song(t) if liked.contains(&t.id));
-                            card(ui, c, tile, is_liked, acts);
+                            card(ui, c, tile, is_liked, None, acts);
                         }
                     });
                 });
@@ -723,7 +723,7 @@ fn reco_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut V
                 ui.spacing_mut().item_spacing.x = 20.0;
                 for t in &tracks {
                     let is_liked = liked.contains(&t.id);
-                    card(ui, &super::responses::song_card(t), tile, is_liked, acts);
+                    card(ui, &super::responses::song_card(t), tile, is_liked, None, acts);
                 }
             });
             return;
@@ -1080,7 +1080,7 @@ fn top_result(ui: &mut Ui, c: &Card, pick: bool, liked: bool, acts: &mut Vec<Act
             });
         }
         // Right-click the box for the same menu the tile's ⋮ carries.
-        egui::Popup::context_menu(&resp).show(|ui| widgets::card_menu_contents(ui, c, liked, acts));
+        egui::Popup::context_menu(&resp).show(|ui| widgets::card_menu_contents(ui, c, liked, None, acts));
     });
 }
 
@@ -1565,7 +1565,7 @@ fn artist_shelf(app: &mut App, ui: &mut Ui, artist: &str, title: &str, now: f64)
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(20.0, 22.0);
             for c in &s.cards {
-                card(ui, c, CARD, false, acts);
+                card(ui, c, CARD, false, None, acts);
             }
         });
     }
@@ -1607,11 +1607,13 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
         }
     });
     ui.add_space(12.0);
-    let grid = |ui: &mut Ui, cards: &[Card], order: &[usize], acts: &mut Vec<Action>| {
+    // `pinned`: on Library › Playlists, where playlists are pinned.
+    let grid = |ui: &mut Ui, cards: &[Card], order: &[usize], pinned: Option<&[String]>, acts: &mut Vec<Action>| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(20.0, 22.0);
             for &i in order {
-                card(ui, &cards[i], CARD, false, acts);
+                let pin = pinned.map(|p| matches!(&cards[i].target, Target::Playlist(id) if p.contains(id)));
+                card(ui, &cards[i], CARD, false, pin, acts);
             }
         });
     };
@@ -1685,11 +1687,13 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                         app.actions.push(Action::NewPlaylist(Vec::new()));
                     }
                     ui.add_space(14.0);
-                    grid(ui, &lib.playlists, &app.sorts.cards("playlists", &lib.playlists), &mut app.actions)
+                    let pinned = app.pinned.as_slice();
+                    let order = super::collections::pinned_first(pinned, &lib.playlists, app.sorts.cards("playlists", &lib.playlists));
+                    grid(ui, &lib.playlists, &order, Some(pinned), &mut app.actions)
                 }
-                LibTab::Albums => grid(ui, &lib.albums, &app.sorts.cards("albums", &lib.albums), &mut app.actions),
-                LibTab::Artists => grid(ui, &lib.artists, &app.sorts.cards("artists", &lib.artists), &mut app.actions),
-                LibTab::Podcasts => grid(ui, &lib.podcasts, &app.sorts.cards("podcasts", &lib.podcasts), &mut app.actions),
+                LibTab::Albums => grid(ui, &lib.albums, &app.sorts.cards("albums", &lib.albums), None, &mut app.actions),
+                LibTab::Artists => grid(ui, &lib.artists, &app.sorts.cards("artists", &lib.artists), None, &mut app.actions),
+                LibTab::Podcasts => grid(ui, &lib.podcasts, &app.sorts.cards("podcasts", &lib.podcasts), None, &mut app.actions),
                 LibTab::Songs | LibTab::History | LibTab::Uploads => unreachable!(),
             }
         }

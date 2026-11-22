@@ -169,6 +169,8 @@ pub enum Action {
     /// Like (or unlike) a selection of songs.
     LikeMany(Vec<Track>, bool),
     Share(Target),
+    /// Keep a playlist at the top of the sidebar and Library › Playlists (true), or not.
+    Pin(String, bool),
     AddToPlaylist(Vec<Track>),
     /// Rows (indices into the open playlist) to take out of it.
     RemoveFromPlaylist(Vec<usize>),
@@ -971,6 +973,8 @@ pub struct App {
     /// The sidebar playlists' order (by id), and the ones hidden from it.
     playlist_order: Vec<String>,
     hidden_playlists: HashSet<String>,
+    /// Playlists kept at the top of the sidebar and Library › Playlists, last pinned first.
+    pinned: Vec<String>,
     /// The collection page whose inline search is open, and what's typed in it.
     coll_search: Option<(String, String)>,
     /// What's typed into Settings' own search box, which hides the rows it doesn't
@@ -1280,6 +1284,7 @@ impl App {
             sidebar_collapsed: get("sidebar_collapsed").is_none_or(|v| v == "1"),
             playlist_order: get("playlist_order").map(|v| v.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default(),
             hidden_playlists: get("hidden_playlists").map(|v| v.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default(),
+            pinned: get("pinned_playlists").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
             coll_search: None,
             update_checked: None,
             // A nightly build stays on nightlies until told otherwise.
@@ -2514,6 +2519,7 @@ impl eframe::App for App {
         }
         storage.set_string("playlist_order", self.playlist_order.join("\n"));
         storage.set_string("hidden_playlists", self.hidden_playlists.iter().cloned().collect::<Vec<_>>().join("\n"));
+        storage.set_string("pinned_playlists", serde_json::to_string(&self.pinned).unwrap_or_default());
         // Pretend versions (dev hook) mustn't decide the real "what's new".
         if std::env::var_os("YTM_UPDATE_AS").is_none() {
             storage.set_string("last_version", crate::update::current_version());

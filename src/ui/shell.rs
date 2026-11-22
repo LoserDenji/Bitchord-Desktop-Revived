@@ -156,6 +156,9 @@ fn nav_bg(ui: &Ui, look: NavLook, rect: Rect, h: f32, s: f32) -> Color32 {
     }
 }
 
+/// A pinned playlist's pin leans over, like one stuck in a board.
+const PIN_TILT: f32 = 45.0;
+
 /// Sidebar width expanded and collapsed to an icon rail (points).
 pub const SIDEBAR_W: f32 = 236.0;
 pub const RAIL_W: f32 = 76.0;
@@ -336,6 +339,11 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 Target::Playlist(id) => app.playlist_order.iter().position(|x| x == id).unwrap_or(usize::MAX),
                 _ => usize::MAX,
             });
+            // Pinned playlists come first, last pinned on top, over the manual order.
+            visible.sort_by_key(|c| match &c.target {
+                Target::Playlist(id) => app.pinned.iter().position(|p| p == id).unwrap_or(usize::MAX),
+                _ => usize::MAX,
+            });
             let drag_key = egui::Id::unique("sidebar-pl-drag");
             let dragging: Option<String> = ui.data(|d| d.get_temp(drag_key));
             let down = ui.input(|i| i.pointer.any_down());
@@ -388,6 +396,13 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 if let Target::Album(id) | Target::Playlist(id) = &c.target {
                     widgets::download_veil(ui, img, theme::thumb_radius(), id);
                 }
+                // Pinned: a badge on the cover's corner.
+                let pinned = app.pinned.contains(&id);
+                if pinned {
+                    let at = img.right_bottom() - vec2(1.0, 1.0);
+                    ui.painter().circle_filled(at, 8.0, theme::shade(0.8));
+                    widgets::icon_turned(ui, at, icon::PIN, 10.0, Color32::WHITE, PIN_TILT);
+                }
                 if a > 0.0 {
                     let w = full_w - 58.0;
                     text_at(ui, pos2(img.right() + 10.0, rect.top() + 7.0), &c.title, theme::semibold(13.5), theme::with_alpha(theme::text(), a), w);
@@ -395,6 +410,10 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 }
                 egui::Popup::context_menu(&resp).show(|ui| {
                     ui.set_min_width(190.0);
+                    if ui.button(if pinned { "Unpin playlist" } else { "Pin playlist" }).clicked() {
+                        app.actions.push(Action::Pin(id.clone(), !pinned));
+                        ui.close();
+                    }
                     if ui.button("Hide from sidebar").clicked() {
                         hide = Some(id.clone());
                         ui.close();
