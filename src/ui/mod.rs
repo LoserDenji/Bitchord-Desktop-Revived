@@ -377,19 +377,13 @@ pub struct MotionView {
     /// When this view was last asked for: the least recently used one makes way at
     /// the cap, and one nothing has asked for lately is dropped outright.
     last_used: std::time::Instant,
-    /// Frames taken for the clip's colours (see `App::clip_art`), and the clip time (s)
-    /// the next is due; sampling stops once a lap of it has been seen.
-    colours: crate::art::ClipColours,
-    next_sample: f64,
-    sampled: bool,
+    /// When the colours last followed its frame (s).
+    coloured_at: f64,
 }
-
-/// How many frames, spread over the clip's first lap, its colours come from.
-const CLIP_SAMPLES: u32 = 8;
 
 impl MotionView {
     fn new(motion: std::sync::Arc<crate::motion::Motion>, width: u32) -> Self {
-        Self { motion, tex: None, seen: 0, width, last_used: std::time::Instant::now(), colours: Default::default(), next_sample: 0.0, sampled: false }
+        Self { motion, tex: None, seen: 0, width, last_used: std::time::Instant::now(), coloured_at: 0.0 }
     }
 
     /// Whether the clip's clock runs: paused, the sleeve holds its last frame.
@@ -397,43 +391,32 @@ impl MotionView {
         self.motion.set_playing(on);
     }
 
-    /// The newest frame as a texture, once one has been decoded.
-    fn texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+    /// The newest frame as a texture, once one has been decoded, and the colours to
+    /// follow it with: a new frame's, on the first (so the colours crossfade in from
+    /// the still cover's) or a few times a second. `None`: no frame yet.
+    fn texture(&mut self, ctx: &egui::Context, now: f64) -> Option<(&egui::TextureHandle, Option<(crate::art::Art, bool)>)> {
+        let mut colours = None;
         if let Some((version, frame)) = self.motion.latest()
             && version != self.seen
         {
             self.seen = version;
             let image = egui::ColorImage::from_rgba_unmultiplied([frame.w, frame.h], &frame.rgba);
+            // The clip is what's on screen, and a song's single and album covers can
+            // differ: the colours follow the frame showing, a few times a second, as a
+            // music video's background does. The first crossfades from the still cover's.
+            let first = self.tex.is_none();
+            if (first || now - self.coloured_at > 0.25)
+                && let Some(art) = crate::art::from_cover_frame(&image)
+            {
+                self.coloured_at = now;
+                colours = Some((art, first));
+            }
             match &mut self.tex {
                 Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
                 None => self.tex = Some(ctx.load_texture("motion-cover", image, egui::TextureOptions::LINEAR)),
             }
         }
-        self.tex.as_ref()
-    }
-
-    /// A frame of the clip into its colours, spread over its first lap, until a lap of
-    /// it has been seen: its [`crate::art::Art`] then (sampling stops; the caller keeps
-    /// it for the song).
-    fn sample_colours(&mut self) -> Option<crate::art::Art> {
-        if self.sampled {
-            return None;
-        }
-        let Some((_, frame)) = self.motion.latest() else { return None };
-        let Some(len) = self.motion.length() else { return None };
-        if frame.pts < self.next_sample {
-            return None;
-        }
-        let image = egui::ColorImage::from_rgba_unmultiplied([frame.w, frame.h], &frame.rgba);
-        self.colours.add(&image);
-        self.next_sample = frame.pts + len / f64::from(CLIP_SAMPLES);
-        if self.colours.frames() >= CLIP_SAMPLES
-            && let Some(art) = self.colours.art()
-        {
-            self.sampled = true;
-            return Some(art);
-        }
-        None
+        self.tex.as_ref().map(|t| (t, colours))
     }
 }
 
@@ -776,8 +759,8 @@ pub struct App {
     /// The still cover of the song playing, as the accent and background were last set
     /// from it (`art_key` says whose it is).
     track_art: Option<crate::art::Art>,
-    /// The colours of a song's animated cover, once a lap of it has played: the accent
-    /// and background while it's on screen.
+    /// The colours of a song's animated cover: the accent and background while it's on
+    /// screen, following the frame showing.
     clip_art: Option<(String, crate::art::Art)>,
     /// The frame just drawn had the song playing's animated cover up, and its colours
     /// are what the accent and background show (`clip_leads`).
@@ -1753,25 +1736,33 @@ impl App {
         // owning on the one frame a lookup is started.
         let id = track.id.as_str();
         if let Some(url) = self.canvas_covers.get(id).cloned() {
-            let sprite = self.motion_sprite(ctx, format!("clip\u{1}{id}"), &url, max_width);
+            let (sprite, colours) = self.motion_sprite(ctx, format!("clip\u{1}{id}"), &url, max_width)?;
             // The clip is what's on screen, and a song's single and album covers can
-            // differ: its colours lead once its first lap has been seen (kept for the
-            // song, for next time), and again at once when it comes back up.
-            if sprite.is_some() && self.current_id() == Some(id) {
+            // differ: its colours lead from its first frame, and follow the frame
+            // showing a few times a second (kept for the song, for next time).
+            if self.current_id() == Some(id) {
                 self.clip_shown = true;
-                let known = self.clip_art.as_ref().is_some_and(|(c, _)| c == id);
-                if !known
-                    && let Some(art) = self.motion_views.get_mut(&format!("clip\u{1}{id}")).and_then(|v| v.sample_colours())
-                {
-                    self.clip_art = Some((id.to_owned(), art));
-                }
-                if self.clip_art.as_ref().is_some_and(|(c, _)| c == id) && !self.clip_leads {
-                    self.clip_leads = true;
-                    let now = ctx.input(|i| i.time);
-                    self.show_cover_colours(now);
+                match colours {
+                    Some((art, first)) => {
+                        self.clip_art = Some((id.to_owned(), art));
+                        if first || !self.clip_leads {
+                            self.clip_leads = true;
+                            let now = ctx.input(|i| i.time);
+                            self.show_cover_colours(now);
+                        } else {
+                            self.follow_clip();
+                        }
+                    }
+                    // Up again (Now playing reopened): the colours it had.
+                    None if !self.clip_leads && self.clip_art.as_ref().is_some_and(|(c, _)| c == id) => {
+                        self.clip_leads = true;
+                        let now = ctx.input(|i| i.time);
+                        self.show_cover_colours(now);
+                    }
+                    None => {}
                 }
             }
-            return sprite;
+            return Some(sprite);
         }
         // Apple first, once per song. `canvas` remembers found clips and misses on
         // disk, so neither is asked again for days.
@@ -1862,7 +1853,7 @@ impl App {
 
     /// The newest frame of a motion clip, started the first time it's seen. The decoders
     /// on screen are capped so old pages don't leave threads behind.
-    fn motion_sprite(&mut self, ctx: &egui::Context, key: String, url: &str, max_width: u32) -> Option<widgets::MotionSprite> {
+    fn motion_sprite(&mut self, ctx: &egui::Context, key: String, url: &str, max_width: u32) -> Option<(widgets::MotionSprite, Option<(crate::art::Art, bool)>)> {
         // Never decode wider than the player's sleeve needs; frames and textures are
         // sized by this, so it bounds the whole feature's memory.
         let max_width = max_width.clamp(64, 640);
@@ -1891,8 +1882,9 @@ impl App {
         let view = self.motion_views.get_mut(&key)?;
         view.last_used = std::time::Instant::now();
         view.set_playing(playing);
-        let tex = view.texture(ctx)?;
-        Some(widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() })
+        let now = ctx.input(|i| i.time);
+        let (tex, colours) = view.texture(ctx, now)?;
+        Some((widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() }, colours))
     }
 
     /// The accent and background to [`Self::cover_colours`], crossfading there.
@@ -1915,6 +1907,18 @@ impl App {
             .filter(|(clip, _)| clip == id)
             .map(|(_, art)| art)
             .or_else(|| self.track_art.as_ref().filter(|_| self.art_key.as_deref() == Some(id)))
+    }
+
+    /// The background and accent to the animated cover's latest frame: the background at
+    /// once, the accent easing there so a clip's changing colours don't flash.
+    fn follow_clip(&mut self) {
+        let Some((_, art)) = &self.clip_art else { return };
+        let [a, b] = [self.accent, art.accent].map(|c| c.to_array().map(f32::from));
+        let eased: [f32; 4] = std::array::from_fn(|i| a[i] + (b[i] - a[i]) * 0.5);
+        self.accent = Color32::from_rgb(eased[0].round() as u8, eased[1].round() as u8, eased[2].round() as u8);
+        if let Some(bg) = &self.bg {
+            bg.set_live(art.clone());
+        }
     }
 
     /// The animated cover went off screen (Now playing closed, the window hidden): the
