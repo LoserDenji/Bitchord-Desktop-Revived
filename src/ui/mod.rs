@@ -756,13 +756,12 @@ pub struct App {
     /// The still cover of the song playing, as the accent and background were last set
     /// from it (`art_key` says whose it is).
     track_art: Option<crate::art::Art>,
-    /// The colours of a song's animated cover: the accent and background while it's on
-    /// screen, from its first frame.
-    clip_art: Option<(String, crate::art::Art)>,
-    /// The frame just drawn had the song playing's animated cover up, and its colours
-    /// are what the accent and background show (`clip_leads`).
+    /// First-frame colours by song, kept when a decoder goes away.
+    clip_art: std::collections::HashMap<String, crate::art::Art>,
+    /// The frame just drawn had the playing song's animated cover up.
     clip_shown: bool,
-    clip_leads: bool,
+    /// The song whose visible clip supplies the accent and background.
+    clip_leads: Option<String>,
     /// Selected theme preset (see `preset.rs`).
     theme_id: String,
     /// Preset whose chrome (glass, corner radius) is installed in the egui style.
@@ -1308,9 +1307,9 @@ impl App {
             seek_drag: None,
             art_key: None,
             track_art: None,
-            clip_art: None,
+            clip_art: Default::default(),
             clip_shown: false,
-            clip_leads: false,
+            clip_leads: None,
             canvas_covers: Default::default(),
             canvas_apple_done: Default::default(),
             canvas_apple_waiting: Default::default(),
@@ -1733,18 +1732,11 @@ impl App {
         // owning on the one frame a lookup is started.
         let id = track.id.as_str();
         if let Some(url) = self.canvas_covers.get(id).cloned() {
-            let (sprite, colours) = self.motion_sprite(ctx, format!("clip\u{1}{id}"), &url, max_width)?;
-            // The clip is what's on screen, and a song's single and album covers can
-            // differ: its first frame sets the colours (kept for the song), crossfading
-            // from the still cover's. They stay put while it plays: each theme decides
-            // whether its background moves.
+            let sprite = self.motion_sprite(ctx, id, &url, max_width)?;
             if self.current_id() == Some(id) {
                 self.clip_shown = true;
-                if let Some(art) = colours {
-                    self.clip_art = Some((id.to_owned(), art));
-                }
-                if !self.clip_leads && self.clip_art.as_ref().is_some_and(|(c, _)| c == id) {
-                    self.clip_leads = true;
+                if self.clip_leads.as_deref() != Some(id) && self.clip_art.contains_key(id) {
+                    self.clip_leads = Some(id.to_owned());
                     let now = ctx.input(|i| i.time);
                     self.show_cover_colours(now);
                 }
@@ -1840,7 +1832,7 @@ impl App {
 
     /// The newest frame of a motion clip, started the first time it's seen. The decoders
     /// on screen are capped so old pages don't leave threads behind.
-    fn motion_sprite(&mut self, ctx: &egui::Context, key: String, url: &str, max_width: u32) -> Option<(widgets::MotionSprite, Option<crate::art::Art>)> {
+    fn motion_sprite(&mut self, ctx: &egui::Context, id: &str, url: &str, max_width: u32) -> Option<widgets::MotionSprite> {
         // Never decode wider than the player's sleeve needs; frames and textures are
         // sized by this, so it bounds the whole feature's memory.
         let max_width = max_width.clamp(64, 640);
@@ -1849,7 +1841,7 @@ impl App {
         // One decoder per cover. The strip and the player ask for different sizes, and
         // replacing it per caller would restart the clip every frame and never show a
         // frame: a bigger view takes over only when it needs a wider decode.
-        let stale = self.motion_views.get(&key).map_or(true, |v| v.width < max_width);
+        let stale = self.motion_views.get(id).map_or(true, |v| v.width < max_width);
         if stale {
             // At the cap, the least recently used view makes way for the new one.
             if self.motion_views.len() >= MOTION_VIEWS
@@ -1861,18 +1853,21 @@ impl App {
             // one plain mp4, which decodes through its own download path.
             let is_mp4 = url.split(['?', '#']).next().is_some_and(|p| p.to_ascii_lowercase().ends_with(".mp4"));
             let motion = if is_mp4 { crate::motion::play_mp4(ctx, url, max_width) } else { crate::motion::play(ctx, url, max_width) };
-            self.motion_views.insert(key.clone(), MotionView::new(motion, max_width));
+            self.motion_views.insert(id.to_owned(), MotionView::new(motion, max_width));
         }
         // The clip's clock follows the music: paused, the cover holds still.
         // Read before the borrow of `motion_views`: `playing` wants all of `self`.
         let playing = self.playing() || self.buffering;
         // The song's clip colours are kept already: its first frame needn't be taken again.
-        let known = key.strip_prefix("clip\u{1}").is_some_and(|s| self.clip_art.as_ref().is_some_and(|(id, _)| id == s));
-        let view = self.motion_views.get_mut(&key)?;
+        let known = self.clip_art.contains_key(id);
+        let view = self.motion_views.get_mut(id)?;
         view.last_used = std::time::Instant::now();
         view.set_playing(playing);
         let (tex, colours) = view.texture(ctx, known)?;
-        Some((widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() }, colours))
+        if let Some(art) = colours {
+            self.clip_art.insert(id.to_owned(), art);
+        }
+        Some(widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() })
     }
 
     /// The accent and background to [`Self::cover_colours`], crossfading there.
@@ -1885,23 +1880,19 @@ impl App {
         self.art_changed = now;
     }
 
-    /// The colours of the cover on screen: the animated cover's while it's up and a lap of
-    /// it has been seen, else the still cover's (when it's the song playing's).
+    /// The playing song's cover colours, preferring its visible animated cover.
     fn cover_colours(&self) -> Option<&crate::art::Art> {
         let id = self.current_id()?;
-        self.clip_leads
-            .then(|| self.clip_art.as_ref())
+        (self.clip_leads.as_deref() == Some(id))
+            .then(|| self.clip_art.get(id))
             .flatten()
-            .filter(|(clip, _)| clip == id)
-            .map(|(_, art)| art)
             .or_else(|| self.track_art.as_ref().filter(|_| self.art_key.as_deref() == Some(id)))
     }
 
     /// The animated cover went off screen (Now playing closed, the window hidden): the
     /// colours go back to the still cover's if they were the clip's.
     fn drop_cover_clip(&mut self, now: f64) {
-        if self.clip_leads {
-            self.clip_leads = false;
+        if self.clip_leads.take().is_some() {
             self.show_cover_colours(now);
         }
     }
@@ -2021,7 +2012,7 @@ impl eframe::App for App {
         let now = ctx.input(|i| i.time);
         // The clip's colours stand in only while it's on screen — the frame just drawn
         // said so (`animated_cover`); once one hasn't, back to the still cover's.
-        if !self.clip_shown {
+        if !self.clip_shown || self.clip_leads.as_deref() != self.current_id() {
             self.drop_cover_clip(now);
         }
         self.clip_shown = false;

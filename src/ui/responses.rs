@@ -29,6 +29,8 @@ impl App {
         }
         if self.canvas_covers.len() > 512 {
             self.canvas_covers.clear();
+            // A live texture has already passed its first frame.
+            self.clip_art.retain(|id, _| self.motion_views.contains_key(id));
             self.canvas_apple_done.clear();
         }
         // Sorted playlists load again when it's time, for their new order. One whose load

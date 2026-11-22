@@ -72,8 +72,11 @@ pub fn from_cover_frame(frame: &egui::ColorImage) -> Option<Art> {
     if w == 0 || h == 0 {
         return None;
     }
+    // Motion sleeves centre-crop both landscape and portrait frames (paint_motion).
+    let side = w.min(h);
+    let (left, top) = ((w - side) / 2, (h - side) / 2);
     let small = image::RgbImage::from_fn(SIZE, SIZE, |x, y| {
-        let c = frame.pixels[(y as usize * h / n) * w + x as usize * w / n];
+        let c = frame.pixels[(top + y as usize * side / n) * w + left + x as usize * side / n];
         image::Rgb([c.r(), c.g(), c.b()])
     });
     Some(process_small(&small))
@@ -269,6 +272,23 @@ mod tests {
         let art = from_cover_frame(&frame).unwrap();
         assert_eq!((art.accent, art.rgba), (still.accent, still.rgba));
         assert!(from_cover_frame(&egui::ColorImage::new([0, 0], vec![])).is_none());
+    }
+
+    #[test]
+    fn motion_colours_ignore_the_cropped_edges() {
+        let square = egui::ColorImage::new([128, 128], vec![Color32::from_rgb(40, 90, 180); 128 * 128]);
+        let expected = from_cover_frame(&square).unwrap();
+        for (w, h) in [(192, 128), (128, 192)] {
+            let mut frame = egui::ColorImage::new([w, h], vec![Color32::from_rgb(240, 60, 30); w * h]);
+            let (left, top) = ((w - 128) / 2, (h - 128) / 2);
+            for y in 0..128 {
+                for x in 0..128 {
+                    frame.pixels[(top + y) * w + left + x] = square.pixels[y * 128 + x];
+                }
+            }
+            let art = from_cover_frame(&frame).unwrap();
+            assert_eq!((art.accent, &art.rgba), (expected.accent, &expected.rgba));
+        }
     }
 
     /// A solid `base` square with a `block` block in the middle, the shape of a
