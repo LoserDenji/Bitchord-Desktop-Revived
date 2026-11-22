@@ -355,25 +355,36 @@ impl Queue {
         (self.tracks.iter().map(|t| t.id.clone()).collect(), self.index)
     }
 
-    /// Move a song to another place in the queue (drag and drop). The song playing
-    /// stays the one playing, wherever it lands.
-    pub fn move_track(&mut self, from: usize, to: usize) {
-        let n = self.tracks.len();
-        if from >= n || to >= n || from == to {
-            return;
+    /// Move song `from` to the gap `gap` between songs (0 is above the first), both counted
+    /// before the move, as YouTube Music's own queue does: a song already played can come
+    /// back after the one playing, and one to come can go before it. The song playing goes
+    /// on playing wherever it ends up. False when it wouldn't change anything.
+    pub fn move_track(&mut self, from: usize, gap: usize) -> bool {
+        if from >= self.tracks.len() || gap > self.tracks.len() || gap == from || gap == from + 1 {
+            return false;
         }
         let t = self.tracks.remove(from);
+        let to = if gap > from { gap - 1 } else { gap };
         self.tracks.insert(to, t);
-        if let Some(cur) = self.index {
-            self.index = Some(if cur == from {
-                to
-            } else if from < cur && to >= cur {
-                cur - 1
-            } else if from > cur && to <= cur {
-                cur + 1
-            } else {
-                cur
-            });
+        self.index = self.index.map(|i| match i {
+            _ if i == from => to,
+            _ if from < i && to >= i => i - 1,
+            _ if from > i && to <= i => i + 1,
+            _ => i,
+        });
+        true
+    }
+
+    /// Put `t`, dragged in from another list, at the gap `gap` between songs (0 is above the
+    /// first). The song playing goes on playing.
+    pub fn insert_at(&mut self, gap: usize, t: Track) {
+        let gap = gap.min(self.tracks.len());
+        self.note_added(&t.id);
+        self.tracks.insert(gap, t);
+        if let Some(i) = &mut self.index
+            && gap <= *i
+        {
+            *i += 1;
         }
     }
 
@@ -628,39 +639,47 @@ mod tests {
     }
 
     #[test]
-    fn moving_songs_keeps_the_song_playing() {
+    fn songs_played_and_to_come_move_round_the_song_playing() {
+        // A song already played comes back right after the one playing.
         let mut q = queue(&["a", "b", "c", "d"], 2, Repeat::Off);
-        // The playing song moves: it stays the one playing.
-        q.move_track(2, 0);
-        assert_eq!(ids(&q), ["c", "a", "b", "d"]);
+        assert!(q.move_track(0, 3));
+        assert_eq!(ids(&q), ["b", "c", "a", "d"]);
+        assert_eq!(q.current().unwrap().id, "c");
+        // One to come goes before it, among those played.
+        assert!(q.move_track(3, 0));
+        assert_eq!(ids(&q), ["d", "b", "c", "a"]);
+        assert_eq!(q.current().unwrap().id, "c");
+        // The song playing itself, down and back up: it goes on playing.
+        assert!(q.move_track(2, 4));
+        assert_eq!(ids(&q), ["d", "b", "a", "c"]);
+        assert_eq!(q.current().unwrap().id, "c");
+        assert!(q.move_track(3, 0));
+        assert_eq!(ids(&q), ["c", "d", "b", "a"]);
         assert_eq!(q.index, Some(0));
-        // A song before the playing one leaves: the playing one slides up.
-        let mut q = queue(&["a", "b", "c", "d"], 2, Repeat::Off);
-        q.move_track(0, 3);
-        assert_eq!(ids(&q), ["b", "c", "d", "a"]);
-        assert_eq!(q.index, Some(1));
-        // A song after the playing one jumps ahead of it: the playing one slides down.
-        let mut q = queue(&["a", "b", "c", "d"], 1, Repeat::Off);
-        q.move_track(3, 0);
-        assert_eq!(ids(&q), ["d", "a", "b", "c"]);
-        assert_eq!(q.index, Some(2));
-        // A song next to the playing one moved over it: the playing one slides.
-        let mut q = queue(&["a", "b", "c", "d"], 1, Repeat::Off);
-        q.move_track(2, 0);
-        assert_eq!(ids(&q), ["c", "a", "b", "d"]);
-        assert_eq!(q.index, Some(2));
-        // A song moved within one side of the playing song leaves it alone.
-        let mut q = queue(&["a", "b", "c", "d"], 2, Repeat::Off);
-        q.move_track(0, 1);
-        assert_eq!(ids(&q), ["b", "a", "c", "d"]);
-        assert_eq!(q.index, Some(2));
-        // No-ops don't disturb anything.
-        let mut q = queue(&["a", "b"], 0, Repeat::Off);
-        q.move_track(0, 0);
-        q.move_track(1, 5);
-        q.move_track(5, 0);
-        assert_eq!(ids(&q), ["a", "b"]);
-        assert_eq!(q.index, Some(0));
+        // Where it already is, and out of range.
+        let before = ids(&q).join("");
+        assert!(!q.move_track(2, 2));
+        assert!(!q.move_track(2, 3));
+        assert!(!q.move_track(4, 2));
+        assert!(!q.move_track(2, 5));
+        assert_eq!(ids(&q).join(""), before);
+    }
+
+    #[test]
+    fn a_song_dragged_in_goes_where_it_was_let_go() {
+        let mut q = queue(&["a", "b", "c"], 1, Repeat::Off);
+        // Above the song playing, which goes on playing.
+        q.insert_at(0, track("x"));
+        assert_eq!(ids(&q), ["x", "a", "b", "c"]);
+        assert_eq!(q.current().unwrap().id, "b");
+        // Right after it: it plays next.
+        q.insert_at(3, track("y"));
+        assert_eq!(ids(&q), ["x", "a", "b", "y", "c"]);
+        assert_eq!(q.upcoming().unwrap().id, "y");
+        // Past the end goes at the end.
+        q.insert_at(99, track("z"));
+        assert_eq!(ids(&q).last(), Some(&"z"));
+        assert_eq!(q.current().unwrap().id, "b");
     }
 
     #[test]

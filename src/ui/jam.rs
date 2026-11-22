@@ -261,9 +261,12 @@ pub fn dev_script(app: &mut App, ctx: &egui::Context, now: f64) {
             a if a.starts_with("move=") => {
                 // Slide a song still to come one place, the way a dragged queue row does.
                 if let Some(cur) = app.queue.index {
-                    let i = if &a[5..] == "up" { cur + 2 } else { cur + 1 };
-                    let to = if &a[5..] == "up" { i.saturating_sub(1) } else { i + 1 };
-                    app.apply(Action::QueueMove(i, to));
+                    let up = &a[5..] == "up";
+                    let i = if up { cur + 2 } else { cur + 1 };
+                    let gap = if up { i - 1 } else { i + 2 };
+                    if let Some(id) = app.queue.tracks.get(i).map(|t| t.id.clone()) {
+                        app.apply(Action::QueueMove { from: i, gap, id });
+                    }
                 }
             }
             a if a.starts_with("add=") => {
@@ -726,7 +729,8 @@ pub fn refused(app: &App, a: &Action) -> bool {
         | Action::QueueJump(_)
         | Action::QueueRemove(_)
         | Action::QueueClear
-        | Action::QueueMove(..)
+        | Action::QueueMove { .. }
+        | Action::QueueInsert { .. }
         | Action::Seek(_) => true,
         _ => false,
     }

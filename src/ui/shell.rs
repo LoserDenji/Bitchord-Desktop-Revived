@@ -1369,17 +1369,16 @@ pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
         ui.allocate_ui(vec2(width, 0.0), |ui| {
             let accent = app.accent_color();
             let (queue, liked, acts, has_current, drag) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &mut app.row_drag);
-            // Songs to come can be dragged into another order; in a room only the host
-            // drives, that's the relay's to say. Kept in app state, so it survives the
-            // rows' own ids (the list is virtualized; a scrolled row hands its id to
-            // another).
+            // Songs can be dragged into another order, those played too, as in YouTube
+            // Music's queue, and songs dragged in from other lists land where they're let
+            // go; in a room only the host drives, that's the relay's to say.
             let (list, movable) = (egui::Id::unique(("queue", salt)), !app.jam.locked());
             let top = ui.cursor().top();
             // The whole queue: the songs already played stay above the one playing.
             widgets::visible_rows(ui, queue.len(), |ui, i| {
                 let t = &queue[i];
                 let current = i == start && has_current;
-                if movable && (i > start || !has_current) {
+                if movable && !current {
                     row_drag::grip(ui, drag, list, i, t);
                 }
                 let o = widgets::RowOpts { current, hide_duration_hover: !current, ..rows.opts(liked, t, None, false) };
@@ -1400,12 +1399,12 @@ pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
                     }
                 }
             });
-            let lowest = if has_current { start + 1 } else { start };
-            if let Some(d) = row_drag::feedback(ui, drag, list, row_drag::Rows { top, first: 0, lowest, end: queue.len(), accent }) {
-                // A gap becomes the insert index `move_track` takes: past the song it
-                // follows once the dragged one is out of the way.
-                let to = if d.gap > d.from { d.gap - 1 } else { d.gap };
-                acts.push(Action::QueueMove(d.from, to));
+            let rows = row_drag::Rows { top, first: 0, lowest: 0, end: queue.len(), accent, spaced: None };
+            if let Some(d) = row_drag::feedback(ui, drag, list, rows) {
+                acts.push(Action::QueueMove { from: d.from, gap: d.gap, id: d.id });
+            }
+            if movable && let Some((gap, track)) = row_drag::receive(ui, drag, list, rows) {
+                acts.push(Action::QueueInsert { gap, track });
             }
         });
     });

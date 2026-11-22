@@ -111,7 +111,7 @@ pub(super) fn dev_screenshot(ctx: &egui::Context, now: f64) {
 
 /// Dev hook: `YTM_SCRIPT="<secs>:<step>;…"` drives a test window that has no mouse or
 /// keyboard, with seconds from the first frame. Steps: `m:x,y` moves the pointer, `c:x,y`
-/// clicks, `r:w,h` resizes, `t:text` types, `f:n` flicks a touchpad n pixels (down) over 0.1 s, as Wayland sends it, `s:name` saves `<YTM_SCRIPT_DIR>/name.png`, `q` quits.
+/// clicks, `d:x,y` and `u:x,y` press and let go there (a drag, with moves between), `r:w,h` resizes, `t:text` types, `f:n` flicks a touchpad n pixels (down) over 0.1 s, as Wayland sends it, `s:name` saves `<YTM_SCRIPT_DIR>/name.png`, `q` quits.
 pub(super) fn dev_script(ctx: &egui::Context, raw: &mut egui::RawInput) {
     use std::sync::OnceLock;
     use std::time::Instant;
@@ -138,6 +138,9 @@ pub(super) fn dev_script(ctx: &egui::Context, raw: &mut egui::RawInput) {
             match (kind, point(value)) {
                 ("m", Some(p)) => steps.push((at, Step::Move(p))),
                 ("c", Some(p)) => steps.extend([(at, Step::Move(p)), (at + 0.2, Step::Press(p, true)), (at + 0.3, Step::Press(p, false))]),
+                // Press and let go as two steps, with moves between them: a drag.
+                ("d", Some(p)) => steps.extend([(at, Step::Move(p)), (at, Step::Press(p, true))]),
+                ("u", Some(p)) => steps.extend([(at, Step::Move(p)), (at, Step::Press(p, false))]),
                 ("r", Some(p)) => steps.push((at, Step::Resize(p))),
                 ("t", _) => steps.push((at, Step::Text(value))),
                 ("f", _) if value.parse::<f32>().is_ok() => {

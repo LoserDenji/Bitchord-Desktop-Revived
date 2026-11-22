@@ -155,8 +155,12 @@ pub enum Action {
     QueueClear,
     /// Take back what the toast up now says was done.
     Undo,
-    /// A dragged row landed: move the song from one queue place to another.
-    QueueMove(usize, usize),
+    /// A dragged row landed: move the song from one queue place to another, if the song
+    /// `id` is still at `from` (see `Queue::move_track`).
+    QueueMove { from: usize, gap: usize, id: String },
+    /// A song dragged in from another list, let go at the gap between songs `gap` (see
+    /// `Queue::insert_at`).
+    QueueInsert { gap: usize, track: Track },
     /// Open up next (the player's) or the queue drawer (the bar's).
     ViewQueue,
     Seek(f32),
