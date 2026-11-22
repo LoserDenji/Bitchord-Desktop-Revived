@@ -466,6 +466,24 @@ pub fn paint_backdrop(ui: &Ui, site: egui::Id, rect: Rect, radius: f32, thumbs: 
     dissolve(ui, site, &url, uv, ready, &mut |u, uv, a| paint_remote(ui, u, rect, radius, uv, tint.gamma_multiply(a)));
 }
 
+/// Melt a full-bleed image's edges into the page: ramps of the page's own colour on
+/// the flanks, the top and the foot, so a header reads as a wash of art and not a
+/// photograph pasted over the page. `side`/`top`/`bottom` are the ramp widths.
+pub fn melt_edges(ui: &Ui, rect: Rect, bg: Color32, side: f32, top: f32, bottom: f32) {
+    let p = ui.painter();
+    if side > 0.0 {
+        let s = side.min(rect.width() / 2.0);
+        super::shell::hgradient(p, Rect::from_min_max(rect.left_top(), pos2(rect.left() + s, rect.bottom())), theme::with_alpha(bg, 0.9), theme::with_alpha(bg, 0.0));
+        super::shell::hgradient(p, Rect::from_min_max(pos2(rect.right() - s, rect.top()), rect.right_bottom()), theme::with_alpha(bg, 0.0), theme::with_alpha(bg, 0.85));
+    }
+    if top > 0.0 {
+        super::shell::vgradient(p, Rect::from_min_max(rect.left_top(), pos2(rect.right(), rect.top() + top.min(rect.height() / 2.0))), theme::with_alpha(bg, 0.85), theme::with_alpha(bg, 0.0));
+    }
+    if bottom > 0.0 {
+        super::shell::vgradient(p, Rect::from_min_max(pos2(rect.left(), rect.bottom() - bottom.min(rect.height() / 2.0)), rect.right_bottom()), theme::with_alpha(bg, 0.0), theme::with_alpha(bg, 0.92));
+    }
+}
+
 /// Start loading a cover at `px` without drawing it, so it's ready when it appears.
 pub fn preload_cover(ctx: &egui::Context, thumbs: &[Thumb], px: u32) {
     let px = fetch_px(px);

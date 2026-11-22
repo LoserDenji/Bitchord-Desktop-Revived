@@ -332,6 +332,11 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
     let (label, title, sub, action) = card_words(app, kind.as_ref());
     let tx = crect.right() + 34.0;
     let tw = ((band.right() - 130.0 - tx) * 0.42).clamp(240.0, 420.0);
+    // A soft shade behind the words: the art keeps its edges, the text keeps its
+    // contrast — the reference's card puts its scrim under the block, not on the
+    // whole stage. Clear of the cover, which draws over whatever reaches it.
+    let scrim = Rect::from_min_max(pos2(crect.right() + 6.0, band.top()), pos2(tx + tw + 80.0, band.bottom()));
+    super::shell::hgradient(ui.painter(), scrim, theme::shade(0.45), Color32::TRANSPARENT);
     let title_g = widgets::galley_wrapped(ui, &title, theme::bold(29.0), theme::text(), tw, 2);
     let sub_g = widgets::galley(ui, &sub, theme::regular(13.5), theme::text_dim(), tw);
     let (title_h, sub_h) = (title_g.size().y, sub_g.size().y);
@@ -505,8 +510,9 @@ fn wash_id(ui: &Ui) -> egui::Id {
     egui::Id::unique(("hero-wash", ui.scope_id()))
 }
 
-/// The wash's edges melt into the page: horizontal and vertical gradients of the
-/// page's own colour, the TV backdrop's masks stood on a rounded band.
+/// The wash's edges melt into the page on every side: gradients of the page's own
+/// colour, the TV backdrop's masks — the stage reads as a wash of art, not a
+/// rectangle stood on it.
 fn melt(ui: &Ui, band: Rect, bg: Color32) {
     let mesh_at = |painter: &egui::Painter, corners: [Color32; 4]| {
         let [tl, tr, bl, br] = corners;
@@ -519,9 +525,16 @@ fn melt(ui: &Ui, band: Rect, bg: Color32) {
         mesh.add_triangle(1, 3, 2);
         painter.add(egui::Shape::mesh(mesh));
     };
-    // left: the page's colour falls away toward the middle (the text sits on it)
+    // left: the page's colour falls away toward the middle (the cover sits on it)
     let a = theme::with_alpha(bg, 0.88);
     mesh_at(ui.painter(), [a, Color32::TRANSPARENT, a, Color32::TRANSPARENT]);
+    // right: the far flank gives way the same, so the grid's edge and the pager
+    // arrows sit on the page, not on a cut
+    let r = band.width() * 0.14;
+    super::shell::hgradient(ui.painter(), Rect::from_min_max(pos2(band.right() - r, band.top()), band.right_bottom()), theme::with_alpha(bg, 0.0), theme::with_alpha(bg, 0.85));
+    // top: the header above meets the stage, not a hard edge
+    let t = band.height() * 0.3;
+    super::shell::vgradient(ui.painter(), Rect::from_min_max(band.left_top(), pos2(band.right(), band.top() + t)), theme::with_alpha(bg, 0.85), theme::with_alpha(bg, 0.0));
     // bottom: the rows below meet the stage, not a hard edge
     let b = theme::with_alpha(bg, 0.82);
     mesh_at(ui.painter(), [Color32::TRANSPARENT, Color32::TRANSPARENT, b, b]);

@@ -1407,7 +1407,10 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     } else {
         ui.painter().rect_filled(hero, 14.0, theme::with_alpha(accent, 0.25));
     }
-    super::shell::vgradient(ui.painter(), Rect::from_min_max(pos2(hero.left(), hero.center().y - 40.0), hero.max), Color32::TRANSPARENT, theme::shade(0.85));
+    // The banner melts into the page on every side — a header wash, not a photograph
+    // pasted over it — and the name sits in the foot ramp's dark, where the old shade
+    // used to cut the image off hard.
+    widgets::melt_edges(ui, hero, theme::bg(), 110.0, 64.0, hero_h * 0.55);
     let base = hero.left_bottom() + vec2(28.0, -30.0);
     match &signature {
         // The artist's own hand, credited above it the way a page signs itself off.
