@@ -268,7 +268,7 @@ fn main() -> eframe::Result {
             {
                 ui::set_titlebar_view(h.ns_view.as_ptr());
             }
-            let media = media::Media::new(hwnd(cc), media_tx, wake);
+            let media = media::Media::new(hwnd(cc), media_tx, media::Direct::new(audio.clone()), wake);
 
             // Which GL driver this is, for reports of drawing problems (Windows on ARM runs
             // GL through Mesa's D3D12 layer).
