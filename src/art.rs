@@ -66,7 +66,7 @@ fn process_small(small: &image::RgbImage) -> Art {
 }
 
 /// A frame of an animated cover as the cover art, as a still cover's would be (accent,
-/// tint and blur), sampled nearest-neighbour so it's cheap enough a few times a second.
+/// tint and blur), sampled nearest-neighbour so it stays cheap.
 pub fn from_cover_frame(frame: &egui::ColorImage) -> Option<Art> {
     let ([w, h], n) = (frame.size, SIZE as usize);
     if w == 0 || h == 0 {

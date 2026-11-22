@@ -221,8 +221,6 @@ struct Wgpu {
 pub struct Background {
     gl: Arc<Mutex<Option<Gl>>>,
     pending: Arc<Mutex<Option<Art>>>,
-    /// Shown in place of the current art right away (an animated cover's live frames).
-    live: Arc<Mutex<Option<Art>>>,
     /// Drawn through wgpu, whose state lives with the renderer (`gl` stays empty).
     wgpu: bool,
 }
@@ -315,7 +313,7 @@ impl Background {
             upload_wgpu(&rs.queue, t, &idle);
         }
         rs.renderer.write().callback_resources.insert(Wgpu { pipeline, uniforms, tex, groups, cur: 0 });
-        Self { gl: Default::default(), pending: Default::default(), live: Default::default(), wgpu: true }
+        Self { gl: Default::default(), pending: Default::default(), wgpu: true }
     }
 
     pub fn new(gl: &glow::Context) -> anyhow::Result<Self> {
@@ -366,7 +364,6 @@ impl Background {
             let this = Self {
                 gl: Arc::new(Mutex::new(Some(Gl { program, vao, tex, cur: 0, loc }))),
                 pending: Default::default(),
-                live: Default::default(),
                 wgpu: false,
             };
             // Both slots start with the idle backdrop.
@@ -383,17 +380,12 @@ impl Background {
         *self.pending.lock().unwrap() = Some(art);
     }
 
-    /// Show this in place of the current art right away (an animated cover's live frames).
-    pub fn set_live(&self, art: Art) {
-        *self.live.lock().unwrap() = Some(art);
-    }
-
     pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect, p: Params) {
         if self.wgpu {
-            painter.add(eframe::egui_wgpu::Callback::new_paint_callback(rect, WgpuPaint { pending: self.pending.clone(), live: self.live.clone(), rect, p }));
+            painter.add(eframe::egui_wgpu::Callback::new_paint_callback(rect, WgpuPaint { pending: self.pending.clone(), rect, p }));
             return;
         }
-        let (gl_state, pending, live) = (self.gl.clone(), self.pending.clone(), self.live.clone());
+        let (gl_state, pending) = (self.gl.clone(), self.pending.clone());
         let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             let gl = painter.gl();
             let mut guard = gl_state.lock().unwrap();
@@ -402,9 +394,6 @@ impl Background {
                 if let Some(art) = pending.lock().unwrap().take() {
                     // New art goes into the other slot; the app animates `blend` 0→1.
                     s.cur ^= 1;
-                    upload(gl, s.tex[s.cur], &art);
-                }
-                if let Some(art) = live.lock().unwrap().take() {
                     upload(gl, s.tex[s.cur], &art);
                 }
                 gl.use_program(Some(s.program));
@@ -446,7 +435,6 @@ impl Background {
 
 struct WgpuPaint {
     pending: Arc<Mutex<Option<Art>>>,
-    live: Arc<Mutex<Option<Art>>>,
     rect: egui::Rect,
     p: Params,
 }
@@ -464,9 +452,6 @@ impl eframe::egui_wgpu::CallbackTrait for WgpuPaint {
         if let Some(art) = self.pending.lock().unwrap().take() {
             // New art goes into the other slot; the app animates `blend` 0→1.
             s.cur ^= 1;
-            upload_wgpu(queue, &s.tex[s.cur], &art);
-        }
-        if let Some(art) = self.live.lock().unwrap().take() {
             upload_wgpu(queue, &s.tex[s.cur], &art);
         }
         let p = &self.p;
