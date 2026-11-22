@@ -462,12 +462,10 @@ impl App {
             }
             Resp::Art { key, art } => {
                 if self.mix_hold().is_none() && self.current_id() == Some(key.as_str()) {
-                    self.accent = art.accent;
-                    if let Some(bg) = &self.bg {
-                        bg.set_art(art);
-                    }
+                    self.track_art = Some(art);
                     self.art_key = Some(key);
-                    self.art_changed = now;
+                    // An animated cover on screen keeps its own colours.
+                    self.show_cover_colours(now);
                 }
             }
             Resp::CanvasUrl { id, url } => {

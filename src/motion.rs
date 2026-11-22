@@ -23,6 +23,8 @@ pub struct Frame {
     pub w: usize,
     pub h: usize,
     pub rgba: Vec<u8>,
+    /// The frame's clip time (s): 0..one lap, starting over with each one.
+    pub pts: f64,
 }
 
 pub struct Motion {
@@ -31,17 +33,24 @@ pub struct Motion {
     stop: Arc<AtomicBool>,
     /// Whether the music is playing: the clip's clock only runs while it is.
     playing: Arc<AtomicBool>,
+    /// The clip's lap (s), once its frames are counted.
+    length: std::sync::OnceLock<f64>,
 }
 
 impl Motion {
     fn new() -> Self {
-        Self { latest: Mutex::new(None), version: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), playing: Arc::new(AtomicBool::new(true)) }
+        Self { latest: Mutex::new(None), version: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), playing: Arc::new(AtomicBool::new(true)), length: std::sync::OnceLock::new() }
     }
 
     /// The newest frame, with the counter that says it changed.
     pub fn latest(&self) -> Option<(u64, Arc<Frame>)> {
         let frame = self.latest.lock().ok()?.clone()?;
         Some((self.version.load(Ordering::Acquire), frame))
+    }
+
+    /// How long one lap of the clip is (s), once known. Frames' `pts` run within it.
+    pub fn length(&self) -> Option<f64> {
+        self.length.get().copied()
     }
 
     /// Stop decoding: the page that showed this clip is gone.
@@ -54,9 +63,9 @@ impl Motion {
         self.playing.store(on, Ordering::Relaxed);
     }
 
-    fn publish(&self, ctx: &egui::Context, w: usize, h: usize, rgba: Vec<u8>) {
+    fn publish(&self, ctx: &egui::Context, w: usize, h: usize, rgba: Vec<u8>, pts: f64) {
         if let Ok(mut slot) = self.latest.lock() {
-            *slot = Some(Arc::new(Frame { w, h, rgba }));
+            *slot = Some(Arc::new(Frame { w, h, rgba, pts }));
         }
         self.version.fetch_add(1, Ordering::Release);
         ctx.request_repaint();
@@ -585,6 +594,7 @@ fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max
     let (times, length) = loop_times(&samples.iter().map(|s| s.1).collect::<Vec<_>>());
     let samples: Vec<(Vec<u8>, f64)> = samples.into_iter().zip(times).map(|((data, _), t)| (data, t)).collect();
     log::info!("animated cover: {} frames, {length:.1} s", samples.len());
+    let _ = motion.length.set(length);
     let side = max_width.max(64);
     let mut last = Instant::now();
     'laps: for _lap in 0u64.. {
@@ -611,7 +621,7 @@ fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max
             if motion.version.load(Ordering::Acquire) == 0 {
                 log::info!("animated cover: playing at {w}x{h}");
             }
-            motion.publish(ctx, w, h, rgba);
+            motion.publish(ctx, w, h, rgba, due);
         }
         // The last few, which the decoder holds back for reordering.
         for yuv in decoder.flush_remaining().unwrap_or_default().iter() {
@@ -620,7 +630,7 @@ fn decode(motion: &Arc<Motion>, path: &std::path::Path, ctx: &egui::Context, max
                 break 'laps;
             }
             let (w, h, rgba) = scaled_rgba(yuv, (yuv.dimensions().0 / side as usize).max(1), track.colors);
-            motion.publish(ctx, w, h, rgba);
+            motion.publish(ctx, w, h, rgba, due);
         }
         // The lap's length: the last frame gets its step before the clip starts over.
         if !wait_for(&motion.playing, &motion.stop, &mut clock, &mut last, length) {
