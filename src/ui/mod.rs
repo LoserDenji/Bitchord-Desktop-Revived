@@ -1988,6 +1988,7 @@ impl App {
             VisualPreset::Barebones => {
                 self.anim_bg = false;
                 self.reactive_bg = false;
+                self.disable_blur = true;
                 self.animated_covers = false;
                 self.ambient_light = false;
                 self.reduce_motion = true;
@@ -2001,6 +2002,7 @@ impl App {
             VisualPreset::High => {
                 self.anim_bg = true;
                 self.reactive_bg = true;
+                self.disable_blur = false;
                 self.animated_covers = true;
                 self.ambient_light = true;
                 self.reduce_motion = false;
@@ -2209,7 +2211,12 @@ impl eframe::App for App {
                 ctx.request_repaint_after(Duration::from_secs(2));
             }
         } else if self.np_open && playing && !self.mini.busy() {
-            pace::repaint_after(ctx, Duration::from_millis(33));
+            let wait = if self.disable_blur && !self.lyrics_full_rate {
+                Duration::from_millis(66)
+            } else {
+                Duration::from_millis(33)
+            };
+            pace::repaint_after(ctx, wait);
         } else if playing && widgets::equalizer_shown(ctx) {
             // The playing row's bars need a steady, full rate to read as smooth.
             pace::repaint_after(ctx, Duration::from_millis(16));

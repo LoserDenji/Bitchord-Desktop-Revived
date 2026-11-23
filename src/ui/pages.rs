@@ -3298,7 +3298,9 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
         });
         divider(ui);
         setting_row(ui, "Disable heavy background blur", Some("Replaces intensive GPU shader blur effects with a clean static ambient tint. Drastically reduces GPU usage, heat and battery consumption on integrated GPUs."), |ui| {
-            toggle(ui, &mut app.disable_blur, "Disable heavy background blur");
+            if toggle(ui, &mut app.disable_blur, "Disable heavy background blur").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
         });
         divider(ui);
         setting_row(ui, "Ambient light", Some("Now playing glows with the video's colours around it."), |ui| {
