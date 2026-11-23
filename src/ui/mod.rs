@@ -2558,7 +2558,9 @@ impl eframe::App for App {
         storage.set_string("accent_controls", b(self.accent_controls));
         storage.set_string("anim_bg", b(self.anim_bg));
         storage.set_string("reactive_bg", b(self.reactive_bg));
-        storage.set_string("disable_blur", b(self.disable_blur));
+        if dev_var("YTM_VISUAL").is_none() {
+            storage.set_string("disable_blur", b(self.disable_blur));
+        }
         storage.set_string("animated_covers", b(self.animated_covers));
         storage.set_string("signature_api", self.signature_api.clone());
         let hires_source = dedupe_hires(self.hires_sources.iter().map(String::as_str)).join("\n");
