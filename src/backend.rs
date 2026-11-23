@@ -2655,7 +2655,7 @@ impl Backend {
                 }
                 let Some(session) = self.api.account() else {
                     // Try anonymous WebMusic cipher solver (e.g. for COPPA / kids tracks that visionOS refuses)
-                    if let Ok(s) = self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }, None).await {
+                    if let Ok(s) = self.webmusic_anon_stream(video_id, !best).await {
                         return Ok((Source::WebMusic, s));
                     }
                     // Nothing signed in to fall back on: the public player's answer stands.
@@ -2664,7 +2664,7 @@ impl Backend {
                 if self.is_premium(&session).await {
                     match self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }, None).await {
                         Ok(s) => return Ok((Source::WebMusic, s)),
-                        Err(e) => log::warn!("web music player failed ({e:#}); using yt-dlp"),
+                        Err(e) => log::warn!("web music player failed ({e:#}); trying fallback"),
                     }
                 }
                 // An episode of a podcast added by RSS: YouTube doesn't have its audio,
@@ -2672,6 +2672,10 @@ impl Backend {
                 // its file, signed in, Premium or not.
                 if let Some(s) = self.rss_episode(&session, video_id).await? {
                     return Ok((Source::Feed, s));
+                }
+                // Try anonymous WebMusic cipher solver before falling back to yt-dlp even if an account is present
+                if let Ok(s) = self.webmusic_anon_stream(video_id, !best).await {
+                    return Ok((Source::WebMusic, s));
                 }
                 Ok((Source::YtDlp, self.resolve_from(Source::YtDlp, video_id, stream::Format::Aac, None).await?))
             }
@@ -2689,6 +2693,26 @@ impl Backend {
                 log::info!("{video_id}: web player: {e:#}");
                 Ok(None)
             }
+        }
+    }
+
+    /// Anonymous WebMusic stream resolution (e.g. for COPPA / kids tracks where visionOS fails).
+    async fn webmusic_anon_stream(&self, video_id: &str, opus: bool) -> anyhow::Result<ResolvedStream> {
+        let plain = |s: innertube::Stream, ua: &str| ResolvedStream {
+            media: stream::Media::File(s.url),
+            starts: None,
+            size: s.size,
+            duration_ms: s.duration_ms,
+            user_agent: ua.to_owned(),
+            loudness_db: s.loudness_db,
+            format: stream::Format::from_opus(s.opus),
+            info: None,
+            ranging: stream::Ranging::Query,
+            data: None,
+        };
+        match webmusic::audio_stream_anon(&self.http(), &self.jsc, video_id, opus).await? {
+            webmusic::Audio::YouTube(s) => Ok(plain(s, webmusic::UA)),
+            webmusic::Audio::Feed(feed) => self.feed_stream(feed).await,
         }
     }
 
