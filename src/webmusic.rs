@@ -386,6 +386,65 @@ impl Session {
     }
 }
 
+/// Anonymous Web Music stream resolution with embedded QuickJS challenge solver,
+/// for tracks that cannot be played via visionOS (e.g. videos designated as intended for kids).
+pub async fn audio_stream_anon(http: &reqwest::Client, solver: &Solver, video_id: &str, opus: bool) -> anyhow::Result<Audio> {
+    let player = solver.player(http).await?;
+    let resp: Value = http
+        .post("https://music.youtube.com/youtubei/v1/player?prettyPrint=false")
+        .header("User-Agent", UA)
+        .header("X-YouTube-Client-Name", "67")
+        .header("X-YouTube-Client-Version", VERSION)
+        .header("Origin", "https://music.youtube.com")
+        .header("X-Origin", "https://music.youtube.com")
+        .header("Cookie", "SOCS=CAISAiAD")
+        .timeout(std::time::Duration::from_secs(12))
+        .json(&player_body(video_id, player.sts))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let status = &resp["playabilityStatus"];
+    if status["status"] != "OK" {
+        anyhow::bail!("{}: {}", status["status"].as_str().unwrap_or("UNPLAYABLE"), status["reason"].as_str().unwrap_or("no reason given"));
+    }
+    if let Some(feed) = feed_of(&resp)? {
+        return Ok(Audio::Feed(feed));
+    }
+    let formats = resp["streamingData"]["adaptiveFormats"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let f = pick_format(formats, opus).ok_or_else(|| anyhow::anyhow!("no audio stream in web player response"))?;
+    log::info!("web music anon: {video_id} itag {} ({} kbps)", f["itag"], f["bitrate"].as_u64().unwrap_or(0) / 1000);
+    let size = f["contentLength"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| anyhow::anyhow!("unknown stream size"))?;
+    let duration_ms = f["approxDurationMs"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0);
+    let loudness_db = crate::innertube::loudness(&resp, f);
+
+    let (raw, cipher) = match f["url"].as_str() {
+        Some(u) => (u.to_owned(), None),
+        None => {
+            let c = f["signatureCipher"].as_str().ok_or_else(|| anyhow::anyhow!("format has no URL"))?;
+            let q: Vec<(String, String)> = Url::parse(&format!("http://x/?{c}"))?.query_pairs().into_owned().collect();
+            let get = |k: &str| q.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+            let url = get("url").ok_or_else(|| anyhow::anyhow!("cipher has no url"))?;
+            let s = get("s").ok_or_else(|| anyhow::anyhow!("cipher has no signature"))?;
+            (url, Some((s, get("sp").unwrap_or_else(|| "signature".into()))))
+        }
+    };
+    let mut url = Url::parse(&raw)?;
+    let mut pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    let n = pairs.iter().find(|(k, _)| k == "n").map(|(_, v)| v.clone());
+    let (n_out, sig_out) = solver.solve(&player, n, cipher.as_ref().map(|(s, _)| s.clone())).await?;
+    if let Some(n) = n_out {
+        pairs.iter_mut().filter(|(k, _)| k == "n").for_each(|(_, v)| *v = n.clone());
+    }
+    if let (Some(sig), Some((_, sp))) = (sig_out, cipher) {
+        pairs.push((sp, sig));
+    }
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+    Ok(Audio::YouTube(Stream { url: url.into(), size, duration_ms, loudness_db, opus: is_opus(f) }))
+}
+
 pub enum Audio {
     YouTube(Stream),
     Feed(Feed),

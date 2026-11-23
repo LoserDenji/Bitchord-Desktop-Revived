@@ -2654,6 +2654,10 @@ impl Backend {
                     log::info!("{video_id}: the public player failed ({e:#}); trying the signed-in players");
                 }
                 let Some(session) = self.api.account() else {
+                    // Try anonymous WebMusic cipher solver (e.g. for COPPA / kids tracks that visionOS refuses)
+                    if let Ok(s) = self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }, None).await {
+                        return Ok((Source::WebMusic, s));
+                    }
                     // Nothing signed in to fall back on: the public player's answer stands.
                     return Err(if restricted { anyhow::anyhow!("sign in to play this song") } else { e });
                 };
@@ -2712,8 +2716,12 @@ impl Backend {
                 ResolvedStream { media: stream::Media::Segments(urls), starts: Some(starts), size: 0, duration_ms: s.duration_ms, user_agent: innertube::UA.to_owned(), loudness_db: s.loudness_db, format: stream::Format::Aac, info: None, ranging: stream::Ranging::Query, data: None }
             }
             Source::WebMusic => {
-                let session = self.api.account().ok_or_else(|| anyhow::anyhow!("signed out"))?;
-                match session.audio_stream(&self.http(), &self.jsc, video_id, format == stream::Format::Opus).await? {
+                let stream_res = if let Some(session) = self.api.account() {
+                    session.audio_stream(&self.http(), &self.jsc, video_id, format == stream::Format::Opus).await
+                } else {
+                    webmusic::audio_stream_anon(&self.http(), &self.jsc, video_id, format == stream::Format::Opus).await
+                };
+                match stream_res? {
                     webmusic::Audio::YouTube(s) => plain(s, webmusic::UA),
                     webmusic::Audio::Feed(feed) => self.feed_stream(feed).await?,
                 }
