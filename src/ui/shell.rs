@@ -82,7 +82,7 @@ pub fn background(app: &mut App, ui: &mut Ui, screen: Rect, now: f64, only: Opti
     };
     painter.rect_filled(screen, 0.0, base_color(app));
     let art = matches!(mode, BgMode::Kawarp | BgMode::CoverStatic | BgMode::CoverFullbleed);
-    if let Some(bg) = app.bg.as_ref().filter(|_| art) {
+    if let Some(bg) = app.bg.as_ref().filter(|_| art && !app.disable_blur) {
         let blend = theme::ease_in_out(((now - app.art_changed) / 1.4) as f32);
         if blend < 1.0 {
             // The crossfade to new art finishes even while paused.

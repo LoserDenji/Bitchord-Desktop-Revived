@@ -71,7 +71,7 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
                         super::shell::hgradient(&painter, fade, Color32::TRANSPARENT, solid);
                     }
                 }
-            } else if let Some(bg) = app.bg.as_ref().filter(|_| art) {
+            } else if let Some(bg) = app.bg.as_ref().filter(|_| art && !app.disable_blur) {
                 let blend = theme::ease_in_out(((now - app.art_changed) / 1.4) as f32);
                 let level = if app.reactive_bg && app.playing() { app.audio.status.level() * b.reactive } else { 0.0 };
                 bg.paint(
