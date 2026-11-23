@@ -2656,7 +2656,7 @@ impl Backend {
                 let Some(session) = self.api.account() else {
                     // Try anonymous WebMusic cipher solver (e.g. for COPPA / kids tracks that visionOS refuses)
                     if let Ok(s) = self.webmusic_anon_stream(video_id, !best).await {
-                        return Ok((Source::WebMusic, s));
+                        return Ok((Source::WebMusicAnon, s));
                     }
                     // Nothing signed in to fall back on: the public player's answer stands.
                     return Err(if restricted { anyhow::anyhow!("sign in to play this song") } else { e });
@@ -2675,7 +2675,7 @@ impl Backend {
                 }
                 // Try anonymous WebMusic cipher solver before falling back to yt-dlp even if an account is present
                 if let Ok(s) = self.webmusic_anon_stream(video_id, !best).await {
-                    return Ok((Source::WebMusic, s));
+                    return Ok((Source::WebMusicAnon, s));
                 }
                 Ok((Source::YtDlp, self.resolve_from(Source::YtDlp, video_id, stream::Format::Aac, None).await?))
             }
@@ -2750,6 +2750,7 @@ impl Backend {
                     webmusic::Audio::Feed(feed) => self.feed_stream(feed).await?,
                 }
             }
+            Source::WebMusicAnon => self.webmusic_anon_stream(video_id, format == stream::Format::Opus).await?,
             Source::Feed => {
                 let session = self.api.account().ok_or_else(|| anyhow::anyhow!("signed out"))?;
                 let feed = session.feed(&self.http(), &self.jsc, video_id).await?.ok_or_else(|| anyhow::anyhow!("not an RSS podcast episode"))?;
@@ -3309,6 +3310,8 @@ enum Source {
     /// The visionOS player's HLS segments: where its file URLs are cut off at 1 MiB.
     VisionOsHls,
     WebMusic,
+    /// Anonymous WebMusic cipher solver fallback (e.g. for COPPA / kids tracks).
+    WebMusicAnon,
     /// An RSS podcast episode's file, which the web player finds without Premium.
     Feed,
     YtDlp,
