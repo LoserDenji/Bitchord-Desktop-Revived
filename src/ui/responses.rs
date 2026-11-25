@@ -373,9 +373,10 @@ impl App {
                 self.loading = false;
             }
             Resp::SeedTaste { history, liked } => {
-                // Only ever once (see `seed_from`); what plays here takes over from here.
+                // Once per account (see `seed_from`); what plays here takes over from
+                // here.
                 self.listening.seed_from(history, liked);
-                self.listening.store(self.backend.data_dir());
+                self.store_listening();
                 self.rebuild_home_rows();
             }
             Resp::RecoRows(rows) => self.reco.land(rows),
@@ -514,7 +515,7 @@ impl App {
                         // what autoplay served sits out of recommendations a while, so
                         // the next one doesn't hand it straight back
                         self.listening.note_reco(&tracks);
-                        self.listening.store(self.backend.data_dir());
+                        self.store_listening();
                     }
                 }
                 let was_at_end = self.queue.add_radio(&seed, tracks);
@@ -1000,6 +1001,26 @@ impl App {
     /// Signed in or out: what belonged to the last account goes, and the new one's home,
     /// library and likes load.
     fn on_logged_in(&mut self, v: bool, now: f64) {
+        // The listening is the account's own: what was listened to as the last one (or
+        // signed out) stays that scope's, and the new scope's store takes over — fresh
+        // for an account's first sign-in here, so its own history and likes seed the
+        // taste (the ask below), never the last account's. The taste-grown rows go with
+        // the account they grew from, and grow anew from this store — at once, not on
+        // the next paced ask.
+        let scope = self.backend.listening_scope();
+        if scope != self.listening_scope {
+            self.store_listening();
+            self.listening = crate::listening::Listening::load(self.backend.data_dir(), scope.as_deref());
+            self.listening_scope = scope;
+            self.reco = Default::default();
+            self.reco_asked = None;
+            self.discover.clear();
+            self.all_time_hits.clear();
+            self.community.clear();
+            self.live_shows.clear();
+            self.videos_for_you.clear();
+            self.rebuild_home_rows();
+        }
         // An Undo made meanwhile was the last account's: it isn't sent as this one.
         self.undo = None;
         self.logged_in = v;
@@ -1042,7 +1063,8 @@ impl App {
             self.request_library();
             self.request_liked(false);
             self.backend.request(Req::Account);
-            // The taste starts from the account's own history and likes, once.
+            // The taste starts from this account's own history and likes, its first
+            // sign-in here (the store above is its own).
             if !self.listening.seeded {
                 self.backend.request(Req::SeedTaste);
             }

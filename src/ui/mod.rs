@@ -617,6 +617,10 @@ pub struct App {
     /// What was played, skipped, banned and liked, kept between launches — the
     /// signal Home's local rows and recommendation rows grow from.
     listening: crate::listening::Listening,
+    /// Which account's (or the signed-out) store `listening` is: the one-way key of
+    /// the signed-in session it was loaded for, swapped with it at each sign-in and
+    /// sign-out (see `responses.rs`), so the writes land in that scope's own file.
+    listening_scope: Option<String>,
     /// The song being watched for its event, and how much of it has actually played
     /// (pauses and buffering don't count), for [`App::watch_listening`].
     watched: Option<Watched>,
@@ -1137,6 +1141,7 @@ impl App {
             crate::transfer::Transfer::new(backend.data_dir(), Arc::new(move || b.wake()))
         };
         let data_dir = backend.data_dir().to_owned();
+        let listening_scope = backend.listening_scope();
         let mut app = Self {
             backend,
             audio,
@@ -1243,7 +1248,8 @@ impl App {
             skip_streak: 0,
             recoveries: 0,
             autoplay: get("autoplay").is_none_or(|v| v == "1"),
-            listening: crate::listening::Listening::load(&data_dir),
+            listening: crate::listening::Listening::load(&data_dir, listening_scope.as_deref()),
+            listening_scope,
             watched: None,
             watched_frame: 0.0,
             normalize: get("normalize").map_or_else(Default::default, |v| crate::audio::Normalize::from_key(&v)),
@@ -1540,8 +1546,8 @@ impl App {
             app.queue_open = true;
         }
         jam::dev_hooks(&mut app);
-        // First launch with an account: the taste starts from the account's history
-        // and likes (see `Resp::SeedTaste`); what plays here takes over from there.
+        // An account's first launch here: its taste starts from its own history and
+        // likes (see `Resp::SeedTaste`); what plays here takes over from there.
         if app.logged_in && !app.listening.seeded {
             app.backend.request(Req::SeedTaste);
         }
@@ -1550,6 +1556,13 @@ impl App {
         app.set_crossfade();
         app.set_eq();
         app
+    }
+
+    /// Write the listening to its own scope's store, off the UI thread (see
+    /// `listening_scope`): every place the store changes calls this, so none has to
+    /// know which account's file is current.
+    fn store_listening(&self) {
+        self.listening.store(self.backend.data_dir(), self.listening_scope.as_deref());
     }
 
     // ---------------------------------------------------------------- navigation

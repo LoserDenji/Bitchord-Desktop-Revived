@@ -249,6 +249,17 @@ impl Session {
         self.login == other.login
     }
 
+    /// A one-way key for the signed-in Google account, for telling one account's
+    /// listening store apart from another's: the SAPISID cookie names the account and
+    /// outlives Google's rotation of the rest (the `Authorization` scheme is built
+    /// from the same family), and only its hash is used, so the credential itself
+    /// never reaches a file name. `None` with none of the family present — a session
+    /// like that can't sign requests either.
+    pub fn scope_key(&self) -> Option<String> {
+        let sid = ["SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID"].into_iter().find_map(|c| self.get(c))?;
+        Some(Sha1::digest(sid).iter().map(|b| format!("{b:02x}")).collect())
+    }
+
     async fn post(&self, http: &reqwest::Client, origin: &str, endpoint: &str, client: (&str, &str, &str), body: Value) -> anyhow::Result<Value> {
         let (number, version, ua) = client;
         let req = http
@@ -501,6 +512,19 @@ mod tests {
         assert!(!Session::new("SID=a; SAPISID=k".into(), 0, None).same_login(&s));
         let loaded: Session = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
         assert!(!loaded.same_login(&s));
+    }
+
+    #[test]
+    fn the_scope_key_names_the_account_not_the_credential() {
+        let s = Session::new("SID=a; SAPISID=k; __Secure-3PAPISID=three".into(), 0, None);
+        // The key follows the SAPISID whatever the rest of the cookie does, so
+        // Google's rotations don't re-file a listener's listening.
+        let rotated = s.updated(["SID=other; Domain=.youtube.com"]).unwrap();
+        assert_eq!(rotated.scope_key(), s.scope_key());
+        assert_ne!(s.scope_key(), Session::new("SID=a; SAPISID=other".into(), 0, None).scope_key());
+        // One-way: the cookie's value never shows up in the key.
+        assert_eq!(s.scope_key().unwrap().find('k'), None);
+        assert_eq!(Session::new("SID=a".into(), 0, None).scope_key(), None);
     }
 
     #[test]

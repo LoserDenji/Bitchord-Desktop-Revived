@@ -98,7 +98,7 @@ impl App {
             }
         }
         if store {
-            self.listening.store(self.backend.data_dir());
+            self.store_listening();
         }
         self.lists.set_liked(tracks, like);
     }

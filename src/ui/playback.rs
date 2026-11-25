@@ -248,7 +248,7 @@ impl App {
         if let Some(w) = self.watched.take() {
             let started = w.started.unwrap_or_else(crate::listening::unix_now);
             self.listening.note_left(w.track, started, w.played);
-            self.listening.store(self.backend.data_dir());
+            self.store_listening();
         }
         if let Some(c) = current {
             self.watched = Some(Watched { track: c, started: None, played: 0.0 });

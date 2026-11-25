@@ -3265,6 +3265,13 @@ impl Backend {
     pub fn is_logged_in(&self) -> bool {
         self.api.account().is_some()
     }
+
+    /// Which signed-in Google account the listening store belongs to — the one-way
+    /// key of the session's SAPISID cookie, `None` signed out: what was listened to
+    /// is kept per account, and signed out has its own store (see `listening.rs`).
+    pub fn listening_scope(&self) -> Option<String> {
+        self.api.account().and_then(|a| a.scope_key())
+    }
 }
 
 /// Test instances (`YTM_BACKGROUND`) keep plays out of the account's history unless

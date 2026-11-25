@@ -68,7 +68,7 @@ impl App {
             }
             Action::NotRecommended(t) => {
                 self.listening.ban(&t.id);
-                self.listening.store(self.backend.data_dir());
+                self.store_listening();
                 self.toast(format!("\"{}\" won't be recommended", t.title));
             }
             Action::Open(Target::Album(id)) => self.go(Page::Album(id)),
