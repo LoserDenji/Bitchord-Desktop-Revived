@@ -245,13 +245,18 @@ impl App {
             }
             return;
         }
-        if let Some(w) = self.watched.take() {
-            let started = w.started.unwrap_or_else(crate::listening::unix_now);
-            self.listening.note_left(w.track, started, w.played);
+        if self.watched.is_some() {
+            self.settle_listening();
             self.store_listening();
         }
         if let Some(c) = current {
             self.watched = Some(Watched { track: c, started: None, played: 0.0 });
+        }
+    }
+
+    pub(super) fn settle_listening(&mut self) {
+        if let Some(w) = self.watched.take() {
+            self.listening.note_left(w.track, w.started.unwrap_or_else(crate::listening::unix_now), w.played);
         }
     }
 

@@ -1549,7 +1549,7 @@ impl App {
         // An account's first launch here: its taste starts from its own history and
         // likes (see `Resp::SeedTaste`); what plays here takes over from there.
         if app.logged_in && !app.listening.seeded {
-            app.backend.request(Req::SeedTaste);
+            app.request_for_listening(Req::SeedTaste);
         }
         app.rebuild_home_rows();
         app.audio.set_normalize(app.normalize);
@@ -1563,6 +1563,10 @@ impl App {
     /// know which account's file is current.
     fn store_listening(&self) {
         self.listening.store(self.backend.data_dir(), self.listening_scope.as_deref());
+    }
+
+    fn request_for_listening(&self, req: Req) {
+        self.backend.request_scoped(req, Some(self.listening_scope.clone()));
     }
 
     // ---------------------------------------------------------------- navigation

@@ -68,6 +68,9 @@ unicode-bidi = "0.3"
 # Cutting the tray menu's song line between letters a reader sees as one (tray.rs).
 unicode-segmentation = "1.13.3"
 
+[dev-dependencies]
+tempfile = "3.27.0"
+
 [target.'cfg(windows)'.dependencies]
 tempfile = "3.27.0"
 # Windows Credential Manager, for the Google and Spotify sign-ins.

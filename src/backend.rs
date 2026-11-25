@@ -390,6 +390,7 @@ pub struct Channels {
 }
 
 pub enum Resp {
+    ForListening(Option<String>, Box<Resp>),
     Home(ytm::HomePage),
     HomeMore(ytm::HomePage),
     QuickPicksMore { seed: String, tracks: Vec<Track> },
@@ -1123,6 +1124,10 @@ impl Backend {
     }
 
     pub fn request(&self, req: Req) {
+        self.request_scoped(req, None);
+    }
+
+    pub fn request_scoped(&self, req: Req, scope: Option<Option<String>>) {
         let (what, quiet) = (req.name(), req.quiet());
         let play_gen = match &req {
             Req::Play { generation, .. } => Some(*generation),
@@ -1140,6 +1145,9 @@ impl Backend {
         let this = self.clone();
         let t0 = std::time::Instant::now();
         let epoch = self.api.epoch();
+        if scope.as_ref().is_some_and(|s| *s != self.listening_scope()) {
+            return;
+        }
         let task = self.rt.spawn(async move {
             let r = this.handle(req).await;
             log::debug!("{what}: done in {:?}", t0.elapsed());
@@ -1176,6 +1184,10 @@ impl Backend {
                 !stale
             });
             if let Some(resp) = resp {
+                let resp = match scope {
+                    Some(scope) => Resp::ForListening(scope, Box::new(resp)),
+                    None => resp,
+                };
                 let _ = this.tx.send(resp);
                 this.wake();
             }

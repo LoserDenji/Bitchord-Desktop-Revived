@@ -7,10 +7,14 @@
 //! tells it what's current and playing, so what a song got of actual listening
 //! is a per-frame sum there, settled the moment the song stops being current.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::model::Track;
+
+// Each occupied path has one writer, and holds its latest requested snapshot.
+static PENDING: LazyLock<Mutex<HashMap<PathBuf, Arc<Vec<u8>>>>> = LazyLock::new(Default::default);
 
 /// One song played: what played, when it started, and how much of it actually did.
 /// The taste reads the timestamp (recent plays count more); the local rows read
@@ -295,8 +299,13 @@ impl Listening {
     /// Read the store for `account` from the data dir; missing or unreadable is an
     /// empty one (a fresh install, or an older version's file that didn't parse).
     pub fn load(dir: &Path, account: Option<&str>) -> Self {
+        let path = file(dir, account);
+        let pending = PENDING.lock().unwrap().get(&path).cloned();
+        if let Some(json) = pending {
+            return serde_json::from_slice(&json).unwrap_or_default();
+        }
         take_over(dir, account);
-        std::fs::read(file(dir, account))
+        std::fs::read(path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default()
@@ -305,23 +314,26 @@ impl Listening {
     /// Write it off the UI thread: a later write always lands, and a half-written
     /// file never shows (the `HomeCache::store` dance).
     pub fn store(&self, dir: &Path, account: Option<&str>) {
-        static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
-        let n = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let path = file(dir, account);
-        let json = serde_json::to_vec(self).unwrap_or_default();
+        let json = Arc::new(serde_json::to_vec(self).unwrap_or_default());
+        if PENDING.lock().unwrap().insert(path.clone(), json.clone()).is_some() {
+            return;
+        }
         std::thread::spawn(move || {
-            let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-            if *written > n {
-                return;
-            }
-            *written = n;
-            if let Some(parent) = path.parent() {
-                // A scope's first write can be the one that adopts the store.
-                let _ = std::fs::create_dir_all(parent);
-            }
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
             let tmp = path.with_extension("json.tmp");
-            let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+            let mut current = json;
+            loop {
+                if let Err(e) = std::fs::write(&tmp, current.as_slice()).and_then(|_| std::fs::rename(&tmp, &path)) {
+                    log::warn!("couldn't save listening history: {e}");
+                }
+                let mut pending = PENDING.lock().unwrap();
+                if Arc::ptr_eq(&current, &pending[&path]) {
+                    pending.remove(&path);
+                    break;
+                }
+                current = pending[&path].clone();
+            }
         });
     }
 }
@@ -511,6 +523,28 @@ mod tests {
         let back: Listening = serde_json::from_slice(&json).unwrap();
         assert_eq!(back.events.len(), 1);
         assert_eq!(back.events[0].track.thumbs[0].url, "https://example/t");
+    }
+
+    #[test]
+    fn rapid_scope_switches_keep_the_latest_snapshot_in_memory_and_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = Listening::default();
+        for n in 1..=16 {
+            history.note_left(song("a", "X", Some(200)), at(0.0), 90.0);
+            history.store(dir.path(), Some("a"));
+            if n == 1 {
+                history.store(dir.path(), None);
+            }
+            assert_eq!(Listening::load(dir.path(), Some("a")).events.len(), n);
+            assert_eq!(Listening::load(dir.path(), None).events.len(), 1);
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while PENDING.lock().unwrap().keys().any(|p| p.starts_with(dir.path())) {
+            assert!(std::time::Instant::now() < until, "writer did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(Listening::load(dir.path(), Some("a")).events.len(), 16);
+        assert_eq!(Listening::load(dir.path(), None).events.len(), 1);
     }
 
     #[test]
