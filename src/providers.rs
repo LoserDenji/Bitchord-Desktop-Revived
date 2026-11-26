@@ -49,6 +49,37 @@ pub struct Found {
     pub info: Info,
     /// The header the file itself is fetched with (the CDN's, not the search's).
     pub user_agent: &'static str,
+    pub selection: Selection,
+}
+
+/// The request that selected the file, independent of a later search or settings change.
+#[derive(Clone)]
+pub enum Selection {
+    Mono { server: Server, catalog: Catalog },
+    // The decrypted CDN path names the recording and the actual bitrate selected,
+    // including when the original lookup fell back to a different bitrate.
+    Saavn { url: String },
+}
+
+impl Selection {
+    pub async fn refresh(&self, http: &reqwest::Client, mono: &Monochrome) -> anyhow::Result<(String, Format, u64)> {
+        match self {
+            Self::Mono { server, catalog } => {
+                let found = mono.open_on(http, server, catalog).await
+                    .ok_or_else(|| anyhow::anyhow!("{} gave no stream for {}", server.name, catalog.id))?;
+                Ok((found.url, found.format, found.size))
+            }
+            Self::Saavn { url } => {
+                let (available, size) = there(http, url, JIOSAAVN_UA).await;
+                anyhow::ensure!(available, "JioSaavn's selected stream is unavailable");
+                Ok((url.clone(), saavn_format(), size))
+            }
+        }
+    }
+}
+
+fn saavn_format() -> Format {
+    Format::File { hint: "m4a", mime: Some("audio/mp4".to_owned()) }
 }
 
 /// A song in a provider's catalog, as its search returns it (Mochy's `CatalogTrack`).
@@ -579,7 +610,8 @@ impl JioSaavn {
             size,
             duration_ms,
         };
-        Ok(Some(Found { url, size, duration_ms, format: Format::File { hint: "m4a", mime: Some("audio/mp4".to_owned()) }, info, user_agent: JIOSAAVN_UA }))
+        let selection = Selection::Saavn { url: url.clone() };
+        Ok(Some(Found { url, size, duration_ms, format: saavn_format(), info, user_agent: JIOSAAVN_UA, selection }))
     }
 }
 
@@ -834,6 +866,10 @@ impl Monochrome {
         };
         log::info!("monochrome {}: \u{201c}{}\u{201d} by {}{}", server.name, catalog.title, catalog.artist, catalog.album.as_ref().map(|a| format!(" ({a})")).unwrap_or_default());
 
+        self.open_on(http, server, &catalog).await
+    }
+
+    async fn open_on(&self, http: &reqwest::Client, server: &Server, catalog: &Catalog) -> Option<Found> {
         // The head of the file: it should open as FLAC, and its STREAMINFO says how fine
         // it is. The relay finds the file on the first ask and hands back a link of its
         // own, which plays without the relay's header.
@@ -886,6 +922,7 @@ impl Monochrome {
             format: Format::File { hint: "flac", mime: Some("audio/flac".to_owned()) },
             info,
             user_agent: MONOCHROME_UA,
+            selection: Selection::Mono { server: server.clone(), catalog: catalog.clone() },
         })
         .map(|mut found| {
             if found.size == 0 {

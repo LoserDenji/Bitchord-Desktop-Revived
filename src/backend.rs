@@ -1933,7 +1933,7 @@ impl Backend {
             return Ok(());
         }
         log::debug!("prefetch {video_id}");
-        let shared = self.start_stream(&video_id, found?, true, meta.as_ref());
+        let shared = self.start_stream(&video_id, found?, true);
         if let Some((_, old)) = self.prefetched.lock().unwrap().replace((video_id, shared)) {
             old.cancel();
         }
@@ -2363,7 +2363,7 @@ impl Backend {
 
     async fn open_stream(&self, video_id: &str, prefetch: bool, track: Option<&Track>) -> anyhow::Result<Arc<Shared>> {
         let found = self.find_stream(video_id, track, prefetch).await?;
-        Ok(self.start_stream(video_id, found, prefetch, track))
+        Ok(self.start_stream(video_id, found, prefetch))
     }
 
     /// The saved download, a file of this computer's, or a stream URL to download from.
@@ -2381,7 +2381,7 @@ impl Backend {
         Ok(Found::Url(source, s))
     }
 
-    fn start_stream(&self, video_id: &str, found: Found, prefetch: bool, track: Option<&Track>) -> Arc<Shared> {
+    fn start_stream(&self, video_id: &str, found: Found, prefetch: bool) -> Arc<Shared> {
         let (source, s) = match found {
             Found::Saved(shared) => return shared,
             Found::Url(source, s) => (source, s),
@@ -2395,7 +2395,7 @@ impl Backend {
             (None, _) => log::info!("stream {video_id}: {} bytes {} from {source:?}", s.size, s.kind()),
         }
         let shared = s.buffer(prefetch);
-        let refresh = Some(self.refresher(source, video_id, s.format.clone(), track.cloned(), s.size));
+        let refresh = Some(self.refresher(source, video_id, s.format.clone(), s.size, s.selection));
         let (this, buffer) = (self.clone(), shared.clone());
         self.rt.spawn(async move {
             stream::download(this.http(), s.media, s.user_agent, buffer.clone(), refresh, s.ranging).await;
@@ -2410,18 +2410,30 @@ impl Backend {
     }
 
     /// Resolves a fresh URL from the same source and format, for a download that got a 403.
-    fn refresher(&self, source: Source, video_id: &str, format: stream::Format, track: Option<Track>, size: u64) -> stream::Refresh {
+    fn refresher(&self, source: Source, video_id: &str, format: stream::Format, size: u64, selection: Option<RefreshSelection>) -> stream::Refresh {
         let (this, id) = (self.clone(), video_id.to_owned());
         Arc::new(move || {
-            let (this, id, track) = (this.clone(), id.clone(), track.clone());
-            let format = format.clone();
+            let (this, id, format, selection) = (this.clone(), id.clone(), format.clone(), selection.clone());
             Box::pin(async move {
-                let s = this.resolve_from(source, &id, format.clone(), track.as_ref()).await?;
+                let (media, refreshed_format, refreshed_size) = match selection {
+                    Some(RefreshSelection::Provider(provider)) => {
+                        let (url, format, size) = provider.refresh(&this.http(), &this.monochrome).await?;
+                        (stream::Media::File(url), format, size)
+                    }
+                    Some(RefreshSelection::Addon(addon)) => {
+                        let s = addon.refresh(&this.http()).await?;
+                        (stream::Media::File(s.url), s.format, s.size)
+                    }
+                    None => {
+                        let s = this.resolve_from(source, &id, format.clone()).await?;
+                        (s.media, s.format, s.size)
+                    }
+                };
                 // The buffer is laid out for the format it started with.
-                anyhow::ensure!(s.format == format, "the stream changed format");
+                anyhow::ensure!(refreshed_format == format, "the stream changed format");
                 // A podcast host may put other ads in, which makes another file.
-                anyhow::ensure!(s.size == size, "the stream changed size");
-                Ok(s.media)
+                anyhow::ensure!(refreshed_size == size, "the stream changed size");
+                Ok(media)
             })
         })
     }
@@ -2451,7 +2463,7 @@ impl Backend {
             let current = self.current.clone();
             Arc::new(move || current.lock().unwrap().as_ref().map(|(_, s)| s.clone())) as stream::Ahead
         });
-        stream::download_behind(self.http(), s.media, s.user_agent, shared.clone(), Some(self.refresher(source, &t.id, s.format.clone(), None, s.size)), s.ranging, ahead).await;
+        stream::download_behind(self.http(), s.media, s.user_agent, shared.clone(), Some(self.refresher(source, &t.id, s.format.clone(), s.size, s.selection)), s.ranging, ahead).await;
         if let Some(e) = shared.error() {
             anyhow::bail!("{e}");
         }
@@ -2599,7 +2611,7 @@ impl Backend {
                         if sources.is_empty() {
                             continue;
                         }
-                        tokio::time::timeout(HIRES_WAIT, self.from_hires(&sources, track, prefetch)).await.ok().flatten().map(|s| (Source::HiRes, s))
+                        tokio::time::timeout(HIRES_WAIT, self.from_hires(&sources, track, prefetch, false)).await.ok().flatten().map(|s| (Source::HiRes, s))
                     }
                     MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                     MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
@@ -2645,7 +2657,7 @@ impl Backend {
         {
             // Premium plays Opus (774, ~256 kbps) where there is one; downloads stay AAC,
             // which saves as a tagged .m4a.
-            match self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }, None).await {
+            match self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }).await {
                 Ok(s) => return Ok((Source::WebMusic, s)),
                 // Not fatal: the usual 128 kbps stream still plays.
                 Err(e) => log::warn!("high quality stream failed for {video_id} ({e:#}); using standard quality"),
@@ -2654,14 +2666,14 @@ impl Backend {
         let opus = if best { stream::Format::Aac } else { stream::Format::Opus };
         // Downloads stay on the file stream: they're saved as the .m4a it is.
         if !best && self.visionos_hls.load(Ordering::Relaxed) {
-            match self.resolve_from(Source::VisionOsHls, video_id, stream::Format::Aac, None).await {
+            match self.resolve_from(Source::VisionOsHls, video_id, stream::Format::Aac).await {
                 Ok(s) => return Ok((Source::VisionOsHls, s)),
                 // The signed-in paths below take it.
                 Err(e) if needs_account(&e) => {}
                 Err(e) => log::warn!("HLS stream failed for {video_id} ({e:#}); trying the file stream"),
             }
         }
-        match self.resolve_from(Source::VisionOs, video_id, opus, None).await {
+        match self.resolve_from(Source::VisionOs, video_id, opus).await {
             Ok(s) => Ok((Source::VisionOs, s)),
             // Age-restricted or Premium-only songs need the signed-in players; any other
             // failure gets the same cascade, so one player's answer failing doesn't skip
@@ -2679,7 +2691,7 @@ impl Backend {
                     return Err(if restricted { anyhow::anyhow!("sign in to play this song") } else { e });
                 };
                 if self.is_premium(&session).await {
-                    match self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }, None).await {
+                    match self.resolve_from(Source::WebMusic, video_id, if best { stream::Format::Aac } else { stream::Format::Opus }).await {
                         Ok(s) => return Ok((Source::WebMusic, s)),
                         Err(e) => log::warn!("web music player failed ({e:#}); using yt-dlp"),
                     }
@@ -2690,7 +2702,7 @@ impl Backend {
                 if let Some(s) = self.rss_episode(&session, video_id).await? {
                     return Ok((Source::Feed, s));
                 }
-                Ok((Source::YtDlp, self.resolve_from(Source::YtDlp, video_id, stream::Format::Aac, None).await?))
+                Ok((Source::YtDlp, self.resolve_from(Source::YtDlp, video_id, stream::Format::Aac).await?))
             }
         }
     }
@@ -2712,7 +2724,7 @@ impl Backend {
     /// `format`: the container the caller needs (the visionOS player picks Opus or AAC
     /// from it; Premium's web player takes Opus to mean its 774, ~256 kbps, where there
     /// is one). The hi-res source re-resolves by searching for `track` again.
-    async fn resolve_from(&self, source: Source, video_id: &str, format: stream::Format, track: Option<&Track>) -> anyhow::Result<ResolvedStream> {
+    async fn resolve_from(&self, source: Source, video_id: &str, format: stream::Format) -> anyhow::Result<ResolvedStream> {
         let plain = |s: innertube::Stream, ua: &str| ResolvedStream {
             media: stream::Media::File(s.url),
             starts: None,
@@ -2724,13 +2736,14 @@ impl Backend {
             info: None,
             ranging: stream::Ranging::Query,
             data: None,
+            selection: None,
         };
         Ok(match source {
             Source::VisionOs => plain(self.visionos_stream(video_id, format == stream::Format::Opus).await?, innertube::UA),
             Source::VisionOsHls => {
                 let s = self.visionos_hls(video_id).await?;
                 let (starts, urls) = s.segments.into_iter().unzip();
-                ResolvedStream { media: stream::Media::Segments(urls), starts: Some(starts), size: 0, duration_ms: s.duration_ms, user_agent: innertube::UA.to_owned(), loudness_db: s.loudness_db, format: stream::Format::Aac, info: None, ranging: stream::Ranging::Query, data: None }
+                ResolvedStream { media: stream::Media::Segments(urls), starts: Some(starts), size: 0, duration_ms: s.duration_ms, user_agent: innertube::UA.to_owned(), loudness_db: s.loudness_db, format: stream::Format::Aac, info: None, ranging: stream::Ranging::Query, data: None, selection: None }
             }
             Source::WebMusic => {
                 let session = self.api.account().ok_or_else(|| anyhow::anyhow!("signed out"))?;
@@ -2750,18 +2763,9 @@ impl Backend {
                 // Cookies Google replaced while yt-dlp used the session.
                 self.api.keep(&session, s.replaced.iter().map(String::as_str));
                 // yt-dlp's JSON doesn't carry YouTube's loudness figure.
-                ResolvedStream { media: stream::Media::File(s.url), starts: None, size: s.size, duration_ms: s.duration_ms, user_agent: s.user_agent, loudness_db: None, format: stream::Format::Aac, info: None, ranging: stream::Ranging::Query, data: None }
+                ResolvedStream { media: stream::Media::File(s.url), starts: None, size: s.size, duration_ms: s.duration_ms, user_agent: s.user_agent, loudness_db: None, format: stream::Format::Aac, info: None, ranging: stream::Ranging::Query, data: None, selection: None }
             }
-            Source::HiRes => {
-                let track = track.ok_or_else(|| anyhow::anyhow!("no song to look up"))?;
-                let sources = self.hires.read().unwrap().clone();
-                anyhow::ensure!(!sources.is_empty(), "no hi-res source is set");
-                self.from_hires(&sources, track, false).await.ok_or_else(|| anyhow::anyhow!("no hi-res source has a copy"))?
-            }
-            Source::Provider => {
-                let track = track.ok_or_else(|| anyhow::anyhow!("no song to look up"))?;
-                self.from_providers_ordered(track).await.ok_or_else(|| anyhow::anyhow!("no music provider has a copy"))?
-            }
+            Source::HiRes | Source::Provider => anyhow::bail!("no source selection to refresh"),
         })
     }
 
@@ -2781,15 +2785,21 @@ impl Backend {
             info: None,
             ranging: stream::Ranging::Header,
             data: None,
+            selection: None,
         })
     }
 
     /// The listener's addons, searched together. Atmos leads when the preference is on,
     /// then hi-res/lossless; `None` when none of them has a copy (a miss, not a fault).
-    async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, prefetch: bool) -> Option<ResolvedStream> {
+    async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, prefetch: bool, upgrade: bool) -> Option<ResolvedStream> {
         let atmos = self.atmos.load(Ordering::Relaxed);
         let http = self.http();
-        let Some(found) = hires::find_all(&http, sources, track, atmos, prefetch).await else {
+        let found = if upgrade {
+            hires::find_finer(&http, sources, track, atmos, UPGRADE_WAIT).await
+        } else {
+            hires::find_all(&http, sources, track, atmos, prefetch).await
+        };
+        let Some(found) = found else {
             log::info!("hi-res: no copy of \"{}\" on {} source(s)", track.title, sources.len());
             return None;
         };
@@ -2804,6 +2814,7 @@ impl Backend {
             info: Some(found.info),
             ranging: stream::Ranging::Header,
             data: found.data,
+            selection: Some(RefreshSelection::Addon(found.selection)),
         })
     }
 
@@ -2819,30 +2830,6 @@ impl Backend {
     async fn from_jiosaavn(&self, track: &Track) -> Option<ResolvedStream> {
         let http = self.http();
         self.jiosaavn.find(&http, &providers::Query::of(track)).await.ok().flatten().map(provider_stream)
-    }
-
-    /// The first provider that holds `track`, in the order Settings › Music sources
-    /// lists them: the re-resolve a download whose URL expired takes.
-    async fn from_providers_ordered(&self, track: &Track) -> Option<ResolvedStream> {
-        // Snapshotted first: this future has to stay Send (a download's refresher calls it
-        // through resolve_from), and a for loop keeps its iterator expression's guard alive
-        // for the whole loop — over every await in the body.
-        let sources = self.sources.read().unwrap().clone();
-        for (kind, on) in sources {
-            if !on {
-                continue;
-            }
-            let found = match kind {
-                MusicSource::MonoServers => self.from_mono(providers::Which::Added, track).await,
-                MusicSource::Monochrome => self.from_mono(providers::Which::Builtin, track).await,
-                MusicSource::JioSaavn => self.from_jiosaavn(track).await,
-                _ => continue,
-            };
-            if found.is_some() {
-                return found;
-            }
-        }
-        None
     }
 
     /// A song's music video: YouTube's own pair (Premium), or a sure signed-out search
@@ -3051,7 +3038,7 @@ impl Backend {
                         if clients.is_empty() {
                             return None;
                         }
-                        tokio::time::timeout(UPGRADE_WAIT, this.from_hires(&clients, &track, false)).await.ok().flatten().map(|s| (Source::HiRes, s))
+                        this.from_hires(&clients, &track, false, true).await.map(|s| (Source::HiRes, s))
                     }
                     MusicSource::MonoServers => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                     MusicSource::Monochrome => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
@@ -3112,7 +3099,7 @@ impl Backend {
                 s.media,
                 s.user_agent,
                 shared.clone(),
-                Some(self.refresher(source, &video_id, s.format.clone(), Some(track.clone()), s.size)),
+                Some(self.refresher(source, &video_id, s.format.clone(), s.size, s.selection)),
                 s.ranging,
             ));
             shared
@@ -3136,30 +3123,34 @@ impl Backend {
         let (decoder, actual_pos, seekable) = match res {
             Ok(Ok(tuple)) => tuple,
             Ok(Err(e)) => {
+                shared.cancel();
                 log::warn!("failed to decode hi-res stream for {video_id} ({e:#}); continuing with standard quality");
                 return;
             }
             Err(e) => {
+                shared.cancel();
                 log::warn!("hi-res decoder task failed for {video_id} ({e:#}); continuing with standard quality");
                 return;
             }
         };
 
-        if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
-            shared.cancel();
-            return;
-        }
-        if self.reverted.lock().unwrap().contains(&video_id) {
+        // Keep the rung check, state update and audio command ordered together:
+        // another attempt may have installed a finer copy while this one decoded.
+        let mut current = self.current.lock().unwrap();
+        let reverted = self.reverted.lock().unwrap();
+        let still_finer = current.as_ref().is_some_and(|(id, playing)| {
+            *id == video_id && shared.info.as_ref().map_or(0, hires::Info::rung) > playing.info.as_ref().map_or(0, hires::Info::rung)
+        });
+        if !still_finer || self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation || reverted.contains(&video_id) {
             shared.cancel();
             return;
         }
 
-        *self.current.lock().unwrap() = Some((video_id, shared.clone()));
+        *current = Some((video_id, shared.clone()));
         if let Some(mut info) = shared.info.clone() {
             info.sample_rate = Some(rodio::Source::sample_rate(&decoder).get());
             info.channels = Some(rodio::Source::channels(&decoder).get() as u8);
             let _ = self.tx.send(Resp::AudioInfo { generation, info });
-            self.wake();
         }
         let _ = self.tx.send(Resp::StreamStats { generation, stats: stream::Stats::of(&shared, &decoder) });
         self.audio.send(AudioCmd::Upgrade {
@@ -3169,6 +3160,9 @@ impl Backend {
             at: actual_pos,
             seekable,
         });
+        drop(reverted);
+        drop(current);
+        self.wake();
     }
 
     /// Upgrade the active song if it isn't reverted: the swap is worth it only when
@@ -3397,7 +3391,14 @@ fn provider_stream(found: providers::Found) -> ResolvedStream {
         info: Some(found.info),
         ranging: stream::Ranging::Header,
         data: None,
+        selection: Some(RefreshSelection::Provider(found.selection)),
     }
+}
+
+#[derive(Clone)]
+enum RefreshSelection {
+    Provider(providers::Selection),
+    Addon(hires::Selection),
 }
 
 struct ResolvedStream {
@@ -3416,6 +3417,7 @@ struct ResolvedStream {
     ranging: stream::Ranging,
     /// Already-decoded audio (Dolby Atmos out of DASH): no download to run.
     data: Option<Vec<u8>>,
+    selection: Option<RefreshSelection>,
 }
 
 impl ResolvedStream {

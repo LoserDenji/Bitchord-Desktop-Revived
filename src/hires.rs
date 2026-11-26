@@ -169,6 +169,22 @@ pub struct Stream {
     pub info: Info,
     /// Already-decoded audio (Dolby Atmos out of DASH): no download to run.
     pub data: Option<Vec<u8>>,
+    pub selection: Selection,
+}
+
+/// The same addon request can return a fresh media URL without running another race.
+#[derive(Clone)]
+pub struct Selection {
+    client: Arc<Client>,
+    candidate: Candidate,
+    atmos: bool,
+}
+
+impl Selection {
+    pub async fn refresh(&self, http: &reqwest::Client) -> anyhow::Result<Stream> {
+        self.client.open(http, &self.candidate, self.atmos, false).await?
+            .ok_or_else(|| anyhow::anyhow!("the selected addon has no stream"))
+    }
 }
 
 /// One addon server, with its manifest and recent searches remembered.
@@ -290,7 +306,7 @@ impl Client {
 
     /// The playable stream behind one `picks` row, probed for its size (Dolby Atmos
     /// included). A miss is `None`, not a fault.
-    pub async fn open(&self, http: &reqwest::Client, candidate: &Candidate, atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
+    async fn open(self: &Arc<Self>, http: &reqwest::Client, candidate: &Candidate, atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
         let manifest = self.manifest(http).await?;
         self.stream(http, &manifest, candidate, atmos, prefetch).await
     }
@@ -332,7 +348,8 @@ impl Client {
         Ok(found)
     }
 
-    async fn stream(&self, http: &reqwest::Client, manifest: &Manifest, candidate: &Candidate, atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
+    async fn stream(self: &Arc<Self>, http: &reqwest::Client, manifest: &Manifest, candidate: &Candidate, atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
+        let selection = Selection { client: self.clone(), candidate: candidate.clone(), atmos };
         let mut params = manifest.defaults.clone();
         params.push(("quality".to_owned(), manifest.quality.clone()));
         if atmos {
@@ -385,7 +402,7 @@ impl Client {
                 size,
                 duration_ms: audio.duration_ms,
             };
-            return Ok(Some(Stream { url: stated_url, size, duration_ms: audio.duration_ms, format: Format::Pcm { rate: audio.sample_rate, channels: 2 }, info, data: Some(audio.pcm) }));
+            return Ok(Some(Stream { url: stated_url, size, duration_ms: audio.duration_ms, format: Format::Pcm { rate: audio.sample_rate, channels: 2 }, info, data: Some(audio.pcm), selection }));
         }
         let Some(format) = format_of(&codec, container, mime, &stated_url, &label) else {
             anyhow::bail!("the addon's format isn't playable ({codec} {container} {mime})");
@@ -421,7 +438,7 @@ impl Client {
             size,
             duration_ms,
         };
-        Ok(Some(Stream { url: stated_url, size, duration_ms, format, info, data: None }))
+        Ok(Some(Stream { url: stated_url, size, duration_ms, format, info, data: None, selection }))
     }
 
     fn endpoint(&self, segments: &[&str], params: &[(String, String)]) -> anyhow::Result<String> {
@@ -528,7 +545,7 @@ fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
     Ok(url)
 }
 
-/// The best copy across every source. Each source searches and opens its stream at the
+/// The playback lookup. Each source searches and opens its stream at the
 /// same time; with Atmos off the first usable (lossless) answer plays, and with Atmos on
 /// the first Atmos rendition wins — otherwise the first lossless copy is held for a short
 /// grace while the rest answer, then played. `None` means no source has a copy (YouTube plays).
@@ -539,6 +556,16 @@ fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
 /// Bitchord addon as Monochrome too would only put the same questions to servers that
 /// answered as Bitchord addons.
 pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool) -> Option<Stream> {
+    find(http, sources, track, atmos, prefetch, None).await
+}
+
+/// Compare the playable answers from the addons within the upgrade budget. Keep
+/// the best answer already received if another addon is still resolving at the deadline.
+pub async fn find_finer(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, budget: Duration) -> Option<Stream> {
+    find(http, sources, track, atmos, false, Some(tokio::time::Instant::now() + budget)).await
+}
+
+async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool, upgrade_deadline: Option<tokio::time::Instant>) -> Option<Stream> {
     let mut tasks = tokio::task::JoinSet::new();
     for client in sources.iter().cloned() {
         let (http, track) = (http.clone(), track.clone());
@@ -554,16 +581,14 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
     let started = tokio::time::Instant::now();
     let mut held_at: Option<tokio::time::Instant> = None;
     loop {
-        // A lossless copy in hand: give Atmos a bounded grace, then play what's held
-        // rather than stall on a slow source (the playback path has its own outer wait).
-        let joined = match held_at {
-            Some(t) => {
-                let deadline = (t + ATMOS_GRACE).min(started + RACE_BUDGET);
-                match tokio::time::timeout_at(deadline, tasks.join_next()).await {
-                    Ok(joined) => joined,
-                    Err(_) => break,
-                }
-            }
+        // Playback gives Atmos a short grace; an upgrade can keep comparing until
+        // its full lookup budget expires because audio is already playing.
+        let deadline = upgrade_deadline.or_else(|| held_at.map(|t| (t + ATMOS_GRACE).min(started + RACE_BUDGET)));
+        let joined = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+                Ok(joined) => joined,
+                Err(_) => break,
+            },
             None => tasks.join_next().await,
         };
         let Some(joined) = joined else { break };
@@ -581,6 +606,12 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
                 return Some(s);
             }
             Ok(Some(s)) if usable(&s) => {
+                if upgrade_deadline.is_some() {
+                    if lossless.as_ref().is_none_or(|best| s.info.rung() > best.info.rung()) {
+                        lossless = Some(s);
+                    }
+                    continue;
+                }
                 if !atmos {
                     log::info!("hi-res: \"{}\" plays {} ({})", track.title, s.info.badge(), client.host());
                     tasks.abort_all();
@@ -602,7 +633,7 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
 
 /// The best playable row of one source: Atmos rows first when the preference is on (a
 /// miss leaves the first lossless copy held), then the plain rows.
-async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candidate], atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
+async fn open_first(http: &reqwest::Client, client: &Arc<Client>, candidates: &[Candidate], atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
     use futures_util::StreamExt;
     let rounds: &[bool] = if atmos { &[true, false] } else { &[false] };
     let mut held: Option<Stream> = None;
@@ -1188,6 +1219,65 @@ async fn content_size(http: &reqwest::Client, url: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn addon_upgrade_chooses_a_later_finer_copy_and_refreshes_it() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (release_fine, fine_ready) = tokio::sync::watch::channel(0);
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut fine_ready = fine_ready.clone();
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(&mut socket);
+                    let mut request = String::new();
+                    if reader.read_line(&mut request).await.unwrap_or(0) == 0 { return; }
+                    let mut header = String::new();
+                    while reader.read_line(&mut header).await.unwrap() > 0 && header != "\r\n" {
+                        header.clear();
+                    }
+                    let path = request.split_whitespace().nth(1).unwrap().split('?').next().unwrap();
+                    let body = match path {
+                        "/fast/manifest.json" | "/fine/manifest.json" => r#"{"id":"test"}"#,
+                        "/fast/search" | "/fine/search" => r#"{"tracks":[{"id":"song","title":"Test Song","artist":"Test Artist"}]}"#,
+                        "/fast/stream/song" => r#"{"url":"https://example.invalid/fast.flac","format":"flac","size":100,"bitDepth":16}"#,
+                        "/fine/stream/song" => {
+                            let stage = *fine_ready.wait_for(|stage| *stage > 0).await.unwrap();
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                            if stage == 1 {
+                                r#"{"url":"https://example.invalid/fine.flac","format":"flac","size":200,"bitDepth":24}"#
+                            } else {
+                                r#"{"url":"https://example.invalid/fine.flac?refreshed","format":"flac","size":200,"bitDepth":24}"#
+                            }
+                        }
+                        _ => panic!("unexpected addon request: {path}"),
+                    };
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        let addons = ["fast", "fine"].map(|name| Arc::new(Client::new(&format!("{base}/{name}")).unwrap()));
+        let track = crate::model::Track {
+            title: "Test Song".into(),
+            artists: vec![crate::model::Link { name: "Test Artist".into(), id: None }],
+            ..Default::default()
+        };
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let playback = tokio::time::timeout(Duration::from_secs(5), find_all(&http, &addons, &track, false, false)).await.unwrap().unwrap();
+        assert_eq!(playback.info.rung(), 1);
+        release_fine.send(1).unwrap();
+        let upgrade = find_finer(&http, &addons, &track, false, Duration::from_secs(5)).await.unwrap();
+        assert_eq!(upgrade.info.rung(), 2);
+        assert_eq!(upgrade.url, "https://example.invalid/fine.flac");
+        release_fine.send(2).unwrap();
+        let refreshed = upgrade.selection.refresh(&http).await.unwrap();
+        assert_eq!(refreshed.url, "https://example.invalid/fine.flac?refreshed");
+        assert_eq!(refreshed.size, upgrade.size);
+        server.abort();
+    }
 
     #[test]
     fn base_is_normalized_like_the_addon_protocol() {
