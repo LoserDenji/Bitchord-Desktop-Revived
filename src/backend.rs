@@ -2611,7 +2611,7 @@ impl Backend {
                         if sources.is_empty() {
                             continue;
                         }
-                        tokio::time::timeout(HIRES_WAIT, self.from_hires(&sources, track, prefetch, false)).await.ok().flatten().map(|s| (Source::HiRes, s))
+                        self.from_hires(&sources, track, prefetch, false).await.map(|s| (Source::HiRes, s))
                     }
                     MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                     MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
@@ -2797,7 +2797,8 @@ impl Backend {
         let found = if upgrade {
             hires::find_finer(&http, sources, track, atmos, UPGRADE_WAIT).await
         } else {
-            hires::find_all(&http, sources, track, atmos, prefetch).await
+            let deadline = tokio::time::Instant::now() + HIRES_WAIT;
+            hires::find_all(&http, sources, track, atmos, prefetch, deadline).await
         };
         let Some(found) = found else {
             log::info!("hi-res: no copy of \"{}\" on {} source(s)", track.title, sources.len());
@@ -3000,6 +3001,12 @@ impl Backend {
             return;
         }
 
+        // YouTube has no Info (rung 0); Atmos (rung 3) has no possible upgrade.
+        let playing_rung = self.current.lock().unwrap().as_ref().and_then(|(_, s)| s.info.as_ref()).map(hires::Info::rung).unwrap_or(0);
+        if playing_rung == 3 {
+            return;
+        }
+
         let _ = self.tx.send(Resp::UpgradingQuality { generation, active: true });
         self.wake();
         struct UpgradeGuard<'a> {
@@ -3015,10 +3022,6 @@ impl Backend {
         let _guard = UpgradeGuard { backend: self, generation };
 
         let started = std::time::Instant::now();
-        // The tier playing now: a swap is worth its restart only for a strictly higher
-        // one. YouTube's own stream carries no `Info` (rung 0, lossy); a provider or
-        // addon copy carries the one it answered with.
-        let playing_rung = self.current.lock().unwrap().as_ref().and_then(|(_, s)| s.info.as_ref()).map(hires::Info::rung).unwrap_or(0);
         // Every source is asked at once, the way `resolve` races them, and each keeps
         // its own `UPGRADE_WAIT`: a slow addon must not keep a faster provider from
         // answering, and the song keeps playing from what's already running while

@@ -55,7 +55,6 @@ const STREAM_TRIES: usize = 3;
 /// With Atmos on, a lossless copy already in hand waits this long for an Atmos answer
 /// before it plays; the whole race also stays inside the playback path's own budget.
 const ATMOS_GRACE: Duration = Duration::from_secs(5);
-const RACE_BUDGET: Duration = Duration::from_secs(19);
 /// The size given a stream whose addon and server don't say how big it is: room enough
 /// for ranged reads while the download finds the real end.
 pub const UNKNOWN_SIZE: u64 = 512 * 1024 * 1024;
@@ -555,17 +554,17 @@ fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
 /// so its Monochrome turn comes from its own row in the source list — asking every
 /// Bitchord addon as Monochrome too would only put the same questions to servers that
 /// answered as Bitchord addons.
-pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool) -> Option<Stream> {
-    find(http, sources, track, atmos, prefetch, None).await
+pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool, deadline: tokio::time::Instant) -> Option<Stream> {
+    find(http, sources, track, atmos, prefetch, deadline, false).await
 }
 
 /// Compare the playable answers from the addons within the upgrade budget. Keep
 /// the best answer already received if another addon is still resolving at the deadline.
 pub async fn find_finer(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, budget: Duration) -> Option<Stream> {
-    find(http, sources, track, atmos, false, Some(tokio::time::Instant::now() + budget)).await
+    find(http, sources, track, atmos, false, tokio::time::Instant::now() + budget, true).await
 }
 
-async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool, upgrade_deadline: Option<tokio::time::Instant>) -> Option<Stream> {
+async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool, deadline: tokio::time::Instant, upgrade: bool) -> Option<Stream> {
     let mut tasks = tokio::task::JoinSet::new();
     for client in sources.iter().cloned() {
         let (http, track) = (http.clone(), track.clone());
@@ -578,18 +577,14 @@ async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::mo
         });
     }
     let mut lossless: Option<Stream> = None;
-    let started = tokio::time::Instant::now();
     let mut held_at: Option<tokio::time::Instant> = None;
     loop {
         // Playback gives Atmos a short grace; an upgrade can keep comparing until
         // its full lookup budget expires because audio is already playing.
-        let deadline = upgrade_deadline.or_else(|| held_at.map(|t| (t + ATMOS_GRACE).min(started + RACE_BUDGET)));
-        let joined = match deadline {
-            Some(deadline) => match tokio::time::timeout_at(deadline, tasks.join_next()).await {
-                Ok(joined) => joined,
-                Err(_) => break,
-            },
-            None => tasks.join_next().await,
+        let deadline = held_at.map_or(deadline, |t| (t + ATMOS_GRACE).min(deadline));
+        let joined = match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+            Ok(joined) => joined,
+            Err(_) => break,
         };
         let Some(joined) = joined else { break };
         let (client, found) = match joined {
@@ -606,7 +601,7 @@ async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::mo
                 return Some(s);
             }
             Ok(Some(s)) if usable(&s) => {
-                if upgrade_deadline.is_some() {
+                if upgrade {
                     if lossless.as_ref().is_none_or(|best| s.info.rung() > best.info.rung()) {
                         lossless = Some(s);
                     }
@@ -1246,10 +1241,10 @@ mod tests {
                         "/fine/stream/song" => {
                             let stage = *fine_ready.wait_for(|stage| *stage > 0).await.unwrap();
                             tokio::time::sleep(Duration::from_millis(150)).await;
-                            if stage == 1 {
-                                r#"{"url":"https://example.invalid/fine.flac","format":"flac","size":200,"bitDepth":24}"#
-                            } else {
-                                r#"{"url":"https://example.invalid/fine.flac?refreshed","format":"flac","size":200,"bitDepth":24}"#
+                            match stage {
+                                1 => r#"{"url":"https://example.invalid/fine.flac","format":"flac","size":200,"bitDepth":24}"#,
+                                2 => r#"{"url":"https://example.invalid/fine.flac?refreshed","format":"flac","size":200,"bitDepth":24}"#,
+                                _ => r#"{"url":"https://example.invalid/atmos.m4a","format":"m4a","size":300,"audioMode":"Atmos"}"#,
                             }
                         }
                         _ => panic!("unexpected addon request: {path}"),
@@ -1266,8 +1261,13 @@ mod tests {
             ..Default::default()
         };
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let playback = tokio::time::timeout(Duration::from_secs(5), find_all(&http, &addons, &track, false, false)).await.unwrap().unwrap();
+        let playback = find_all(&http, &addons, &track, false, false, tokio::time::Instant::now() + Duration::from_secs(5)).await.unwrap();
         assert_eq!(playback.info.rung(), 1);
+        // The slow addon stays pending past playback's cutoff. Keep the plain copy
+        // even though its Atmos grace has not elapsed.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let playback = tokio::time::timeout(Duration::from_secs(3), find_all(&http, &addons, &track, true, false, deadline)).await.unwrap().unwrap();
+        assert_eq!(playback.url, "https://example.invalid/fast.flac");
         release_fine.send(1).unwrap();
         let upgrade = find_finer(&http, &addons, &track, false, Duration::from_secs(5)).await.unwrap();
         assert_eq!(upgrade.info.rung(), 2);
@@ -1276,6 +1276,9 @@ mod tests {
         let refreshed = upgrade.selection.refresh(&http).await.unwrap();
         assert_eq!(refreshed.url, "https://example.invalid/fine.flac?refreshed");
         assert_eq!(refreshed.size, upgrade.size);
+        release_fine.send(3).unwrap();
+        let playback = find_all(&http, &addons, &track, true, false, tokio::time::Instant::now() + Duration::from_secs(5)).await.unwrap();
+        assert_eq!(playback.info.rung(), 3);
         server.abort();
     }
 
