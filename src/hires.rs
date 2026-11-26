@@ -56,10 +56,6 @@ const STREAM_TRIES: usize = 3;
 /// before it plays; the whole race also stays inside the playback path's own budget.
 const ATMOS_GRACE: Duration = Duration::from_secs(5);
 const RACE_BUDGET: Duration = Duration::from_secs(19);
-/// The Monochrome try runs beside the addon round-trips, capped on its own: a server
-/// that speaks both protocols answers its search in a moment, and one that doesn't
-/// speaks only the addon protocol, whose search and `/stream` it needs the seconds for.
-const MONO_FIRST: Duration = Duration::from_secs(5);
 /// The size given a stream whose addon and server don't say how big it is: room enough
 /// for ranged reads while the download finds the real end.
 pub const UNKNOWN_SIZE: u64 = 512 * 1024 * 1024;
@@ -520,47 +516,20 @@ fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
 /// same time; with Atmos off the first usable (lossless) answer plays, and with Atmos on
 /// the first Atmos rendition wins — otherwise the first lossless copy is held for a short
 /// grace while the rest answer, then played. `None` means no source has a copy (YouTube plays).
+///
+/// This speaks only the addon protocol. A link that also runs Monochrome is added to the
+/// Monochrome list too (Settings › Add a custom provider asks a pasted link both ways),
+/// so its Monochrome turn comes from its own row in the source list — asking every
+/// Bitchord addon as Monochrome too would only put the same questions to servers that
+/// answered as Bitchord addons.
 pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool) -> Option<Stream> {
     let mut tasks = tokio::task::JoinSet::new();
     for client in sources.iter().cloned() {
         let (http, track) = (http.clone(), track.clone());
         tasks.spawn(async move {
-            // Both protocols the link might speak are asked at once. Asked Monochrome
-            // first, a pure-addon server spent up to MONO_FIRST waiting on a probe that
-            // could only ever say no before its addon round-trips even began — that
-            // serialize is most of why one song's lossless copy took twenty seconds
-            // here where the Android app's straight search-plus-stream takes five.
-            // Whichever protocol answers with a copy first wins; a miss on one still
-            // waits on the other, and a hanging Monochrome stays capped.
-            let (mono_http, mono_client, mono_track) = (http.clone(), client.clone(), track.clone());
-            let mono = async move {
-                tokio::time::timeout(MONO_FIRST, find_on_monochrome(&mono_http, &mono_client, &mono_track)).await.ok().flatten()
-            };
-            let (addon_http, addon_client) = (http.clone(), client.clone());
-            let addon = async move {
-                match addon_client.picks(&addon_http, &track, atmos).await {
-                    Ok(picks) => open_first(&addon_http, &addon_client, &picks, atmos, prefetch).await,
-                    Err(e) => Err(e),
-                }
-            };
-            tokio::pin!(mono, addon);
-            use futures_util::future::Either;
-            let found = match futures_util::future::select(&mut mono, &mut addon).await {
-                Either::Left((Some(s), _)) => Ok(Some(s)),
-                // Monochrome said no (or ran out of its window): the addon protocol is
-                // the answer this link was pasted for.
-                Either::Left((None, a)) => a.await,
-                // The addon answered with a copy: Monochrome's FLAC can't be better,
-                // so waiting on it would only hold the play back.
-                Either::Right((Ok(Some(s)), _)) => Ok(Some(s)),
-                // The addon missed or faulted: Monochrome may still hold the song.
-                Either::Right((found, m)) => match m.await {
-                    Some(s) => Ok(Some(s)),
-                    None => match found {
-                        Err(e) => Err(e),
-                        _ => Ok(None),
-                    },
-                },
+            let found = match client.picks(&http, &track, atmos).await {
+                Ok(picks) => open_first(&http, &client, &picks, atmos, prefetch).await,
+                Err(e) => Err(e),
             };
             (client, found)
         });
@@ -653,23 +622,6 @@ async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candi
 /// The chain is lossless or Atmos; a lossy copy from an addon isn't better than YouTube.
 fn usable(stream: &Stream) -> bool {
     stream.info.atmos || stream.info.lossless()
-}
-
-/// The Monochrome protocol asked alongside the addon round-trips against the same
-/// link: an addon server that speaks both answers with whichever copy comes first
-/// (which carries loudness data the addon protocol doesn't). `None` leaves the addon
-/// protocol to it.
-async fn find_on_monochrome(http: &reqwest::Client, client: &Client, track: &crate::model::Track) -> Option<Stream> {
-    let query = crate::providers::Query::of(track);
-    let server = crate::providers::Server {
-        url: client.base.clone(),
-        kind: crate::providers::Kind::Streamer,
-        name: client.host(),
-    };
-    // resolve_on handles its own caching (separate from the addon search cache) and
-    // identifying the kind if needed.
-    let found = crate::providers::Monochrome::resolve_addon_as_mono(http, &server, &query).await?;
-    Some(Stream { url: found.url, size: found.size, duration_ms: found.duration_ms, format: found.format, info: found.info, data: None })
 }
 
 /// Health-checks a pasted link, saved or not. A link that isn't http(s) can't be a

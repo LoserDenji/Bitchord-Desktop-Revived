@@ -371,29 +371,9 @@ impl Outage {
     }
 }
 
-/// The lookup memory every Monochrome path shares. The addon lookups run outside any
-/// one instance (`resolve_addon_as_mono` has no `self` to come through), and the next
-/// play of a song shouldn't re-search whichever path found it.
+/// The lookup memory every Monochrome path shares: the next play of a song shouldn't
+/// re-search whichever path found it.
 static MEMORY: LazyLock<Mutex<Memory>> = LazyLock::new(|| Mutex::new(Memory::default()));
-
-/// A server's kind, once it has answered as one. Asking costs a test search (or two,
-/// for a relay behind a streamer address), and the kind doesn't change while it runs.
-static IDENTIFIED: LazyLock<Mutex<HashMap<String, Kind>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// The kind `base` answers as, remembered after the first ask; `fallback` while it
-/// hasn't answered as anything.
-async fn identified_kind(http: &reqwest::Client, base: &str, fallback: Kind) -> Kind {
-    if let Some(kind) = IDENTIFIED.lock().unwrap().get(base) {
-        return *kind;
-    }
-    match identify(http, base).await {
-        Some(kind) => {
-            IDENTIFIED.lock().unwrap().insert(base.to_owned(), kind);
-            kind
-        }
-        None => fallback,
-    }
-}
 
 async fn get_text(http: &reqwest::Client, url: &str, headers: &[(&str, &str)]) -> anyhow::Result<String> {
     let response = http.get(url).timeout(REQUEST_TIMEOUT).headers(headers_of(headers)).send().await?;
@@ -810,105 +790,6 @@ impl Monochrome {
             }
         }
         Ok(None)
-    }
-
-    /// Same as `find`, but without outage checks or per-server miss caching — used by
-    /// addons that *might* speak the Monochrome protocol so a single bad minute doesn't
-    /// poison the Bitchord addon cache. If this also returns `None`, the caller falls
-    /// through to the addon protocol (search + `/stream`).
-    pub async fn resolve_addon_as_mono(http: &reqwest::Client, server: &Server, query: &Query<'_>) -> Option<Found> {
-        // The kind is remembered after the first ask (a failure falls back as before,
-        // and asks again next song — a bad minute doesn't stick).
-        let identified = identified_kind(http, &server.url, server.kind).await;
-        let try_kinds = match identified {
-            Kind::Relay => vec![Kind::Relay],
-            Kind::Streamer => vec![Kind::Streamer, Kind::Relay],
-        };
-        for k in try_kinds {
-            let server = Server { url: server.url.clone(), kind: k, name: server.name.clone() };
-            if let Some(found) = Self::resolve_one_direct(http, &server, query).await {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    /// The bare “try this server and query” path with no outage/skip bookkeeping —
-    /// `resolve_addon_as_mono` uses it after identifying the endpoint’s kind.
-    async fn resolve_one_direct(http: &reqwest::Client, server: &Server, query: &Query<'_>) -> Option<Found> {
-        let key = format!("{}|{}", server.url, query.cache_key());
-        // The shared memory: a hit here skips the search, the same as the instance path.
-        let cached = {
-            let memory = MEMORY.lock().unwrap();
-            (memory.missed(&key), memory.hit(&key))
-        };
-        let catalog = match cached.1 {
-            Some(c) => c,
-            None => {
-                let search = format!("{} {}", query.first_artist(), core(query.title)).trim().to_owned();
-                let url = search_url(server, &search);
-                let text = match get_text(http, &url, &search_headers(server.kind)).await {
-                    Ok(text) => text,
-                    Err(_) => return None,
-                };
-                let tracks = tracks_in(server.kind, &text);
-                let Some(best) = ranked(query, tracks).into_iter().next() else { return None };
-                drop(text);
-                MEMORY.lock().unwrap().remember(&key, best.clone());
-                best
-            }
-        };
-        log::info!("monochrome {}: “{}” by {}{}", server.name, catalog.title, catalog.artist, catalog.album.as_ref().map(|a| format!(" ({a})")).unwrap_or_default());
-
-        // The head of the file: it should open as FLAC, and its STREAMINFO says how fine
-        // it is. The relay finds the file on the first ask and hands back a link of its
-        // own, which plays without the relay's header.
-        let ask = stream_ask(server, &catalog.id);
-        let head_headers: Vec<(&str, &str)> = match server.kind {
-            Kind::Streamer => vec![("User-Agent", MONOCHROME_UA)],
-            Kind::Relay => vec![("User-Agent", MONOCHROME_UA), ("X-Relay-Client", RELAY_CLIENT)],
-        };
-        let (total, head, response_headers) = match head_bytes(http, &ask, &head_headers).await {
-            Ok(answer) => answer,
-            Err(_) => return None,
-        };
-        let url = match server.kind {
-            Kind::Streamer => ask.clone(),
-            Kind::Relay => match response_headers.get("X-Relay-Stream").and_then(|v| v.to_str().ok()).map(str::to_owned) {
-                Some(link) if link.starts_with(&format!("{}/", origin_of(&server.url))) => link,
-                _ => return None,
-            },
-        };
-        let Some((bits, rate)) = flac_info(&head) else {
-            return None;
-        };
-        let hi_res = bits > 16 || rate > 48_000;
-        let duration_ms = catalog.duration_ms.unwrap_or(0);
-        let info = Info {
-            source: "Monochrome".to_owned(),
-            host: host_of(&url),
-            codec: "FLAC".to_owned(),
-            quality: if hi_res { "Hi-Res FLAC".to_owned() } else { "FLAC".to_owned() },
-            bitrate_kbps: None,
-            sample_rate: Some(rate),
-            bit_depth: Some(bits),
-            channels: None,
-            atmos: false,
-            size: total.unwrap_or(0),
-            duration_ms,
-        };
-        let mut found = Found {
-            url,
-            size: total.unwrap_or(0),
-            duration_ms,
-            format: Format::File { hint: "flac", mime: Some("audio/flac".to_owned()) },
-            info,
-            user_agent: MONOCHROME_UA,
-        };
-        if found.size == 0 {
-            found.size = SIZE_PLACEHOLDER;
-        }
-        Some(found)
     }
 
     async fn resolve_on(&self, http: &reqwest::Client, server: &Server, query: &Query<'_>) -> Option<Found> {
