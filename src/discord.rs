@@ -397,7 +397,7 @@ impl Presence {
 }
 
 /// The quality line Discord carries: the tier, the bitrate and the sample rate —
-/// "Lossless - 1411 kbps - 44.1 kHz" — each part dropped when the stream didn't
+/// "Lossless · 1411 kbps · 44.1 kHz" — each part dropped when the stream didn't
 /// say it.
 pub(crate) fn quality_summary(tier: &str, bitrate_kbps: Option<u32>, sample_rate: Option<u32>) -> String {
     let rate = sample_rate.filter(|hz| *hz > 0).map(|hz| {
@@ -409,7 +409,7 @@ pub(crate) fn quality_summary(tier: &str, bitrate_kbps: Option<u32>, sample_rate
         }
     });
     let bitrate = bitrate_kbps.filter(|k| *k > 0).map(|k| format!("{k} kbps"));
-    [Some(tier.to_owned()), bitrate, rate].into_iter().flatten().collect::<Vec<_>>().join(" - ")
+    [Some(tier.to_owned()), bitrate, rate].into_iter().flatten().collect::<Vec<_>>().join(" · ")
 }
 
 pub(crate) fn web_url(value: &str, limit: usize) -> Option<String> {
@@ -577,8 +577,8 @@ impl Card {
         .unwrap_or(self.name())
     }
 
-    /// What the member list shows beside its music note: the status line, then " - " and
-    /// the other of lines 1 and 2, as in "Believer - Imagine Dragons".
+    /// What the member list shows beside its music note: the status line, then " · " and
+    /// the other of lines 1 and 2, as in "Believer · Imagine Dragons".
     pub fn member_text(&self) -> String {
         let other = match self.status {
             Status::Name => None,
@@ -586,7 +586,7 @@ impl Card {
             Status::Line2 => self.lines[0].as_ref(),
         };
         match other {
-            Some(l) => format!("{} - {}", self.status_text(), l.text),
+            Some(l) => format!("{} · {}", self.status_text(), l.text),
             None => self.status_text().to_owned(),
         }
     }
@@ -829,7 +829,7 @@ mod tests {
         assert_eq!(c.times, Some((1000, Some(200_000))));
         assert_eq!(c.buttons, vec![("Listen on YouTube Music".into(), SONG_URL.to_owned()), (PROJECT_BUTTON.into(), PROJECT_URL.to_owned())]);
         assert_eq!(c.status_text(), "Imagine Dragons");
-        assert_eq!(c.member_text(), "Imagine Dragons - Believer");
+        assert_eq!(c.member_text(), "Imagine Dragons · Believer");
         assert_eq!(c.name(), APP_NAME);
     }
 
@@ -900,7 +900,7 @@ mod tests {
         let c = card(&p, &prefs);
         assert_eq!(c.lines[1].as_ref().map(|l| l.text.as_str()), Some("Paused"));
         assert_eq!(c.lines[1].clone().and_then(|l| l.url), None);
-        assert_eq!(c.member_text(), "Believer - Paused");
+        assert_eq!(c.member_text(), "Believer · Paused");
         // The song and the quality mark stay where they were.
         assert_eq!(c.lines[0].as_ref().map(|l| l.text.as_str()), Some("Believer"));
         assert!(c.lines[2].is_some());
@@ -965,11 +965,11 @@ mod tests {
 
     #[test]
     fn quality_summary_says_the_tier_the_bitrate_and_the_rate() {
-        assert_eq!(quality_summary("Lossless", Some(1411), Some(44_100)), "Lossless - 1411 kbps - 44.1 kHz");
-        assert_eq!(quality_summary("High", Some(133), Some(48_000)), "High - 133 kbps - 48 kHz");
-        assert_eq!(quality_summary("Hi-Res Lossless", Some(2304), Some(96_000)), "Hi-Res Lossless - 2304 kbps - 96 kHz");
-        assert_eq!(quality_summary("High", None, Some(22_050)), "High - 22.05 kHz");
-        assert_eq!(quality_summary("High", Some(256), None), "High - 256 kbps");
+        assert_eq!(quality_summary("Lossless", Some(1411), Some(44_100)), "Lossless · 1411 kbps · 44.1 kHz");
+        assert_eq!(quality_summary("High", Some(133), Some(48_000)), "High · 133 kbps · 48 kHz");
+        assert_eq!(quality_summary("Hi-Res Lossless", Some(2304), Some(96_000)), "Hi-Res Lossless · 2304 kbps · 96 kHz");
+        assert_eq!(quality_summary("High", None, Some(22_050)), "High · 22.05 kHz");
+        assert_eq!(quality_summary("High", Some(256), None), "High · 256 kbps");
     }
 
     #[test]
