@@ -1045,11 +1045,10 @@ impl App {
         storage: Option<&dyn eframe::Storage>,
     ) -> Self {
         let get = |k: &str| storage.and_then(|s| s.get_string(k));
-        // Dev hook: YTM_FONT=<font name> tries a font without saving it.
-        // The default font is JetBrains Mono Nerd — a developer-grade monospace that
-        // carries the Nerd Font glyph set. The listener's saved choice (or "Theme's
-        // font" if they cleared it) takes over once they pick one.
-        theme::set_font_choice(&dev_var("YTM_FONT").map(str::to_owned).or_else(|| get("font")).unwrap_or_else(|| "JetBrains Mono Nerd".to_owned()));
+        // Dev hook: YTM_FONT=<font name> tries a font without saving it. Nothing is
+        // forced on a fresh install: the theme's own font shows until the listener
+        // picks one.
+        theme::set_font_choice(&dev_var("YTM_FONT").map(str::to_owned).or_else(|| get("font")).unwrap_or_default());
         let discord_enabled = get("discord_enabled").is_none_or(|v| v == "1");
         let discord_prefs = get("discord")
             .and_then(|s| crate::discord::Prefs::from_saved(&s))
