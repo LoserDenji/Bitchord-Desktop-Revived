@@ -1998,17 +1998,16 @@ impl App {
     /// one of them (it lives in Appearance now, not Lyrics). `ctx` re-styles the
     /// animation time; `None` at launch, where the first frame styles it anyway.
     pub(super) fn apply_visual(&mut self, ctx: Option<&egui::Context>) {
-        use crate::preset::BgMode;
         use crate::theme::VisualPreset;
         match self.visual {
             VisualPreset::Custom => {}
-            // Older computers: no animation, blur or glow anywhere, and Now playing's
-            // backdrop a flat colour instead of the blurred-cover shader. Playback
-            // itself is untouched.
+            // Older computers: no animation or glow anywhere. The backdrop stays the
+            // theme's own — held still by the no-animation settings — and its heavy
+            // blur with it. Playback itself is untouched.
             VisualPreset::Barebones => {
                 self.anim_bg = false;
                 self.reactive_bg = false;
-                self.disable_blur = true;
+                self.disable_blur = false;
                 self.animated_covers = false;
                 self.ambient_light = false;
                 self.reduce_motion = true;
@@ -2016,7 +2015,7 @@ impl App {
                 self.lyric_fx = false;
                 self.lyric_prefs.glow_boost = false;
                 self.lyric_light = true;
-                self.np_bg = Some(BgMode::AccentGradient);
+                self.np_bg = None;
                 self.lyrics_full_rate = false;
             }
             VisualPreset::High => {

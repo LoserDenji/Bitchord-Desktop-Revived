@@ -3375,7 +3375,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
         // The row and its bundle: picking one sets every setting it owns, and changing
         // any of those by hand (here or in Lyrics, for the refresh rate) returns to
         // Custom, so the label never claims a bundle that isn't in force.
-        setting_row(ui, "Visual preset", Some("A bundle of the visual settings below. Barebones turns every animation, blur and glow off for older computers — Now playing becomes a flat backdrop with a still cover, and the lyrics take the Light renderer; nothing about playback changes. High visual turns them all on. Changing any of these settings afterwards returns to Custom."), |ui| {
+        setting_row(ui, "Visual preset", Some("A bundle of the visual settings below. Barebones turns every animation and glow off for older computers — Now playing keeps the theme's own backdrop, held still, and the lyrics take the Light renderer; nothing about playback changes. High visual turns them all on. Changing any of these settings afterwards returns to Custom."), |ui| {
             let mut pick = None;
             let btn = dropdown_button(ui, app.visual.label(), 160.0, "Visual preset");
             egui::Popup::menu(&btn).show(|ui| {
