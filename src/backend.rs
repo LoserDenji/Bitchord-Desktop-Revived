@@ -850,8 +850,13 @@ const RADIO_FETCH: usize = 50;
 const RADIO_MIN: usize = 4;
 /// How long playback waits for the hi-res sources before falling back to YouTube. Every
 /// source is asked at once and a miss is quick (the addon answers its search fast); this
-/// bounds the ones that are slow, not the ones that don't have the track.
-const HIRES_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// bounds the ones that are slow, not the ones that don't have the track. It matches the
+/// Android app's five-second play budget: past that the listener is better on YouTube
+/// with an upgrade in the background than waiting on a cold addon resolve.
+const HIRES_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+/// The background upgrade runs with sound already playing, so it can afford the slower
+/// window a cold addon resolve needs; nothing waits on this but the swap itself.
+const UPGRADE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Clone)]
 pub struct Backend {
@@ -3021,9 +3026,9 @@ impl Backend {
         let _guard = UpgradeGuard { backend: self, generation };
 
         let started = std::time::Instant::now();
-        // Each source gets its own `HIRES_WAIT`, the way `resolve` does: a slow addon
-        // shouldn't keep a faster provider from answering, and the song keeps playing
-        // from YouTube while this runs.
+        // Each source gets its own `UPGRADE_WAIT`, the way `resolve` does with its
+        // tighter one: a slow addon shouldn't keep a faster provider from answering,
+        // and the song keeps playing from YouTube while this runs.
         let mut found: Option<(Source, ResolvedStream)> = None;
         for (kind, on) in sources {
             if !on || kind == MusicSource::Youtube {
@@ -3042,15 +3047,15 @@ impl Backend {
                     if hires_clients.is_empty() {
                         continue;
                     }
-                    tokio::time::timeout(HIRES_WAIT, self.from_hires(&hires_clients, &track, false))
+                    tokio::time::timeout(UPGRADE_WAIT, self.from_hires(&hires_clients, &track, false))
                         .await
                         .ok()
                         .flatten()
                         .map(|s| (Source::HiRes, s))
                 }
-                MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::JioSaavn => tokio::time::timeout(HIRES_WAIT, self.from_jiosaavn(&track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                MusicSource::MonoServers => tokio::time::timeout(UPGRADE_WAIT, self.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                MusicSource::Monochrome => tokio::time::timeout(UPGRADE_WAIT, self.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                MusicSource::JioSaavn => tokio::time::timeout(UPGRADE_WAIT, self.from_jiosaavn(&track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                 MusicSource::Youtube => continue,
             };
             if let Some(s) = s {
