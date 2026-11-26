@@ -857,6 +857,11 @@ const HIRES_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 /// The background upgrade runs with sound already playing, so it can afford the slower
 /// window a cold addon resolve needs; nothing waits on this but the swap itself.
 const UPGRADE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// The addon upgrade's own window, past the provider one: a manifest rendition is
+/// fetched whole on this pass, and a self-hosted addon paces that download for
+/// its origin's sake (three lanes, not six — see `dash`), so the window has to
+/// cover a ~35 MB rendition walked at that pace, not just a cold resolve.
+const UPGRADE_ADDON_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 
 #[derive(Clone)]
 pub struct Backend {
@@ -2198,7 +2203,7 @@ impl Backend {
                 if let Some((this, id, Some(track))) = upgrade.filter(|_| audio.status.wanted_gen.load(Ordering::Relaxed) == generation) {
                     let rt = this.rt.clone();
                     rt.spawn(async move {
-                        this.try_upgrade_hires(id, generation, track).await;
+                        this.try_upgrade_hires(id, generation, track, false).await;
                     });
                 }
             }
@@ -2611,7 +2616,7 @@ impl Backend {
                         if sources.is_empty() {
                             continue;
                         }
-                        self.from_hires(&sources, track, prefetch, false).await.map(|s| (Source::HiRes, s))
+                        self.from_hires(&sources, track, prefetch, false, false).await.map(|s| (Source::HiRes, s))
                     }
                     MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                     MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
@@ -2791,11 +2796,12 @@ impl Backend {
 
     /// The listener's addons, searched together. Atmos leads when the preference is on,
     /// then hi-res/lossless; `None` when none of them has a copy (a miss, not a fault).
-    async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, prefetch: bool, upgrade: bool) -> Option<ResolvedStream> {
+    /// `fresh` (the manual upgrade ask) skips the addons' cached stream answers.
+    async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, prefetch: bool, upgrade: bool, fresh: bool) -> Option<ResolvedStream> {
         let atmos = self.atmos.load(Ordering::Relaxed);
         let http = self.http();
         let found = if upgrade {
-            hires::find_finer(&http, sources, track, atmos, UPGRADE_WAIT).await
+            hires::find_finer(&http, sources, track, atmos, UPGRADE_ADDON_WAIT, fresh).await
         } else {
             let deadline = tokio::time::Instant::now() + HIRES_WAIT;
             hires::find_all(&http, sources, track, atmos, prefetch, deadline).await
@@ -2986,7 +2992,7 @@ impl Backend {
     /// late (a cold addon resolve) still counts; the swap happens only when the best
     /// answer sits strictly above the tier already playing, so a same-rung answer never
     /// restarts the download for nothing.
-    async fn try_upgrade_hires(&self, video_id: String, generation: u64, track: Track) {
+    async fn try_upgrade_hires(&self, video_id: String, generation: u64, track: Track, fresh: bool) {
         if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
             return;
         }
@@ -3023,7 +3029,8 @@ impl Backend {
 
         let started = std::time::Instant::now();
         // Every source is asked at once, the way `resolve` races them, and each keeps
-        // its own `UPGRADE_WAIT`: a slow addon must not keep a faster provider from
+        // its own wait (the addons' `UPGRADE_ADDON_WAIT`, the providers'
+        // `UPGRADE_WAIT`): a slow addon must not keep a faster provider from
         // answering, and the song keeps playing from what's already running while
         // this waits. The first answer isn't taken as final — a slower source can hold
         // a finer copy (a hi-res addon resolving cold while a provider's MP3 answered
@@ -3041,7 +3048,7 @@ impl Backend {
                         if clients.is_empty() {
                             return None;
                         }
-                        this.from_hires(&clients, &track, false, true).await.map(|s| (Source::HiRes, s))
+                        this.from_hires(&clients, &track, false, true, fresh).await.map(|s| (Source::HiRes, s))
                     }
                     MusicSource::MonoServers => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                     MusicSource::Monochrome => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
@@ -3180,7 +3187,11 @@ impl Backend {
         let Some(track) = track else { return };
         let this = self.clone();
         self.rt.spawn(async move {
-            this.try_upgrade_hires(video_id, generation, track).await;
+            // The listener asked by hand, so the addons' cached stream answers are
+            // skipped: a retry must be able to recover from an addon that answered
+            // while one of its backends was unavailable (the Android app's
+            // `clearCompletedTrackCalls` for its manual upgrade).
+            this.try_upgrade_hires(video_id, generation, track, true).await;
         });
     }
 

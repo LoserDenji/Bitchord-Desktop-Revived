@@ -18,7 +18,16 @@ use symphonia::core::probe::Hint;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// A rendition bigger than this isn't a song; don't hold it in memory.
 const MAX_BYTES: usize = 96 * 1024 * 1024;
-const PARALLEL: usize = 6;
+/// Segments fetched at once from a CDN: the file is spread wide and six lanes
+/// fill it fast.
+const CDN_PARALLEL: usize = 6;
+/// Segments fetched at once from a host that serves the audio itself. An addon
+/// that proxies its own renditions fronts a small upstream pool, and six lanes
+/// of ~900 KB segments is exactly the burst it exhausts under — the Android
+/// app's player asks for one segment at a time and those addons hold up. Three
+/// lanes measure a full ~35 MB rendition in well under half a minute on such a
+/// host while still leaving it room to breathe.
+const ADDON_PARALLEL: usize = 3;
 
 pub struct Audio {
     /// Interleaved stereo 16-bit PCM, little-endian.
@@ -36,13 +45,18 @@ pub struct Audio {
 pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audio> {
     let text = http.get(mpd_url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?.error_for_status().map_err(wire)?.text().await.map_err(wire)?;
     let plan = Plan::parse(&text, mpd_url)?;
+    // The host the rendition comes from decides the pace. A CDN spreads a file
+    // wide enough for parallel lanes; an addon serving its own audio (the MPD
+    // host matching the addon host that handed it out) is carrying every byte
+    // through one small origin and gets the gentle walk.
+    let lanes = if serves_own_audio(mpd_url) { ADDON_PARALLEL } else { CDN_PARALLEL };
     let mut bytes = Vec::new();
     let init = get(http, &plan.init).await?;
     bytes.extend_from_slice(&init);
     let mut stream = futures_util::stream::iter(plan.segments.into_iter().map(|u| {
         let http = http.clone();
         async move { get(&http, &u).await }
-    })).buffered(PARALLEL);
+    })).buffered(lanes);
     while let Some(part) = stream.next().await {
         let part = part?;
         anyhow::ensure!(bytes.len() + part.len() <= MAX_BYTES, "the rendition is too large");
@@ -78,8 +92,51 @@ pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audi
 }
 
 async fn get(http: &reqwest::Client, url: &str) -> anyhow::Result<bytes::Bytes> {
-    let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?.error_for_status().map_err(wire)?;
-    r.bytes().await.map_err(wire)
+    // A segment 502/503/504 is the origin having a moment (an addon proxying its
+    // own audio, mid-rendition): asked again at once it usually answers, and one
+    // retry turns a whole-rendition failure back into the two-second delay it
+    // should have been. Anything else, or a second refusal, is a real failure.
+    let mut attempt = 0;
+    loop {
+        let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?;
+        let status = r.status();
+        if matches!(status.as_u16(), 502..=504) && attempt == 0 {
+            attempt += 1;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
+        return r.error_for_status().map_err(wire)?.bytes().await.map_err(wire);
+    }
+}
+
+/// Whether the MPD's host is one of the configured addons' own: such a host is
+/// proxying the audio through the origin it also answers API calls on, rather
+/// than handing out a CDN's links (the Tidal-hosted manifests the same addons
+/// sometimes serve). The set is fed by `hires::note_media_host` as links are
+/// seen, so a first-ever rendition from an unknown host takes the CDN pace —
+/// right for the common case, and every later one walks gently.
+fn serves_own_audio(mpd_url: &str) -> bool {
+    let Some(host) = url::Url::parse(mpd_url).ok().and_then(|u| u.host_str().map(str::to_owned)) else { return false; };
+    MEDIA_HOSTS.lock().unwrap_or_else(|p| p.into_inner()).contains(&host)
+}
+
+/// The hosts addons have been seen serving their own renditions from. Shared
+/// process-wide because the addon list lives in the backend and `dash::fetch`
+/// only ever sees one URL.
+static MEDIA_HOSTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Record that an addon handed out a rendition served from its own host, so
+/// `dash::fetch` paces that host's downloads accordingly. Called by the addon
+/// client as each stream answer arrives.
+pub fn note_media_host(addon_base: &str, rendition_url: &str) {
+    let (Some(addon), Some(media)) = (url::Url::parse(addon_base).ok(), url::Url::parse(rendition_url).ok()) else { return };
+    let (Some(addon_host), Some(media_host)) = (addon.host_str(), media.host_str()) else { return };
+    if addon_host == media_host {
+        let mut hosts = MEDIA_HOSTS.lock().unwrap_or_else(|p| p.into_inner());
+        if !hosts.iter().any(|h| h == media_host) {
+            hosts.push(media_host.to_owned());
+        }
+    }
 }
 
 /// Manifest and segment URLs can carry a token: a failure names its kind, never the
