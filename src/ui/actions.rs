@@ -315,9 +315,12 @@ impl App {
                 let any_upgrade_source = addons_ready || self.mono_servers_on || self.monochrome || self.jiosaavn;
                 if !any_upgrade_source {
                     self.toast("No music source is set to upgrade from. Add one in Settings \u{203a} Music sources first.");
-                } else if self.audio_info.is_none() && self.audio.status.wanted_gen.load(std::sync::atomic::Ordering::Relaxed) == self.generation {
-                    // Ask for the stream that is playing, in place. The backend reports the
-                    // attempt either way, so nothing here claims success on its own.
+                } else if self.audio.status.wanted_gen.load(std::sync::atomic::Ordering::Relaxed) == self.generation {
+                    // Ask for the stream that is playing, in place — whatever tier it
+                    // holds: the backend swaps only for a strictly finer answer, so this
+                    // is also how a Lossless copy chases a Hi-Res one. The backend
+                    // reports the attempt either way, so nothing here claims success on
+                    // its own.
                     self.upgrade_asked = true;
                     self.backend.try_upgrade_active(self.generation, self.playing_track().cloned());
                 } else {

@@ -113,6 +113,22 @@ impl Info {
         }
     }
 
+    /// The tier as a rung of one ladder: lossy < Lossless < Hi-Res < Atmos. A background
+    /// upgrade is worth the swap only when the copy it found sits strictly above the one
+    /// playing — a same-rung answer (an addon's FLAC for a provider's FLAC, say) would
+    /// only restart the download and stutter the song for no gain the ear can hear.
+    pub fn rung(&self) -> u8 {
+        if self.atmos {
+            3
+        } else if self.hires() {
+            2
+        } else if self.lossless() {
+            1
+        } else {
+            0
+        }
+    }
+
 }
 
 /// What a source's Test says, ported from BitChord's `SourceHealth`
@@ -1320,6 +1336,34 @@ mod tests {
         assert_eq!(info("MP3", None, None).badge(), "High");
         let atmos = Info { atmos: true, ..info("EAC3", None, None) };
         assert_eq!(atmos.badge(), "Dolby Atmos");
+    }
+
+    #[test]
+    fn the_ladder_climbs_one_way() {
+        // The rung a background upgrade compares against: lossy < Lossless < Hi-Res <
+        // Atmos, strictly, so a same-tier answer never restarts the download.
+        let info = |codec: &str, rate: Option<u32>, bits: Option<u32>| Info {
+            source: "Addon".into(),
+            host: "example".into(),
+            codec: codec.into(),
+            quality: String::new(),
+            bitrate_kbps: None,
+            sample_rate: rate,
+            bit_depth: bits,
+            channels: None,
+            atmos: false,
+            size: 1,
+            duration_ms: 1,
+        };
+        let mp3 = info("MP3", None, None);
+        let flac = info("FLAC", Some(44_100), Some(16));
+        let hires = info("FLAC", Some(96_000), Some(24));
+        let atmos = Info { atmos: true, ..info("EAC3", None, None) };
+        assert!(mp3.rung() < flac.rung());
+        assert!(flac.rung() < hires.rung());
+        assert!(hires.rung() < atmos.rung());
+        assert_eq!(mp3.rung(), 0);
+        assert_eq!(flac.rung(), flac.rung()); // a same-tier answer is the same rung
     }
 
     #[test]

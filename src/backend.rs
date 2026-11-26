@@ -2147,9 +2147,11 @@ impl Backend {
         // addon is asked to better the copy they picked.
         let local = crate::local::is_local(listed);
         let report = (report && !local && self.is_logged_in() && reports_plays()).then(|| (self.clone(), video_id.to_owned()));
-        // A stream that started from YouTube can still be upgraded in place once an
-        // addon answers (see `try_upgrade_hires`); one that already plays hi-res can't.
-        let upgrade = (!local && shared2.info.is_none()).then(|| (self.clone(), video_id.to_owned(), meta));
+        // A stream that started from YouTube or a provider can still be upgraded in
+        // place once a finer source answers (see `try_upgrade_hires`): the swap is
+        // gated on a strictly higher tier, so a stream already at the top of the
+        // ladder is never re-asked.
+        let upgrade = (!local).then(|| (self.clone(), video_id.to_owned(), meta));
         let open = move || -> anyhow::Result<crate::audio::TrackDecoder> {
             let mut d = stream::decoder(shared.clone(), seek)?;
             if seek {
@@ -2988,11 +2990,14 @@ impl Backend {
         self.disable_direct.store(on, Ordering::Relaxed);
     }
 
-    /// After playback starts on YouTube, opportunistically look for a hi-res
-    /// rendition from the configured music sources (addons, Monochrome servers the
-    /// listener added, Monochrome's built-in streamer, or JioSaavn) and upgrade the
-    /// playing stream in place. Mirrors `resolve`'s source loop so the same sources
-    /// that would have played directly can still take over after the fact.
+    /// After playback starts, opportunistically look for a finer copy from the
+    /// configured music sources (addons, Monochrome servers the listener added,
+    /// Monochrome's built-in streamer, or JioSaavn) and upgrade the playing stream in
+    /// place — whether playback started on YouTube or on a provider's own copy. Every
+    /// source is asked at once and every answer is waited for, so a copy that answers
+    /// late (a cold addon resolve) still counts; the swap happens only when the best
+    /// answer sits strictly above the tier already playing, so a same-rung answer never
+    /// restarts the download for nothing.
     async fn try_upgrade_hires(&self, video_id: String, generation: u64, track: Track) {
         if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
             return;
@@ -3000,12 +3005,9 @@ impl Backend {
         if self.reverted.lock().unwrap().contains(&video_id) {
             return;
         }
-        // Snapshot the configured sources and the addon clients together: the
-        // upgrade can come from any of them, in the order Settings › Music sources
-        // lists them. YouTube is the fallback the user is already playing, so it's
-        // skipped here.
+        // Snapshot the configured sources together: the upgrade can come from any of
+        // them. YouTube is the fallback the user is already playing, so it's skipped.
         let sources = self.sources.read().unwrap().clone();
-        let hires_clients = self.hires.read().unwrap().clone();
         let has_upgrade_path = sources.iter().any(|(kind, on)| *on && *kind != MusicSource::Youtube);
         if !has_upgrade_path {
             return;
@@ -3026,51 +3028,64 @@ impl Backend {
         let _guard = UpgradeGuard { backend: self, generation };
 
         let started = std::time::Instant::now();
-        // Each source gets its own `UPGRADE_WAIT`, the way `resolve` does with its
-        // tighter one: a slow addon shouldn't keep a faster provider from answering,
-        // and the song keeps playing from YouTube while this runs.
-        let mut found: Option<(Source, ResolvedStream)> = None;
+        // The tier playing now: a swap is worth its restart only for a strictly higher
+        // one. YouTube's own stream carries no `Info` (rung 0, lossy); a provider or
+        // addon copy carries the one it answered with.
+        let playing_rung = self.current.lock().unwrap().as_ref().and_then(|(_, s)| s.info.as_ref()).map(hires::Info::rung).unwrap_or(0);
+        // Every source is asked at once, the way `resolve` races them, and each keeps
+        // its own `UPGRADE_WAIT`: a slow addon must not keep a faster provider from
+        // answering, and the song keeps playing from what's already running while
+        // this waits. The first answer isn't taken as final — a slower source can hold
+        // a finer copy (a hi-res addon resolving cold while a provider's MP3 answered
+        // in a moment), so every answer is collected and the best rung wins.
+        let mut asks = tokio::task::JoinSet::new();
         for (kind, on) in sources {
             if !on || kind == MusicSource::Youtube {
                 continue;
             }
-            if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
-                log::debug!("hi-res upgrade for {video_id} dropped: generation changed");
-                return;
-            }
-            if self.reverted.lock().unwrap().contains(&video_id) {
-                log::debug!("hi-res upgrade for {video_id} dropped: reverted to YouTube");
-                return;
-            }
-            let s = match kind {
-                MusicSource::Addons => {
-                    if hires_clients.is_empty() {
-                        continue;
+            let (this, track) = (self.clone(), track.clone());
+            asks.spawn(async move {
+                let found = match kind {
+                    MusicSource::Addons => {
+                        let clients = this.hires.read().unwrap().clone();
+                        if clients.is_empty() {
+                            return None;
+                        }
+                        tokio::time::timeout(UPGRADE_WAIT, this.from_hires(&clients, &track, false)).await.ok().flatten().map(|s| (Source::HiRes, s))
                     }
-                    tokio::time::timeout(UPGRADE_WAIT, self.from_hires(&hires_clients, &track, false))
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|s| (Source::HiRes, s))
-                }
-                MusicSource::MonoServers => tokio::time::timeout(UPGRADE_WAIT, self.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::Monochrome => tokio::time::timeout(UPGRADE_WAIT, self.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::JioSaavn => tokio::time::timeout(UPGRADE_WAIT, self.from_jiosaavn(&track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::Youtube => continue,
-            };
-            if let Some(s) = s {
-                found = Some(s);
-                break;
-            }
-            log::info!("{video_id}: {} had nothing ({:.1}s)", kind.label(), started.elapsed().as_secs_f32());
+                    MusicSource::MonoServers => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                    MusicSource::Monochrome => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                    MusicSource::JioSaavn => tokio::time::timeout(UPGRADE_WAIT, this.from_jiosaavn(&track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                    MusicSource::Youtube => return None,
+                };
+                found.map(|s| (kind, s))
+            });
         }
-        let (source, stream_res) = match found {
-            Some(s) => s,
+        let mut best: Option<(MusicSource, Source, ResolvedStream)> = None;
+        while let Some(joined) = asks.join_next().await {
+            let Some((kind, (source, s))) = joined.ok().flatten() else { continue };
+            let Some(info) = s.info.as_ref() else { continue };
+            log::info!("{video_id}: {} offers {} ({})", kind.label(), info.badge(), info.source);
+            let better = best.as_ref().and_then(|(_, _, b)| b.info.as_ref()).map(hires::Info::rung).unwrap_or(0) < info.rung();
+            if better || best.is_none() {
+                best = Some((kind, source, s));
+            }
+        }
+        let (source, stream_res) = match best {
+            Some((_, source, s)) => (source, s),
             None => {
                 log::info!("{video_id}: no hi-res source or provider has a copy ({:.1}s)", started.elapsed().as_secs_f32());
                 return;
             }
         };
+
+        // A copy no finer than the one playing would restart the download and stutter
+        // the song for nothing the ear can hear: the swap is only for a strictly higher
+        // rung of the ladder.
+        if stream_res.info.as_ref().map(hires::Info::rung).unwrap_or(0) <= playing_rung {
+            log::info!("{video_id}: the best late copy is no finer than what's playing; keeping it ({:.1}s)", started.elapsed().as_secs_f32());
+            return;
+        }
 
         if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
             log::debug!("hi-res upgrade for {video_id} dropped: generation changed");
@@ -3156,16 +3171,15 @@ impl Backend {
         });
     }
 
-    /// Upgrade the active song if it is playing standard YouTube quality and not reverted.
+    /// Upgrade the active song if it isn't reverted: the swap is worth it only when
+    /// some source answers with a strictly finer tier than the one playing, which
+    /// `try_upgrade_hires` decides.
     pub fn try_upgrade_active(&self, generation: u64, track: Option<Track>) {
-        let (video_id, has_hires) = {
+        let video_id = {
             let current = self.current.lock().unwrap();
-            let Some((id, shared)) = current.as_ref() else { return };
-            (id.clone(), shared.info.is_some())
+            let Some((id, _)) = current.as_ref() else { return };
+            id.clone()
         };
-        if has_hires {
-            return;
-        }
         let Some(track) = track else { return };
         let this = self.clone();
         self.rt.spawn(async move {
