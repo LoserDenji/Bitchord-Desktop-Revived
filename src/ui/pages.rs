@@ -3525,6 +3525,26 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.accent_controls, "Accent-coloured controls");
         });
         divider(ui);
+        setting_row(ui, "Volume control", Some("How the volume shows at Now playing's left edge. Bar is the slim slider that grows out of the margin; Edge dial is the half disc pressed on the window's border, its level read round the rim. Bar is the app's own look."), |ui| {
+            let mut pick = None;
+            let btn = dropdown_button(ui, if app.np_vol_dial { "Edge dial" } else { "Bar" }, 160.0, "Volume control");
+            egui::Popup::menu(&btn).show(|ui| {
+                ui.set_width(160.0);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                ui.add_space(4.0);
+                for (label, dial) in [("Bar", false), ("Edge dial", true)] {
+                    if option_row(ui, label, dial == app.np_vol_dial).clicked() {
+                        pick = Some(dial);
+                        ui.close();
+                    }
+                }
+                ui.add_space(4.0);
+            });
+            if let Some(dial) = pick {
+                app.np_vol_dial = dial;
+            }
+        });
+        divider(ui);
         setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this computer works, e.g. one made for your language."), |ui| {
             if let Some(name) = font_picker(ui) {
                 theme::set_font_choice(&name);

@@ -329,13 +329,89 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     edge_volume(app, ui, full, content);
 }
 
+/// The volume at Now playing's left edge, in whichever shape Settings › Appearance
+/// asks for: the bar the view grew up with — the default — or the half disc on the
+/// edge that came for it later.
+fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
+    if app.np_vol_dial { volume_dial(app, ui, full, content) } else { volume_bar(app, ui, full, content) }
+}
+
+/// The volume along the view's left edge: the margin stays empty until the pointer
+/// comes into it, then a bar grows in — dragged or clicked like any slider, its foot
+/// a mute, the wheel a nudge. The view keeps its breathing room; the edge only has
+/// to be asked.
+fn volume_bar(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
+    let open_id = egui::Id::unique("np-vol-open");
+    let was = ui.ctx().data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    // The window's resize border owns the outermost sliver in a layer above this
+    // one, so the hover is read from the pointer's position rather than egui's
+    // `rect_contains_pointer`, which would report the border's verdict instead.
+    let hover = |r: Rect| ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p));
+    // The strip that wakes the bar starts past the resize border; once awake, the
+    // bar's own ground holds it — and any press, so a drag past the track doesn't
+    // leave the knob behind a closing bar.
+    let strip = Rect::from_min_max(pos2(full.left() + 5.0, content.top()), pos2(full.left() + 38.0, content.bottom()));
+    let h = (content.height() * 0.55).clamp(150.0, 320.0);
+    let track = Rect::from_center_size(pos2(full.left() + 16.0, content.center().y), vec2(6.0, h));
+    let ground = Rect::from_min_max(pos2(full.left(), track.top() - 6.0), pos2(full.left() + 34.0, track.bottom() + 42.0));
+    let open = hover(strip) || (was && (hover(ground) || ui.input(|i| i.pointer.any_down())));
+    ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
+    let reveal = theme::anim_bool(ui.ctx(), "np-vol-reveal", open, 0.15);
+    if reveal <= 0.001 {
+        return;
+    }
+    let vol = app.audio.volume();
+    let resp = ui
+        .interact(track.expand2(vec2(5.0, 0.0)), egui::Id::unique("np-vol"), Sense::click_and_drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    let vh = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.dragged(), 0.15);
+    resp.widget_info(|| egui::WidgetInfo::slider(true, vol as f64, "Volume"));
+    if let Some(p) = resp.interact_pointer_pos() && (resp.dragged() || resp.clicked()) {
+        app.audio.set_volume(((track.bottom() - p.y) / track.height()).clamp(0.0, 1.0));
+    }
+    if resp.hovered() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            app.audio.set_volume((vol + scroll / 600.0).clamp(0.0, 1.0));
+        }
+    }
+    // The pill the bar sits in, glass over whatever cover the background carries.
+    let pill = Rect::from_min_max(pos2(track.left() - 8.0, track.top() - 8.0), pos2(track.right() + 8.0, track.bottom() + 40.0));
+    ui.painter().rect_filled(pill, pill.width() / 2.0, theme::shade(0.30 * reveal));
+    let tw = 3.0 + 1.5 * vh;
+    let tr = Rect::from_center_size(track.center(), vec2(tw, track.height()));
+    ui.painter().rect_filled(tr, tw / 2.0, theme::with_alpha(Color32::WHITE, 0.22 * reveal));
+    let now = app.audio.volume();
+    let fill = Rect::from_min_size(pos2(tr.left(), tr.bottom() - tr.height() * now), vec2(tw, tr.height() * now));
+    let (bar, knob) = if app.accent_controls { let a = app.accent_color(); (a, a) } else { (Color32::WHITE, Color32::WHITE) };
+    ui.painter().rect_filled(fill, tw / 2.0, theme::with_alpha(bar, reveal));
+    let knob_at = pos2(tr.center().x, tr.bottom() - tr.height() * now);
+    ui.painter().circle_filled(knob_at, 4.5 + 1.5 * vh, theme::with_alpha(knob, reveal));
+    if vh > 0.0 {
+        // How loud it stands, said beside the knob only while the bar is being held.
+        let at = pos2(pill.right() + 6.0, knob_at.y);
+        ui.painter().text(at, egui::Align2::LEFT_CENTER, format!("{}%", (now * 100.0).round()), theme::semibold(11.5), theme::with_alpha(theme::text(), vh * reveal));
+    }
+    // The mute at the pill's foot, the player bar's own trip.
+    let m = Rect::from_center_size(pos2(pill.center().x, pill.bottom() - 15.0), Vec2::splat(26.0));
+    let mresp = ui.interact(m, egui::Id::unique("np-vol-mute"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let mh = theme::anim_bool(ui.ctx(), mresp.id.with("h"), mresp.hovered(), 0.15);
+    if mh > 0.0 {
+        ui.painter().circle_filled(m.center(), 15.0, theme::glass(0.09 * mh));
+    }
+    glyphs::draw(ui, m.center(), 15.0, glyphs::VOLUME[glyphs::volume_step(now)], theme::lerp_color(theme::text_dim(), theme::text(), mh.max(reveal)));
+    if mresp.clicked() {
+        super::shell::toggle_mute(app, ui.ctx());
+    }
+}
+
 /// The volume at the screen's left edge: a half disc pressed flat against it, its rim
 /// running the whole window edge with no spacing. The level is a neon arc round the
 /// rim — the foot silence, the crown full — the number at its heart, the speaker a
 /// mute. Dragged up and down along the rim like the arc reads it, the wheel a nudge.
 /// Only its own ground wakes it: the edge stays empty until the pointer comes onto
 /// the half disc, then the dial grows in.
-fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
+fn volume_dial(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
     let open_id = egui::Id::unique("np-vol-open");
     let was = ui.ctx().data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     // The window's resize border owns the outermost sliver in a layer above this

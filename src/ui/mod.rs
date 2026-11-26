@@ -837,6 +837,9 @@ pub struct App {
     /// Settings › Appearance: the backdrop now playing uses, when it isn't the theme's
     /// own (`None`), without editing a theme.
     np_bg: Option<crate::preset::BgMode>,
+    /// Settings › Appearance: Now playing's edge volume as the half disc pressed on
+    /// the window's border, rather than the bar (the default) the view grew up with.
+    np_vol_dial: bool,
     /// A queue row being dragged to a new place (see `row_drag`).
     row_drag: Option<row_drag::RowDrag>,
     /// Settings › Appearance: the covers Apple Music moves (where it has a clip for the
@@ -1407,6 +1410,8 @@ impl App {
             np_open: false,
             np_tab: if get("np_art").is_some_and(|v| v == "1") { NpTab::Art } else { NpTab::Lyrics },
             np_bg: get("np_bg").and_then(|v| crate::preset::BgMode::from_name(&v)),
+            // The bar is the default; the dial is a choice.
+            np_vol_dial: get("np_vol_dial").is_some_and(|v| v == "1"),
             animated_covers: get("animated_covers").is_none_or(|v| v == "1"),
             visual: theme::VisualPreset::from_key(&get("visual_preset").unwrap_or_default()),
             reduce_motion: get("reduce_motion").is_some_and(|v| v == "1"),
@@ -2617,6 +2622,7 @@ impl eframe::App for App {
         }
         storage.set_string("np_art", b(self.np_tab == NpTab::Art));
         storage.set_string("np_bg", self.np_bg.map(|m| m.name().to_owned()).unwrap_or_default());
+        storage.set_string("np_vol_dial", b(self.np_vol_dial));
         // Dev hook: YTM_VISUAL tries a preset without saving it as the listener's.
         if dev_var("YTM_VISUAL").is_none() {
             storage.set_string("visual_preset", self.visual.key().to_owned());
