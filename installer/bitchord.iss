@@ -69,7 +69,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; install picks), an update lands on the listener's own data and sign-ins: nobody
 ; signs in again because the app updated. A pre-2.0.3 install kept its data under
 ; %AppData%\ytm-rs; that folder is ytm-rs's and is never touched either way.
-Name: "cleandata"; Description: "Remove the existing BitChord data before installing (%AppData%\bitchord). Use this if an update left the app misbehaving: it deletes the old settings and caches, so BitChord starts as a fresh install."; GroupDescription: "Fix an update:"; Flags: unchecked
+Name: "cleandata"; Description: "Remove the existing BitChord data before installing (%AppData%\bitchord). Use this if an update left the app misbehaving: it deletes the old settings and caches, so BitChord starts as a fresh install."; GroupDescription: "Fix an update:"; Flags: unchecked checkedonce
 
 [Files]
 ; The exe statically links the WebView2 loader, so there's no DLL to ship.
@@ -398,22 +398,140 @@ begin
     SW_HIDE, ewWaitUntilTerminated, code);
 end;
 
-// Uninstall asks before the data goes: settings, sign-ins, listening history and
-// downloads are the user's, and a later install can still use them. Answered yes,
-// the same reset the "cleandata" task runs takes them, while the exe is still
-// there to run it. A silent uninstall keeps them (no dialog to ask with).
-procedure RemoveDataIfAsked;
+// Native structures for Inno Setup's default x86 stub, including on ARM64.
+type
+  TTokenUser = record
+    Sid, Attributes: LongWord;
+    SidStorage: array[0..67] of Byte;
+  end;
+  TResetStartupInfo = record
+    Size, Reserved, Desktop, Title, X, Y, XSize, YSize, XChars, YChars,
+      FillAttribute, Flags: LongWord;
+    ShowWindow, ReservedSize: Word;
+    ReservedBytes, StdInput, StdOutput, StdError: LongWord;
+  end;
+  TResetProcessInfo = record
+    ProcessHandle, ThreadHandle, ProcessId, ThreadId: LongWord;
+  end;
+
+function GetCurrentProcess(): LongWord;
+  external 'GetCurrentProcess@kernel32.dll stdcall uninstallonly';
+function GetShellWindow(): HWND;
+  external 'GetShellWindow@user32.dll stdcall uninstallonly';
+function GetWindowThreadProcessId(wnd: HWND; var pid: LongWord): LongWord;
+  external 'GetWindowThreadProcessId@user32.dll stdcall uninstallonly';
+function OpenProcess(access: LongWord; inherit: BOOL; pid: LongWord): LongWord;
+  external 'OpenProcess@kernel32.dll stdcall uninstallonly';
+function CloseHandle(handle: LongWord): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall uninstallonly';
+function OpenProcessToken(process, access: LongWord; var token: LongWord): BOOL;
+  external 'OpenProcessToken@advapi32.dll stdcall uninstallonly';
+function ReadTokenUser(token, infoClass: LongWord; var user: TTokenUser;
+  size: LongWord; var actualSize: LongWord): BOOL;
+  external 'GetTokenInformation@advapi32.dll stdcall uninstallonly';
+function ReadTokenElevation(token, infoClass: LongWord; var elevated: LongWord;
+  size: LongWord; var actualSize: LongWord): BOOL;
+  external 'GetTokenInformation@advapi32.dll stdcall uninstallonly';
+function EqualSid(a, b: LongWord): BOOL;
+  external 'EqualSid@advapi32.dll stdcall uninstallonly';
+function DuplicateTokenEx(token, access, attributes, level, tokenType: LongWord;
+  var copyToken: LongWord): BOOL;
+  external 'DuplicateTokenEx@advapi32.dll stdcall uninstallonly';
+function CreateProcessWithTokenW(token, logonFlags: LongWord; app, commandLine: String;
+  flags, environment, directory: LongWord; var startup: TResetStartupInfo;
+  var processInfo: TResetProcessInfo): BOOL;
+  external 'CreateProcessWithTokenW@advapi32.dll stdcall uninstallonly';
+function WaitForSingleObject(handle, timeout: LongWord): LongWord;
+  external 'WaitForSingleObject@kernel32.dll stdcall uninstallonly';
+function GetExitCodeProcess(handle: LongWord; var code: LongWord): BOOL;
+  external 'GetExitCodeProcess@kernel32.dll stdcall uninstallonly';
+
+function ResetWithDesktopToken(exe: String; uninstallToken: LongWord): Boolean;
 var
+  wnd: HWND;
+  pid, shell, shellToken, resetToken, size, elevated, code: LongWord;
+  uninstallUser, desktopUser: TTokenUser;
+  startup: TResetStartupInfo;
+  child: TResetProcessInfo;
+begin
+  Result := False;
+  wnd := GetShellWindow();
+  if wnd = 0 then exit;
+  if GetWindowThreadProcessId(wnd, pid) = 0 then exit;
+  shell := OpenProcess($1000, False, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+  if shell = 0 then exit;
+  try
+    if not OpenProcessToken(shell, $A, shellToken) then exit; // TOKEN_QUERY | TOKEN_DUPLICATE
+    try
+      // Alternate UAC credentials can belong to a different user. Never clear
+      // that account or the desktop account when the two identities disagree.
+      if not ReadTokenUser(uninstallToken, 1, uninstallUser, SizeOf(uninstallUser), size) then exit;
+      if not ReadTokenUser(shellToken, 1, desktopUser, SizeOf(desktopUser), size) then exit;
+      if not EqualSid(uninstallUser.Sid, desktopUser.Sid) then exit;
+      if not ReadTokenElevation(shellToken, 20, elevated, SizeOf(elevated), size) then exit;
+      if elevated <> 0 then exit;
+      // Start as the desktop user and wait before Inno removes the executable.
+      if not DuplicateTokenEx(shellToken, $B, 0, 2, 1, resetToken) then exit;
+      try
+        startup.Size := SizeOf(startup);
+        if not CreateProcessWithTokenW(resetToken, 1, exe, '"' + exe + '" --reset-install-profile',
+          $08000000, 0, 0, startup, child) then exit; // LOGON_WITH_PROFILE, CREATE_NO_WINDOW
+        try
+          if WaitForSingleObject(child.ProcessHandle, $FFFFFFFF) <> 0 then exit;
+          if GetExitCodeProcess(child.ProcessHandle, code) then
+            Result := code = 0;
+        finally
+          CloseHandle(child.ThreadHandle);
+          CloseHandle(child.ProcessHandle);
+        end;
+      finally
+        CloseHandle(resetToken);
+      end;
+    finally
+      CloseHandle(shellToken);
+    end;
+  finally
+    CloseHandle(shell);
+  end;
+end;
+
+function ResetUninstallProfile(): Boolean;
+var
+  exe: String;
+  token, elevated, size: LongWord;
   code: Integer;
 begin
+  Result := False;
+  exe := ExpandConstant('{app}\{#AppExe}');
+  if not OpenProcessToken(GetCurrentProcess(), $8, token) then exit; // TOKEN_QUERY
+  try
+    if not ReadTokenElevation(token, 20, elevated, SizeOf(elevated), size) then exit;
+    if elevated = 0 then begin
+      if Exec(exe, '--reset-install-profile', '', SW_HIDE, ewWaitUntilTerminated, code) then
+        Result := code = 0;
+    end else
+      Result := ResetWithDesktopToken(exe, token);
+  finally
+    CloseHandle(token);
+  end;
+end;
+
+// Silent uninstalls also run during upgrades, so only an interactive Yes can
+// remove settings, sign-ins, history and downloads.
+procedure RemoveDataIfAsked;
+begin
+  if UninstallSilent then exit;
   if SuppressibleMsgBox('Remove BitChord''s data as well? Settings, sign-ins, ' +
     'listening history and downloads under %AppData%\bitchord are removed; they ' +
     'otherwise stay, and a later install picks them up.',
-    mbConfirmation, MB_YESNO, IDNO) <> IDYES then
+    mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) <> IDYES then
     exit;
-  if (not ExecAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--reset-install-profile',
-      '', SW_HIDE, ewWaitUntilTerminated, code)) or (code <> 0) then
-    Log('The data reset failed; leaving the data in place.');
+  if not ResetUninstallProfile() then begin
+    Log('The data reset did not complete.');
+    SuppressibleMsgBox('BitChord could not finish removing your data. ' +
+      'If you used a different administrator account, sign in to your own Windows account before trying again.',
+      mbError, MB_OK, IDOK);
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurStep: TUninstallStep);
