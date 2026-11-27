@@ -91,13 +91,11 @@ struct Entry {
 
 /// Settings' categories and sections, by their titles. One named as its category opens
 /// that; any other is looked for with Settings' own search.
-const SECTIONS: [(&str, SettingsTab); 33] = {
+const SECTIONS: [(&str, SettingsTab); 34] = {
     use SettingsTab::*;
     [
         ("Account", Account),
-        // Its own tab, not Account's: opening it lands on General › Network, where the
-        // connections themselves sit.
-        ("Connections", General),
+        ("Connections", Connections),
         ("Import", Account),
         ("Discord", Discord),
         ("Discord connection", Discord),
@@ -121,6 +119,7 @@ const SECTIONS: [(&str, SettingsTab); 33] = {
         ("Lyrics", Lyrics),
         ("Appearance", Appearance),
         ("Artist pages", Appearance),
+        ("General", General),
         ("Community", General),
         ("Window", General),
         ("Downloads", General),

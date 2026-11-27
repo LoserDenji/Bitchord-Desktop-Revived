@@ -1986,6 +1986,7 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
 pub(super) enum SettingsTab {
     #[default]
     Account,
+    Connections,
     Discord,
     Playback,
     Sources,
@@ -1996,11 +1997,12 @@ pub(super) enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [Self; 8] = [Self::Account, Self::Discord, Self::Playback, Self::Sources, Self::Lyrics, Self::Appearance, Self::General, Self::Shortcuts];
+    pub(super) const ALL: [Self; 9] = [Self::Account, Self::Connections, Self::Discord, Self::Playback, Self::Sources, Self::Lyrics, Self::Appearance, Self::General, Self::Shortcuts];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Account => "Account",
+            Self::Connections => "Connections",
             Self::Discord => "Discord",
             Self::Playback => "Playback",
             Self::Sources => "Music sources",
@@ -2150,6 +2152,9 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
                 super::transfer::settings_section(app, ui);
             }
         }
+        // A Settings search already sees these controls under Account.
+        SettingsTab::Connections if !filtering() => settings_connections(app, ui),
+        SettingsTab::Connections => {},
         SettingsTab::Discord => super::presence::settings(app, ui),
         SettingsTab::Playback => settings_playback(app, ui),
         SettingsTab::Sources => {
