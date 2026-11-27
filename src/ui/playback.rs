@@ -323,6 +323,14 @@ impl App {
         }
         let focused = ctx.input(|i| i.focused);
         let refocused = focused && !std::mem::replace(&mut self.was_focused, focused);
+        // Back in the window: likes changed on another device show. Liked Music's entries
+        // stand in for individual like reads, so it's asked for again, at most every ten
+        // minutes (upstream's Ratings::refresh_if_stale); the cross-device queue keeps its
+        // own minute below.
+        if refocused && self.liked_checked.is_none_or(|t| now - t >= 600.0) {
+            self.liked_checked = Some(now);
+            self.request_liked(false);
+        }
         let idle = !self.playing() && !self.buffering && !self.jam.active() && self.smoke.is_none();
         let due = self.queue_checked.is_none_or(|t| refocused && now - t > 60.0);
         if self.logged_in && idle && due && std::env::var_os("YTM_SMOKE").is_none() {
