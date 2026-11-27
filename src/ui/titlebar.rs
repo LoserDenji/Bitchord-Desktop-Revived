@@ -415,7 +415,7 @@ pub fn set_hwnd(hwnd: *mut std::ffi::c_void, gl_vendor: Option<&str>) {
 /// show it in place. Dropping the style costs only those animations, so it's for
 /// Intel's OpenGL alone. `YTM_DROP_CAPTION=1` drops it anywhere, `=0` keeps it.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn drop_caption(gl_vendor: Option<&str>, forced: Option<&str>) -> bool {
+pub fn drop_caption(gl_vendor: Option<&str>, forced: Option<&str>) -> bool {
     match forced {
         Some("1") => true,
         Some("0") => false,
