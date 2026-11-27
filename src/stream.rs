@@ -69,7 +69,13 @@ pub enum Media {
 }
 
 /// Resolves fresh URLs for the same video and format.
-pub type Refresh = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<Media>> + Send>> + Send + Sync>;
+type RefreshCallback = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<Media>> + Send>> + Send + Sync>;
+
+pub struct Refresh {
+    pub(crate) callback: RefreshCallback,
+    /// Addon minting creates a session; one attempt is enough to replace a rejected URL.
+    pub(crate) once: bool,
+}
 
 /// The container and codec a stream carries.
 #[derive(Clone, Debug, PartialEq)]
@@ -364,6 +370,7 @@ impl Shared {
 struct UrlSlot {
     url: tokio::sync::Mutex<(Media, u32)>,
     refresh: Option<Refresh>,
+    attempted: std::sync::atomic::AtomicBool,
     /// Segments the buffer has: fresh ones must be the same.
     segments: Option<usize>,
 }
@@ -376,11 +383,14 @@ impl UrlSlot {
             return true; // another worker already refreshed it
         }
         let Some(refresh) = self.refresh.as_ref() else { return false };
+        if refresh.once && self.attempted.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
         if slot.1 >= MAX_REFRESHES {
             log::warn!("stream URL still refused after {MAX_REFRESHES} refreshes");
             return false;
         }
-        match refresh().await {
+        match (refresh.callback)().await {
             // The buffer is laid out for the stream it started with.
             Ok(Media::Segments(urls)) if Some(urls.len()) != self.segments => {
                 log::warn!("stream URL refresh: {} segments for a buffer of {:?}", urls.len(), self.segments);
@@ -415,16 +425,47 @@ pub type Ahead = Arc<dyn Fn() -> Option<Arc<Shared>> + Send + Sync>;
 /// `download`, but before each block it waits while `ahead`'s buffer still has blocks
 /// to come that a reader may need: the playing song gets the bandwidth first.
 pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, shared: Arc<Shared>, refresh: Option<Refresh>, ranging: Ranging, ahead: Option<Ahead>) {
-    // Addon servers may ignore ranges and answer 200 with the whole file: then one
-    // sequential download fills the buffer, rather than every worker pulling the file.
-    if let Media::File(url) = &media {
-        if ranging == Ranging::Header && !ranges_supported(&http, url, &ua).await {
-            download_whole(&http, url, &ua, &shared).await;
+    let addon = refresh.as_ref().is_some_and(|r| r.once);
+    let segments = shared.segments.as_ref().map(|s| s.len());
+    let slot = Arc::new(UrlSlot { url: tokio::sync::Mutex::new((media, 0)), refresh, attempted: Default::default(), segments });
+    // Some media servers ignore ranges. Probe each URL before choosing between
+    // parallel workers and a single download; either path can see an expired URL.
+    if ranging == Ranging::Header {
+        loop {
+            let (url, version) = {
+                let current = slot.url.lock().await;
+                let Media::File(url) = &current.0 else { break };
+                (url.clone(), current.1)
+            };
+            let client = if version > 0 { crate::proxy::http() } else { http.clone() };
+            let status = range_probe(&client, &url, &ua).await;
+            match status {
+                None | Some(reqwest::StatusCode::PARTIAL_CONTENT) => break,
+                Some(status) if addon && rejected_media(status) => {
+                    if !shared.is_stopped() && slot.renew(version).await {
+                        continue;
+                    }
+                    if !shared.is_stopped() {
+                        shared.fail(format!("stream: HTTP {status}"), true);
+                    }
+                    return;
+                }
+                Some(_) => {}
+            }
+            match download_whole(&client, &url, &ua, &shared).await {
+                Ok(()) => { shared.done.send_replace(true); }
+                Err(e) if !shared.is_stopped() => {
+                    let rejected = addon && is_media_rejected(&e);
+                    if rejected && slot.renew(version).await {
+                        continue;
+                    }
+                    shared.fail(format!("stream: {e:#}"), rejected);
+                }
+                Err(_) => {}
+            }
             return;
         }
     }
-    let segments = shared.segments.as_ref().map(|s| s.len());
-    let slot = Arc::new(UrlSlot { url: tokio::sync::Mutex::new((media, 0)), refresh, segments });
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..WORKERS {
         let (http, ua, shared, slot, ahead) = (http.clone(), ua.clone(), shared.clone(), slot.clone(), ahead.clone());
@@ -481,7 +522,16 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
                             shared.put(idx, data);
                             break;
                         }
-                        Err(e) if is_forbidden(&e) && slot.renew(version).await => {}
+                        Err(e) if addon && is_media_rejected(&e) => {
+                            if shared.is_stopped() {
+                                return;
+                            }
+                            if !slot.renew(version).await {
+                                shared.fail(format!("{what}: {e:#}"), true);
+                                return;
+                            }
+                        }
+                        Err(e) if !addon && is_forbidden(&e) && slot.renew(version).await => {}
                         Err(e) if attempt < RETRIES => {
                             if shared.is_stopped() {
                                 break;
@@ -533,6 +583,15 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
     }
     while set.join_next().await.is_some() {}
     shared.done.send_replace(true);
+}
+
+fn rejected_media(status: reqwest::StatusCode) -> bool {
+    matches!(status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE)
+}
+
+pub(crate) fn is_media_rejected(error: &anyhow::Error) -> bool {
+    error.is::<SimulatedRefusal>() || error.downcast_ref::<reqwest::Error>()
+        .and_then(reqwest::Error::status).is_some_and(rejected_media)
 }
 
 fn is_forbidden(e: &anyhow::Error) -> bool {
@@ -639,66 +698,49 @@ async fn fetch_range(http: &reqwest::Client, url: &str, ua: &str, a: u64, b: u64
     Ok(buf.freeze().slice(a as usize..=b as usize))
 }
 
-/// Whether the server honours a `Range` header with a 206. A server that answers 200
-/// gets one sequential download instead. A probe that can't connect leaves the workers
-/// to try ranges themselves (a 200 there is still handled).
-async fn ranges_supported(http: &reqwest::Client, url: &str, ua: &str) -> bool {
-    match tokio::time::timeout(STALL, http.get(url).header("User-Agent", ua).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").send()).await {
-        Ok(Ok(r)) => r.status() == reqwest::StatusCode::PARTIAL_CONTENT,
-        _ => true,
-    }
+/// Probe with a one-byte range. A connection failure leaves the range workers to retry.
+async fn range_probe(http: &reqwest::Client, url: &str, ua: &str) -> Option<reqwest::StatusCode> {
+    let response = tokio::time::timeout(STALL, http.get(url).header("User-Agent", ua).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").send()).await.ok()?.ok()?;
+    Some(response.status())
 }
 
 /// One sequential download for a server that won't serve ranges, filling `shared` block
 /// by block as bytes arrive so playback can start before the file is complete.
-async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Arc<Shared>) {
+async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Arc<Shared>) -> anyhow::Result<()> {
     let stalled = || anyhow::anyhow!("no data for {} s", STALL.as_secs());
-    let result = async {
-        let mut resp = tokio::time::timeout(
-            STALL,
-            http.get(url).header("User-Agent", ua).header("Accept-Encoding", "identity").send(),
-        )
-        .await
-        .map_err(|_| stalled())?
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(reqwest::Error::without_url)?;
-        let blocks = shared.inner.lock().unwrap().blocks.len();
-        // The first block is smaller than the rest (see `FIRST`).
-        let lens: Vec<usize> = (0..blocks).map(|i| {
-            let (a, b) = shared.range(i);
-            (b - a + 1) as usize
-        }).collect();
-        let mut buf = bytes::BytesMut::with_capacity(BLOCK as usize);
-        let (mut idx, mut received) = (0usize, 0u64);
-        while let Some(chunk) = tokio::time::timeout(STALL, resp.chunk()).await.map_err(|_| stalled())?.map_err(reqwest::Error::without_url)? {
-            received += chunk.len() as u64;
-            buf.extend_from_slice(&chunk);
-            while idx < blocks && buf.len() >= lens[idx] {
-                shared.put(idx, buf.split_to(lens[idx]).freeze());
-                idx += 1;
-            }
-            if shared.inner.lock().unwrap().cancelled {
-                return anyhow::Ok(());
-            }
-        }
-        anyhow::ensure!(received == shared.total, "short read: {received} of {} bytes", shared.total);
-        while idx < blocks {
+    let mut resp = tokio::time::timeout(
+        STALL,
+        http.get(url).header("User-Agent", ua).header("Accept-Encoding", "identity").send(),
+    )
+    .await
+    .map_err(|_| stalled())?
+    .and_then(reqwest::Response::error_for_status)
+    .map_err(reqwest::Error::without_url)?;
+    let blocks = shared.inner.lock().unwrap().blocks.len();
+    // The first block is smaller than the rest (see `FIRST`).
+    let lens: Vec<usize> = (0..blocks).map(|i| {
+        let (a, b) = shared.range(i);
+        (b - a + 1) as usize
+    }).collect();
+    let mut buf = bytes::BytesMut::with_capacity(BLOCK as usize);
+    let (mut idx, mut received) = (0usize, 0u64);
+    while let Some(chunk) = tokio::time::timeout(STALL, resp.chunk()).await.map_err(|_| stalled())?.map_err(reqwest::Error::without_url)? {
+        received += chunk.len() as u64;
+        buf.extend_from_slice(&chunk);
+        while idx < blocks && buf.len() >= lens[idx] {
             shared.put(idx, buf.split_to(lens[idx]).freeze());
             idx += 1;
         }
-        anyhow::Ok(())
-    }
-    .await;
-    match result {
-        Ok(()) => {
-            shared.done.send_replace(true);
-        }
-        Err(e) => {
-            if !shared.inner.lock().unwrap().cancelled {
-                shared.fail(format!("stream: {e:#}"), false);
-            }
+        if shared.inner.lock().unwrap().cancelled {
+            return anyhow::Ok(());
         }
     }
+    anyhow::ensure!(received == shared.total, "short read: {received} of {} bytes", shared.total);
+    while idx < blocks {
+        shared.put(idx, buf.split_to(lens[idx]).freeze());
+        idx += 1;
+    }
+    anyhow::Ok(())
 }
 
 pub struct StreamReader {

@@ -143,7 +143,7 @@ pub fn note_media_host(addon_base: &str, rendition_url: &str) {
 /// URL the reqwest error would print.
 fn wire(e: reqwest::Error) -> anyhow::Error {
     if let Some(s) = e.status() {
-        anyhow::anyhow!("the rendition answered HTTP {}", s.as_u16())
+        anyhow::Error::new(e.without_url()).context(format!("the rendition answered HTTP {}", s.as_u16()))
     } else if e.is_timeout() {
         anyhow::anyhow!("the rendition timed out")
     } else if e.is_connect() {

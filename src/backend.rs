@@ -2446,7 +2446,8 @@ impl Backend {
     /// Resolves a fresh URL from the same source and format, for a download that got a 403.
     fn refresher(&self, source: Source, video_id: &str, format: stream::Format, size: u64, selection: Option<RefreshSelection>) -> stream::Refresh {
         let (this, id) = (self.clone(), video_id.to_owned());
-        Arc::new(move || {
+        let once = matches!(&selection, Some(RefreshSelection::Addon(_)));
+        stream::Refresh { once, callback: Arc::new(move || {
             let (this, id, format, selection) = (this.clone(), id.clone(), format.clone(), selection.clone());
             Box::pin(async move {
                 let (media, refreshed_format, refreshed_size) = match selection {
@@ -2455,7 +2456,8 @@ impl Backend {
                         (stream::Media::File(url), format, size)
                     }
                     Some(RefreshSelection::Addon(addon)) => {
-                        let s = addon.refresh(&this.http()).await?;
+                        let s = tokio::time::timeout(HIRES_WAIT, addon.refresh(&this.http())).await
+                            .map_err(|_| anyhow::anyhow!("addon playback refresh timed out"))??;
                         (stream::Media::File(s.url), s.format, s.size)
                     }
                     None => {
@@ -2469,7 +2471,7 @@ impl Backend {
                 anyhow::ensure!(refreshed_size == size, "the stream changed size");
                 Ok(media)
             })
-        })
+        }) }
     }
 
     /// Download a song into the downloads folder, at the best quality the account gets.
@@ -2845,6 +2847,20 @@ impl Backend {
     /// The listener's addons, searched together. Atmos leads when the preference is on,
     /// then hi-res/lossless; `None` when none of them has a copy (a miss, not a fault).
     async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, lookup: hires::Lookup) -> Option<ResolvedStream> {
+        let enabled;
+        let sources = if matches!(lookup, hires::Lookup::Startup) {
+            if !self.source_on(MusicSource::Addons) || self.disable_direct.load(Ordering::Relaxed) {
+                return None;
+            }
+            // Settings recreate clients when links change. Match the full link,
+            // and use only clients from the current configuration.
+            enabled = self.hires.read().unwrap().iter()
+                .filter(|current| sources.iter().any(|captured| current.same_link(captured)))
+                .cloned().collect::<Vec<_>>();
+            enabled.as_slice()
+        } else {
+            sources
+        };
         let atmos = self.atmos.load(Ordering::Relaxed);
         let http = self.http();
         let budget = if matches!(lookup, hires::Lookup::Upgrade { .. }) { UPGRADE_ADDON_WAIT } else { HIRES_WAIT };

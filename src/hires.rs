@@ -195,6 +195,7 @@ pub(crate) enum Lookup {
     Startup,
     /// A manual upgrade or a refresh can bypass the cache to mint a new URL.
     Upgrade { fresh: bool },
+    Refresh,
 }
 
 /// The same addon request can return a fresh media URL without running another race.
@@ -203,15 +204,24 @@ pub struct Selection {
     client: Arc<Client>,
     candidate: Candidate,
     atmos: bool,
+    revision: u64,
+    refreshed: bool,
 }
 
 impl Selection {
+    async fn invalidate(&self) {
+        let key = (self.candidate.id.clone(), self.atmos);
+        self.client.streams.lock().await.invalidate(&key, self.revision);
+    }
+
     pub async fn refresh(&self, http: &reqwest::Client) -> anyhow::Result<Stream> {
         // A refresh stands up a stream that was already playing — the upgrade
         // pass's situation, so its rendition may be a manifest one — and it runs
         // because the link in hand stopped working, so the cached answer (the
         // same link) is skipped for a fresh mint.
-        self.client.open(http, &self.candidate, self.atmos, Lookup::Upgrade { fresh: true }).await?
+        anyhow::ensure!(!self.refreshed, "the addon already provided a fresh URL");
+        self.invalidate().await;
+        self.client.open(http, &self.candidate, self.atmos, Lookup::Refresh).await?
             .ok_or_else(|| anyhow::anyhow!("the selected addon has no stream"))
     }
 }
@@ -277,16 +287,37 @@ const SEARCH_CACHE: usize = 64;
 /// session should be asked again on the next track, not written off for the window.
 #[derive(Default)]
 struct StreamCache {
-    answers: HashMap<(String, bool), (Value, tokio::time::Instant)>,
+    answers: HashMap<(String, bool), CachedAnswer>,
+    revision: u64,
     order: std::collections::VecDeque<(String, bool)>,
 }
 
+struct CachedAnswer {
+    json: Option<Value>,
+    revision: u64,
+    stored_at: tokio::time::Instant,
+}
+
 impl StreamCache {
-    fn get(&self, key: &(String, bool)) -> Option<Value> {
-        self.answers.get(key).filter(|(_, at)| at.elapsed() < STREAM_TTL).map(|(j, _)| j.clone())
+    fn get(&self, key: &(String, bool)) -> Option<(Value, u64)> {
+        let answer = self.answers.get(key)?;
+        (answer.stored_at.elapsed() < STREAM_TTL).then_some(())?;
+        Some((answer.json.as_ref()?.clone(), answer.revision))
     }
 
-    fn insert(&mut self, key: (String, bool), found: Value) {
+    fn invalidate(&mut self, key: &(String, bool), revision: u64) {
+        if let Some(answer) = self.answers.get_mut(key)
+            && answer.revision == revision
+        {
+            // Keep the revision so older requests in flight cannot restore this URL.
+            answer.json = None;
+        }
+    }
+
+    fn insert(&mut self, key: (String, bool), found: Value, revision: u64) {
+        if self.answers.get(&key).is_some_and(|answer| answer.revision >= revision) {
+            return;
+        }
         if !self.answers.contains_key(&key) {
             self.order.push_back(key.clone());
             while self.order.len() > SEARCH_CACHE {
@@ -295,7 +326,7 @@ impl StreamCache {
                 }
             }
         }
-        self.answers.insert(key, (found, tokio::time::Instant::now()));
+        self.answers.insert(key, CachedAnswer { json: Some(found), revision, stored_at: tokio::time::Instant::now() });
     }
 }
 
@@ -336,6 +367,10 @@ impl Client {
     }
 
     /// The addon's host, for a log line (the link's path may carry a token).
+    pub(crate) fn same_link(&self, other: &Self) -> bool {
+        self.base == other.base
+    }
+
     pub fn host(&self) -> String {
         host_of(&self.base)
     }
@@ -436,19 +471,34 @@ impl Client {
         // refresh path, which runs because the link already handed out stopped
         // working — the cache would hand the same dead link right back.
         let key = (candidate.id.clone(), atmos);
-        let json = if !matches!(lookup, Lookup::Upgrade { fresh: true }) && let Some(hit) = self.streams.lock().await.get(&key) {
-            hit
-        } else {
-            let answer = self.mint(http, manifest, candidate, atmos).await?;
-            self.streams.lock().await.insert(key, answer.clone());
-            answer
+        let cached = {
+            let mut streams = self.streams.lock().await;
+            if !matches!(lookup, Lookup::Upgrade { fresh: true } | Lookup::Refresh)
+                && let Some(hit) = streams.get(&key)
+            {
+                Ok(hit)
+            } else {
+                streams.revision += 1;
+                Err(streams.revision)
+            }
+        };
+        let (json, revision) = match cached {
+            Ok(hit) => hit,
+            Err(revision) => {
+                let answer = self.mint(http, manifest, candidate, atmos).await?;
+                // A 404 can still use the search row; it is not a successful mint.
+                if !answer.is_null() && !matches!(lookup, Lookup::Refresh) {
+                    self.streams.lock().await.insert(key, answer.clone(), revision);
+                }
+                (answer, revision)
+            }
         };
         let stated_url = json.get("url").and_then(Value::as_str).unwrap_or("").trim().to_owned();
         let stated_url = if stated_url.is_empty() { candidate.stream_url.clone().unwrap_or_default() } else { stated_url };
         if stated_url.is_empty() {
             return Ok(None);
         }
-        let selection = Selection { client: self.clone(), candidate: candidate.clone(), atmos };
+        let selection = Selection { client: self.clone(), candidate: candidate.clone(), atmos, revision, refreshed: matches!(lookup, Lookup::Refresh) };
         anyhow::ensure!(playable_url(&stated_url), "the addon returned a URL that isn't http(s)");
         anyhow::ensure!(!encrypted(&json), "the addon returned an encrypted stream");
         // A rendition served by the addon's own host paces its download differently
@@ -471,9 +521,15 @@ impl Client {
             let dash = matches!(transport.trim().to_ascii_lowercase().as_str(), "dash" | "mpd" | "application/dash+xml");
             // Avoid an expensive download while fallback audio can start. When
             // nothing else can play, the startup lookup can try within its deadline.
-            anyhow::ensure!(matches!(lookup, Lookup::Startup | Lookup::Upgrade { .. }), "a manifest rendition is deferred until needed for playback or an upgrade");
+            anyhow::ensure!(matches!(lookup, Lookup::Startup | Lookup::Upgrade { .. } | Lookup::Refresh), "a manifest rendition is deferred until needed for playback or an upgrade");
             anyhow::ensure!(dash, "the addon returned a streaming manifest, not a file");
-            let audio = crate::dash::fetch(http, &stated_url).await?;
+            let audio = match crate::dash::fetch(http, &stated_url).await {
+                Err(e) if !matches!(lookup, Lookup::Refresh) && crate::stream::is_media_rejected(&e) => {
+                    selection.invalidate().await;
+                    return Box::pin(self.stream(http, manifest, candidate, atmos, Lookup::Refresh)).await;
+                }
+                result => result?,
+            };
             let size = audio.pcm.len() as u64;
             let info = Info {
                 source: manifest.name.clone().unwrap_or_else(|| host_of(&self.base)),
@@ -592,7 +648,7 @@ impl Client {
                     }
                     Err(e) => {
                         let reason = format!("search failed: {e:#}");
-                        if transport_failure(&reason) { Health::Unreachable(reason) } else { Health::Rejected(reason) }
+                        if transport_failure(&e) { Health::Unreachable(reason) } else { Health::Rejected(reason) }
                     }
                 }
             }
@@ -600,15 +656,15 @@ impl Client {
                 let reason = format!("{e:#}");
                 // An auth-protected addon (or one that guards even its manifest) says
                 // so in its answer; that's a verdict, not a server having a bad minute.
-                if reason.contains(AUTH_DESKTOP_MSG) {
-                    return Health::Rejected(reason);
+                if e.is::<AuthError>() {
+                    return if transport_failure(&e) { Health::Unreachable(reason) } else { Health::Rejected(reason) };
                 }
                 match probe_search(http, &self.base, &self.quiet_until).await {
                     Ok(n) => Health::Ok(format!("No manifest · search works · {n} result{}", if n == 1 { "" } else { "s" })),
                     Err(e) => {
                         let search = format!("search failed: {e:#}");
                         let message = format!("{search} (manifest: {reason})");
-                        if transport_failure(&search) { Health::Unreachable(message) } else { Health::Rejected(message) }
+                        if transport_failure(&e) { Health::Unreachable(message) } else { Health::Rejected(message) }
                     }
                 }
             }
@@ -672,7 +728,7 @@ pub(crate) async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track:
         let (http, track, send) = (http.clone(), track.clone(), send.clone());
         tasks.spawn(async move {
             match client.picks(&http, &track, atmos).await {
-                Ok(picks) => open_first(&http, &client, &picks, atmos, lookup, &send).await,
+                Ok(picks) => open_first(&http, &client, &picks, atmos, lookup, deadline, &send).await,
                 Err(e) => log::info!("hi-res {}: \"{}\": {e:#}", client.host(), track.title),
             }
         });
@@ -712,26 +768,33 @@ pub(crate) async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track:
 /// beside each other for a race two of them are about to lose — an origin that
 /// proxies its own audio (rather than handing out a CDN link) exhausts under exactly
 /// that burst, and 503s for everyone until its pool recovers.
-async fn open_first(http: &reqwest::Client, client: &Arc<Client>, candidates: &[Candidate], atmos: bool, lookup: Lookup, found: &tokio::sync::mpsc::UnboundedSender<Stream>) {
+async fn open_first(http: &reqwest::Client, client: &Arc<Client>, candidates: &[Candidate], atmos: bool, lookup: Lookup, deadline: tokio::time::Instant, found: &tokio::sync::mpsc::UnboundedSender<Stream>) {
     let rounds: &[bool] = if atmos { &[true, false] } else { &[false] };
+    let rows: Vec<_> = rounds.iter().flat_map(|&round| candidates.iter().filter(move |c| !atmos || c.atmos == round).take(STREAM_TRIES)).collect();
+    let upgrade = matches!(lookup, Lookup::Upgrade { .. });
     let mut sent_lossless = false;
-    for &round in rounds {
-        for candidate in candidates.iter().filter(|c| !atmos || c.atmos == round).take(STREAM_TRIES) {
-            match client.open(http, candidate, atmos && candidate.atmos, lookup).await {
-                Ok(Some(s)) if usable(&s) => {
-                    let done = s.info.atmos || !atmos;
-                    // Hand off the first playable copy before another candidate can stall.
-                    if (done || !sent_lossless) && found.send(s).is_err() {
-                        return;
-                    }
-                    if done {
-                        return;
-                    }
-                    sent_lossless = true;
+    for (index, candidate) in rows.iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        // Reserve time for later rows while still minting only one at a time.
+        let budget = (remaining / (rows.len() - index) as u32).min(STREAM_TIMEOUT);
+        let attempt = client.open(http, candidate, atmos && candidate.atmos, lookup);
+        match tokio::time::timeout(budget, attempt).await {
+            Ok(Ok(Some(s))) if usable(&s) => {
+                let done = s.info.atmos || (!atmos && !upgrade);
+                if (done || upgrade || !sent_lossless) && found.send(s).is_err() {
+                    return;
                 }
-                Ok(_) => {}
-                Err(e) => log::info!("hi-res {}: candidate {} skipped: {e:#}", client.host(), candidate.id),
+                if done {
+                    return;
+                }
+                sent_lossless = true;
             }
+            Ok(Err(e)) => log::info!("hi-res {}: candidate {} skipped: {e:#}", client.host(), candidate.id),
+            Err(_) => log::info!("hi-res {}: candidate {} timed out", client.host(), candidate.id),
+            Ok(_) => {}
         }
     }
 }
@@ -1235,7 +1298,7 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_un
                 // Retry-After is in seconds; without it, double the wait per retry.
                 // Only the generated backoff is capped; the lookup deadline still
                 // bounds playback's wait when a server asks for a longer pause.
-                let retry_after = response.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).and_then(|s| s.trim().parse::<u64>().ok()).map(Duration::from_secs);
+                let retry_after = response.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).and_then(|s| retry_after(s, std::time::SystemTime::now()));
                 let backoff = THROTTLE_BASE * (1 << attempt);
                 let wait = retry_after.unwrap_or(backoff.min(THROTTLE_CAP));
                 let mut quiet = quiet_until.lock().await;
@@ -1248,7 +1311,7 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_un
             // with a JSON body naming itself; say what that means rather than "HTTP 401".
             let body = response.text().await.unwrap_or_default();
             if let Some(msg) = auth_answer(&body) {
-                anyhow::bail!("{} {msg}", AUTH_DESKTOP_MSG);
+                return Err(AuthError { status: code, message: msg }.into());
             }
             // Other addons guard themselves behind a sign-in on their own site and point
             // at it ("login":"/auth/discord/login"): they work once the listener has
@@ -1291,9 +1354,36 @@ fn addon_err(e: reqwest::Error) -> anyhow::Error {
 /// are worth another try, and the probe says Unreachable rather than Rejected, so
 /// a transient outage is not painted as a configuration error (the Android app's
 /// AddonUnavailable, rendered separately for the same reason).
-fn transport_failure(reason: &str) -> bool {
+fn transport_failure(error: &anyhow::Error) -> bool {
+    if let Some(auth) = error.downcast_ref::<AuthError>() {
+        return auth.status.is_server_error();
+    }
+    let reason = error.to_string();
     reason.contains("timed out") || reason.contains("didn't connect") || reason.contains("request failed") || reason.contains("bad minute")
 }
+
+fn retry_after(value: &str, now: std::time::SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = httpdate::parse_http_date(value).ok()?;
+    Some(date.duration_since(now).unwrap_or_default())
+}
+
+#[derive(Debug)]
+struct AuthError {
+    status: reqwest::StatusCode,
+    message: String,
+}
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{AUTH_DESKTOP_MSG} {} (HTTP {})", self.message, self.status.as_u16())
+    }
+}
+
+impl std::error::Error for AuthError {}
 
 /// The reason a `401 {"error":"bitchord_auth",…}` answer gave, for the log line.
 fn auth_answer(body: &str) -> Option<String> {
@@ -1428,11 +1518,12 @@ mod tests {
     #[tokio::test]
     async fn probe_distinguishes_search_outages_from_rejection() {
         let (base, server) = serve(|path, _| std::future::ready(match path.as_str() {
-            "/offline/manifest.json" | "/auth/manifest.json" => (200, r#"{"id":"test"}"#.to_owned()),
+            "/offline/manifest.json" | "/auth/manifest.json" | "/verifier/manifest.json" => (200, r#"{"id":"test"}"#.to_owned()),
             "/absent/manifest.json" | "/search-only/manifest.json" => (404, String::new()),
             "/offline/search" | "/absent/search" => (503, String::new()),
             "/search-only/search" => (200, r#"{"tracks":[{}]}"#.to_owned()),
-            "/auth/search" => (401, r#"{"error":"bitchord_auth","code":"expired"}"#.to_owned()),
+            "/auth/search" | "/locked/manifest.json" => (401, r#"{"error":"bitchord_auth","code":"expired"}"#.to_owned()),
+            "/verifier/search" | "/verifier-manifest/manifest.json" => (503, r#"{"error":"bitchord_auth","code":"unavailable"}"#.to_owned()),
             _ => panic!("unexpected addon request: {path}"),
         })).await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -1440,7 +1531,12 @@ mod tests {
             assert!(matches!(Client::new(&format!("{base}/{path}")).unwrap().probe(&http).await, Health::Unreachable(reason) if reason.contains("HTTP 503")));
         }
         assert!(matches!(Client::new(&format!("{base}/search-only")).unwrap().probe(&http).await, Health::Ok(reason) if reason.contains("1 result")));
-        assert!(matches!(Client::new(&format!("{base}/auth")).unwrap().probe(&http).await, Health::Rejected(reason) if reason.contains(AUTH_DESKTOP_MSG)));
+        for path in ["auth", "locked"] {
+            assert!(matches!(Client::new(&format!("{base}/{path}")).unwrap().probe(&http).await, Health::Rejected(reason) if reason.contains("HTTP 401") && reason.contains("proof went stale")));
+        }
+        for path in ["verifier", "verifier-manifest"] {
+            assert!(matches!(Client::new(&format!("{base}/{path}")).unwrap().probe(&http).await, Health::Unreachable(reason) if reason.contains("HTTP 503") && reason.contains("verifier couldn't load")));
+        }
         server.abort();
     }
 
@@ -1487,6 +1583,105 @@ mod tests {
         assert_eq!(stream.url, "https://example.invalid/first.flac");
         assert!(requests.try_recv().is_ok());
         server.abort();
+    }
+
+    #[test]
+    fn retry_after_accepts_http_dates_and_delta_seconds() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(784111777);
+        let date = httpdate::fmt_http_date(now + Duration::from_secs(60));
+        assert_eq!(retry_after(&date, now), Some(Duration::from_secs(60)));
+        assert_eq!(retry_after(&date, now + Duration::from_secs(61)), Some(Duration::ZERO));
+        assert_eq!(retry_after("60", now), Some(Duration::from_secs(60)));
+        assert_eq!(retry_after("invalid", now), None);
+    }
+
+    #[tokio::test]
+    async fn stalled_first_row_leaves_time_to_compare_later_upgrade_rows() {
+        let (base, server) = serve(|path, _| async move {
+            let body = match path.as_str() {
+                "/manifest.json" => r#"{"id":"test"}"#,
+                "/stream/slow" => return std::future::pending().await,
+                "/stream/cd" => r#"{"url":"https://example.invalid/cd.flac","size":100,"bitDepth":16}"#,
+                "/stream/hires" => r#"{"url":"https://example.invalid/hires.flac","size":100,"bitDepth":24}"#,
+                _ => panic!("unexpected addon request: {path}"),
+            };
+            (200, body.to_owned())
+        }).await;
+        let client = Arc::new(Client::new(&base).unwrap());
+        let rows = ["slow", "cd", "hires"].map(|id| candidate(&serde_json::json!({"id":id,"title":"Test Song"})).unwrap());
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        for atmos in [false, true] {
+            let (send, mut answers) = tokio::sync::mpsc::unbounded_channel();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            tokio::time::timeout_at(deadline, open_first(&http, &client, &rows, atmos, Lookup::Upgrade { fresh: true }, deadline, &send)).await.unwrap();
+            assert_eq!(answers.try_recv().unwrap().info.rung(), 1);
+            assert_eq!(answers.try_recv().unwrap().info.rung(), 2);
+            assert!(answers.try_recv().is_err());
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cached_url_rejection_refreshes_once_on_whole_download() {
+        use std::sync::atomic::AtomicUsize;
+        use crate::stream::{self, Media, Ranging, Refresh, Shared};
+
+        let mints = Arc::new(AtomicUsize::new(0));
+        let old_requests = Arc::new(AtomicUsize::new(0));
+        let (base, server) = serve({
+            let (mints, old_requests) = (mints.clone(), old_requests.clone());
+            move |path, origin| {
+                std::future::ready(match path.as_str() {
+                    "/manifest.json" => (200, r#"{"id":"test"}"#.to_owned()),
+                    "/stream/song" => {
+                        let url = match mints.fetch_add(1, Ordering::SeqCst) {
+                            0 => return std::future::ready((404, String::new())),
+                            1 => format!("{origin}/old.flac"),
+                            _ => format!("{origin}/fresh.flac"),
+                        };
+                        (200, serde_json::json!({"url":url,"size":4}).to_string())
+                    }
+                    "/old.flac" if old_requests.fetch_add(1, Ordering::SeqCst) > 0 => (403, String::new()),
+                    "/old.flac" | "/fresh.flac" => (200, "data".to_owned()),
+                    _ => panic!("unexpected addon request: {path}"),
+                })
+            }
+        }).await;
+        let client = Arc::new(Client::new(&base).unwrap());
+        let row = candidate(&serde_json::json!({"id":"song","title":"Test Song"})).unwrap();
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        assert!(client.open(&http, &row, false, Lookup::Playback).await.unwrap().is_none());
+        let first = client.open(&http, &row, false, Lookup::Playback).await.unwrap().unwrap();
+        let cached = client.open(&http, &row, false, Lookup::Playback).await.unwrap().unwrap();
+        assert_eq!(first.url, cached.url);
+        assert_eq!(mints.load(Ordering::SeqCst), 2);
+        let shared = Shared::new(cached.size, 0, None, cached.format, None, false);
+        let refresh = Refresh { once: true, callback: Arc::new({
+            let http = http.clone();
+            move || {
+                let (selection, http) = (cached.selection.clone(), http.clone());
+                Box::pin(async move { Ok(Media::File(selection.refresh(&http).await?.url)) })
+            }
+        }) };
+        stream::download(http, Media::File(cached.url), agent().to_owned(), shared.clone(), Some(refresh), Ranging::Header).await;
+        assert!(shared.is_complete(), "{:?}", shared.error());
+        assert_eq!(old_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(mints.load(Ordering::SeqCst), 3);
+        assert!(client.streams.lock().await.get(&("song".into(), false)).is_none());
+        server.abort();
+    }
+
+    #[test]
+    fn late_cache_updates_and_invalidations_cannot_replace_a_newer_answer() {
+        let key = ("song".to_owned(), false);
+        let mut cache = StreamCache::default();
+        cache.insert(key.clone(), Value::from("new"), 2);
+        cache.insert(key.clone(), Value::from("old"), 1);
+        cache.invalidate(&key, 1);
+        assert_eq!(cache.get(&key), Some((Value::from("new"), 2)));
+        cache.invalidate(&key, 2);
+        cache.insert(key.clone(), Value::from("old"), 1);
+        assert!(cache.get(&key).is_none());
     }
 
     #[tokio::test]
