@@ -81,6 +81,51 @@ pub fn galley_wrapped(
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+/// `s` with every digit centred in a cell as wide as the widest digit, so a running time
+/// keeps its width and doesn't shuffle sideways each second (egui can't ask the font for
+/// its tabular figures). Everything else keeps its own width.
+pub fn time_galley(ui: &Ui, s: &str, font: egui::FontId, color: Color32) -> std::sync::Arc<egui::Galley> {
+    use egui::text::{LayoutJob, TextFormat};
+    // The exact advance, not the galley's rounded-out size.
+    let advance = |g: &egui::Galley| g.rows.first().map_or(0.0, |r| r.row.size.x);
+    let width_of = |c: char| advance(&ui.painter().layout_no_wrap(c.to_string(), font.clone(), color));
+    let widths: [f32; 10] = std::array::from_fn(|d| width_of(char::from(b'0' + d as u8)));
+    let cell = widths.iter().copied().fold(0.0, f32::max);
+    let format = TextFormat::simple(font.clone(), color);
+    let mut job = LayoutJob::default();
+    // The space each digit leaves after itself, given to whatever comes next.
+    let mut carry = 0.0;
+    // What the whole should measure: the same for every time of the same shape.
+    let mut target = 0.0;
+    let mut buf = [0u8; 4];
+    for c in s.chars() {
+        let pad = c.to_digit(10).map_or(0.0, |d| cell - widths[d as usize]);
+        target += if c.is_ascii_digit() { cell } else { width_of(c) };
+        job.append(c.encode_utf8(&mut buf), carry + pad / 2.0, format.clone());
+        carry = pad / 2.0;
+    }
+    // The last digit's trailing half, so the width doesn't hang on which digit ends it.
+    job.append("", carry, format);
+    let g = ui.fonts_mut(|f| f.layout_job(job.clone()));
+    // Glyph advances are snapped, so the sum can be a hair off: make it up at the end.
+    let off = target - advance(&g);
+    if off.abs() < 1e-3 {
+        return g;
+    }
+    if let Some(last) = job.sections.last_mut() {
+        last.leading_space = (last.leading_space + off).max(0.0);
+    }
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// [`time_galley`] painted with `align` at `pos`, as `Painter::text` would.
+pub fn time_at(ui: &Ui, pos: Pos2, align: Align2, s: &str, font: egui::FontId, color: Color32) -> Rect {
+    let g = time_galley(ui, s, font, color);
+    let rect = align.anchor_size(pos, g.size());
+    ui.painter().galley(rect.min, g, color);
+    rect
+}
+
 pub fn text_at(ui: &Ui, pos: Pos2, text: &str, font: egui::FontId, color: Color32, width: f32) -> Rect {
     let g = galley(ui, text, font, color, width);
     let rect = Rect::from_min_size(pos, g.size());
@@ -1546,6 +1591,33 @@ pub fn skeleton(ui: &mut Ui, time: f64, rows: usize, card: f32) {
     // The shimmer needs frames only while it's on screen, and 15 fps is plenty.
     if ui.is_rect_visible(Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top())) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(66));
+    }
+}
+
+#[cfg(test)]
+mod time_tests {
+    #[test]
+    fn running_times_keep_their_width() {
+        let ctx = egui::Context::default();
+        // Inter, the app's own font, whose figures are proportional unless asked otherwise.
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert("inter".into(), std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/Inter-Regular.ttf"))));
+        fonts.families.insert(egui::FontFamily::Proportional, vec!["inter".into()]);
+        ctx.set_fonts(fonts);
+        // Nothing paints these frames: their texture uploads are let go on purpose.
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::FontId::proportional(13.0);
+            let width = |s: &str| super::time_galley(ui, s, font.clone(), egui::Color32::WHITE).rows[0].row.size.x;
+            // Inter's 1 is narrower than its 0, so these differ as plain text.
+            let plain = |s: &str| ui.painter().layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::WHITE).size().x;
+            assert!((plain("1:11") - plain("0:00")).abs() > 0.5);
+            for s in ["1:11", "0:00", "2:47", "9:58", "4:44 / 3:21"] {
+                let base = if s.len() > 4 { width("0:00 / 0:00") } else { width("0:00") };
+                assert!((width(s) - base).abs() < 0.01, "{s}: {} vs {base}", width(s));
+            }
+        });
+        out.textures_delta.clear();
     }
 }
 

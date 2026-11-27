@@ -729,7 +729,7 @@ fn elapsed(ui: &Ui, at: egui::Pos2, width: f32, start: i64, end: Option<i64>) {
         ));
     } else {
         widgets::icon_at(ui, at + vec2(6.0, 0.0), icon::MUSIC, 13.0, GREEN);
-        ui.painter().text(at + vec2(17.0, 0.0), Align2::LEFT_CENTER, super::fmt_time(secs), theme::semibold(12.5), GREEN);
+        widgets::time_at(ui, at + vec2(17.0, 0.0), Align2::LEFT_CENTER, &super::fmt_time(secs), theme::semibold(12.5), GREEN);
     }
 }
 

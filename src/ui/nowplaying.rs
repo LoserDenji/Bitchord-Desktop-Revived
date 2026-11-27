@@ -709,7 +709,7 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
         ui.painter().circle_filled(pos2(filled.right(), line_y), 6.5 * lit, accent);
         if let Some(p) = seek.hover_pos() {
             let t = ((p.x - track_r.left()) / track_r.width()).clamp(0.0, 1.0) * total;
-            let g = widgets::galley(ui, &super::fmt_time(t as u32), theme::semibold(12.0), Color32::WHITE, 80.0);
+            let g = widgets::time_galley(ui, &super::fmt_time(t as u32), theme::semibold(12.0), Color32::WHITE);
             let tip = Rect::from_center_size(pos2(p.x, line_y - 22.0), g.size() + vec2(12.0, 6.0));
             ui.painter().rect_filled(tip, 6.0, theme::shade(0.75));
             ui.painter().galley(tip.min + vec2(6.0, 3.0), g, Color32::WHITE);
@@ -759,7 +759,9 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
     left.add_space(14.0);
     if total > 0.0 {
         let time = format!("{} / {}", super::fmt_time(pos as u32), super::fmt_time(total as u32));
-        left.label(egui::RichText::new(time).font(theme::regular(13.5)).color(Color32::WHITE));
+        let g = widgets::time_galley(&left, &time, theme::regular(13.5), Color32::WHITE);
+        let (r, _) = left.allocate_exact_size(g.size(), Sense::hover());
+        left.painter().galley(r.min, g, Color32::WHITE);
     }
     let mut right = ui.new_child(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::right_to_left(egui::Align::Center)));
     right.spacing_mut().item_spacing.x = 2.0;
@@ -1094,7 +1096,7 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     }
     let at = |p: egui::Pos2| (((p.x - x0) / w.max(1.0)).clamp(0.0, 1.0) * total).max(0.0);
     let tc = theme::with_alpha(Color32::WHITE, 0.62);
-    let g = widgets::galley(ui, &super::fmt_time(pos as u32), theme::semibold(11.0), tc, 80.0);
+    let g = widgets::time_galley(ui, &super::fmt_time(pos as u32), theme::semibold(11.0), tc);
     ui.painter().galley(pos2(x0, hit.bottom() + 2.0), g, tc);
     let left = super::fmt_time((total - pos).max(0.0) as u32);
     let g = widgets::galley(ui, &format!("-{left}"), theme::semibold(11.0), tc, 80.0);

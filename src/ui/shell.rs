@@ -1123,7 +1123,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     }
     if focus > 0.0 && total > 0.0 {
         let col = theme::with_alpha(theme::text(), focus);
-        let g = widgets::galley(ui, &fmt_time(pos as u32), theme::semibold(11.5), theme::text(), 80.0);
+        let g = widgets::time_galley(ui, &fmt_time(pos as u32), theme::semibold(11.5), theme::text());
         ui.painter().galley(pos2(text_l, cy + 2.0), g, col);
         let left = fmt_time((total - pos).max(0.0) as u32);
         let g = widgets::galley(ui, &format!("-{left}"), theme::semibold(11.5), theme::text(), 80.0);
