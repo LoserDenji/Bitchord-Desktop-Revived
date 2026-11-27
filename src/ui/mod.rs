@@ -33,7 +33,7 @@ mod sorts;
 mod storage;
 mod titlebar;
 pub use mini::set_hwnd as set_mini_hwnd;
-pub use titlebar::{custom as custom_titlebar, init as init_titlebar, inset as titlebar_inset, set_hwnd as set_titlebar_hwnd};
+pub use titlebar::{custom as custom_titlebar, drop_caption, init as init_titlebar, inset as titlebar_inset, set_hwnd as set_titlebar_hwnd};
 #[cfg(target_os = "macos")]
 pub use titlebar::set_view as set_titlebar_view;
 mod transfer;
