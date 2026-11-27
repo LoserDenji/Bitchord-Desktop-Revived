@@ -151,14 +151,16 @@ pub fn page_line_color(app: &App, fy: f32) -> Color32 {
         let scale = (b.scale - 0.08).max(1.0);
         let side = crate::art::SIZE as usize;
         let row = (((fy + 0.5 * (scale - 1.0)) / scale).clamp(0.0, 1.0) * side as f32) as usize;
+        let row = row.min(side - 1);
         let band = &a.rgba[row * side * 4..(row + 1) * side * 4];
+        let pixels = band.as_chunks::<4>().0;
         let (mut r, mut g, mut bl) = (0.0f32, 0.0f32, 0.0f32);
-        for p in band.as_chunks::<4>().0 {
+        for p in pixels {
             r += p[0] as f32;
             g += p[1] as f32;
             bl += p[2] as f32;
         }
-        let n = band.len() as f32;
+        let n = pixels.len() as f32;
         let (r, g, bl) = (r / n, g / n, bl / n);
         // The shader's own transforms on the sampled colour: its vignette (one line's
         // mean square offset from the screen's centre), the saturation and the dim.
