@@ -115,6 +115,76 @@ pub fn background(app: &mut App, ui: &mut Ui, screen: Rect, now: f64, only: Opti
     }
 }
 
+/// The page background's colour at one screen line (`fy`, 0–1 down the screen): the
+/// playing cover's art sampled where the shader paints it, under the page's own
+/// darkening wash — the colour a full-bleed header ends on when it melts into the
+/// page, so the blend follows the cover instead of sitting as a black band over it.
+/// Where no art is up (nothing playing, blur off, a Solid theme), what the fallback
+/// paints instead.
+pub fn page_line_color(app: &App, fy: f32) -> Color32 {
+    use crate::preset::BgMode;
+    let look = app.look();
+    let b = &look.background;
+    let mode = page_mode(look);
+    if mode == BgMode::Solid {
+        // Plain colour: nothing over it, so nothing to melt into.
+        return base_color(app);
+    }
+    let light = theme::light();
+    let dim = if light { 1.0 } else { look.app.page_dim.unwrap_or(b.page_dim).clamp(0.02, 1.0) };
+    // A translucent fill composited over the opaque colour under it (premultiplied).
+    let over = |src: Color32, dst: Color32| {
+        let k = (255 - src.a()) as u32;
+        let ch = |s: u8, d: u8| (s as u32 + d as u32 * k / 255).min(255) as u8;
+        Color32::from_rgba_premultiplied(ch(src.r(), dst.r()), ch(src.g(), dst.g()), ch(src.b(), dst.b()), 255)
+    };
+    let art = matches!(mode, BgMode::Kawarp | BgMode::CoverStatic | BgMode::CoverFullbleed);
+    let mut c = if art
+        && !app.disable_blur
+        && app.bg.is_some()
+        && let Some(a) = app.cover_colours()
+    {
+        // The shader stretches the 64×64 art over the screen, zoomed by `scale` about
+        // the centre, so one screen line lands on one band of it. Its warp moves a
+        // pixel's sample, not a whole line's average, and the crossfade in and out of
+        // a track lands on the current art soon enough.
+        let scale = (b.scale - 0.08).max(1.0);
+        let side = crate::art::SIZE as usize;
+        let row = (((fy + 0.5 * (scale - 1.0)) / scale).clamp(0.0, 1.0) * side as f32) as usize;
+        let row = row.min(side - 1);
+        let band = &a.rgba[row * side * 4..(row + 1) * side * 4];
+        let pixels = band.as_chunks::<4>().0;
+        let (mut r, mut g, mut bl) = (0.0f32, 0.0f32, 0.0f32);
+        for p in pixels {
+            r += p[0] as f32;
+            g += p[1] as f32;
+            bl += p[2] as f32;
+        }
+        let n = pixels.len() as f32;
+        let (r, g, bl) = (r / n, g / n, bl / n);
+        // The shader's own transforms on the sampled colour: its vignette (one line's
+        // mean square offset from the screen's centre), the saturation and the dim.
+        let v = 1.0 - (1.0 / 12.0 + (fy - 0.5) * (fy - 0.5)) * 0.3;
+        let gray = 0.299 * r + 0.587 * g + 0.114 * bl;
+        let sat = (b.saturation * 0.9).clamp(0.0, 1.0);
+        let mix = |ch: f32| (gray + (ch - gray) * sat) * v * dim;
+        Color32::from_rgb(mix(r) as u8, mix(g) as u8, mix(bl) as u8)
+    } else {
+        // The flat gradient the background paints without the shader: the accent wash
+        // fading into the theme's solid, over the base.
+        let top = theme::with_alpha(app.accent_color(), 0.18 * dim / 0.5);
+        over(theme::lerp_color(top, look.solid(), fy), base_color(app))
+    };
+    // The wash over everything the background paints: white in light pages, the
+    // darkening toward the screen's foot in dark ones.
+    if light {
+        c = theme::lerp_color(c, Color32::WHITE, 212.0 / 255.0);
+    } else {
+        c = theme::lerp_color(c, Color32::BLACK, 0.12 + (0.55 - 0.12) * fy);
+    }
+    c
+}
+
 // ------------------------------------------------------------------ sidebar
 
 /// How the theme draws nav items.

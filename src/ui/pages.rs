@@ -1392,7 +1392,6 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     // The listener's signature service stands in for the name where it has one.
     let signature = app.signature_texture(ui.ctx(), &name);
     let Some(a) = &app.artist else { return };
-    let acts = &mut app.actions;
     let top: Vec<Track> = a.top.iter().filter(|t| rows.shows(t)).cloned().collect();
     let top = &top;
     // The hero, full-bleed at the header aspect the artist pages use (about 1.93:1),
@@ -1423,24 +1422,43 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     }
     // The banner melts into the page on every side — a header wash, not a photograph
     // pasted over it — and the name sits in the foot ramp's dark, where the old shade
-    // used to cut the image off hard.
-    widgets::melt_edges(ui, bleed, theme::bg(), 110.0, 64.0, bleed.height() * 0.55);
+    // used to cut the image off hard. The ramp takes the page's own colour at the
+    // banner's foot: the playing cover's, so the blend follows the background's art
+    // instead of sitting as a black band over it.
+    let fy = ((bleed.bottom() - screen.top()) / screen_h).clamp(0.0, 1.0);
+    widgets::melt_edges(ui, bleed, super::shell::page_line_color(app, fy), 110.0, 64.0, bleed.height() * 0.55);
+    // The melt's own ramp lands a shade short of the page, leaving the banner's foot to
+    // read as a line. A tight second pass takes the last stretch the rest of the way,
+    // and a wash of the same colour bleeds below the edge, so the header marries the
+    // background under it instead of ending against it.
+    let foot = super::shell::page_line_color(app, fy);
+    super::shell::vgradient(ui.painter(), Rect::from_min_max(pos2(bleed.left(), bleed.bottom() - 72.0), pos2(bleed.right(), bleed.bottom())), theme::with_alpha(foot, 0.0), foot);
+    super::shell::vgradient(ui.painter(), Rect::from_min_max(pos2(bleed.left(), bleed.bottom()), pos2(bleed.right(), bleed.bottom() + 110.0)), foot, theme::with_alpha(foot, 0.0));
     let x = bleed.left() + PAGE_INSET as f32;
-    // The pills live on the art now, in the foot ramp: each its own pinned rect, since
-    // a flow row would sit below the banner.
-    let pill_h = 38.0;
-    let pill_top = bleed.bottom() - 24.0 - pill_h;
-    let mut px = x;
-    let pinned = |ui: &mut Ui, px: &mut f32, salt: &str, label: &str, glyph: Option<char>, primary: bool| -> bool {
-        let text = ui.painter().layout_no_wrap(label.to_owned(), theme::semibold(14.0), Color32::PLACEHOLDER);
-        let icon_w = if glyph.is_some() { 24.0 } else { 0.0 };
-        let rect = Rect::from_min_size(pos2(*px, pill_top), vec2(text.size().x + icon_w + 36.0, pill_h));
-        *px = rect.right() + 10.0;
-        widgets::pill_at(ui, rect, salt, label, glyph, primary).clicked()
-    };
+    // The buttons ride the banner's foot, centred on the page and cut exactly in half
+    // by its bottom edge — half over the art, half over the melt — which leaves the art
+    // above them to the name. The website's play circle in the accent, with the shuffle
+    // and the subscribe at its sides as the player's own transparent circles — the
+    // subscribe wearing the songs' star.
+    let acts = &mut app.actions;
+    let play_r = 32.0;
+    let side_r = 22.0;
+    let cy = bleed.bottom();
+    let gap = play_r + side_r + 12.0;
+    let cx = bleed.center().x;
+    // The transparent discs take their colour from the art they sit on; the glyphs stay
+    // white on the dark pages, the theme's own ink on light ones.
+    let ink = if theme::light() { theme::text() } else { Color32::WHITE };
     let active = widgets::active_state(ui, &Target::Artist(id.to_owned()));
-    let (play_label, play_glyph) = if active == Some(true) { ("Pause", icon::PAUSE) } else { ("Play", icon::PLAY) };
-    if pinned(ui, &mut px, "artist-play", play_label, Some(play_glyph), true) {
+    let (play_glyph, play_name) = if active == Some(true) { (icon::PAUSE, "Pause") } else { (icon::PLAY, "Play") };
+    let prect = Rect::from_center_size(pos2(cx, cy), Vec2::splat(play_r * 2.0));
+    let presp = ui.interact(prect, egui::Id::unique(("artist-play", id)), Sense::click());
+    let presp = widgets::named(presp, play_name).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let h = theme::anim_bool(ui.ctx(), presp.id.with("h"), presp.hovered(), 0.15);
+    let pr = prect.shrink(if presp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
+    ui.painter().circle_filled(pr.center(), pr.width() / 2.0, theme::lerp_color(accent, Color32::WHITE, 0.1 * h));
+    widgets::icon_at(ui, pr.center(), play_glyph, 26.0, Color32::WHITE);
+    if presp.clicked() {
         if active.is_some() {
             acts.push(Action::TogglePlay);
         } else if !top.is_empty() {
@@ -1448,22 +1466,46 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             acts.push(Action::Play(top.to_vec(), 0));
         }
     }
-    if pinned(ui, &mut px, "artist-shuffle", "Shuffle", Some(icon::SHUFFLE), false) && !top.is_empty() {
+    let srect = Rect::from_center_size(pos2(cx - gap, cy), Vec2::splat(side_r * 2.0));
+    let sresp = ui.interact(srect, egui::Id::unique(("artist-shuffle", id)), Sense::click());
+    let sresp = widgets::named(sresp, "Shuffle").on_hover_cursor(egui::CursorIcon::PointingHand);
+    let sh = theme::anim_bool(ui.ctx(), sresp.id.with("h"), sresp.hovered(), 0.15);
+    let sr = srect.shrink(if sresp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
+    if sh > 0.0 {
+        ui.painter().circle_filled(sr.center(), sr.width() / 2.0 + 1.5 * sh, theme::glass(0.1 * sh));
+    }
+    widgets::icon_at(ui, sr.center(), icon::SHUFFLE, 17.0, ink);
+    if sresp.clicked() && !top.is_empty() {
         let mut t = top.clone();
         super::shuffle(&mut t);
         acts.push(Action::Play(t, 0));
     }
-    if let Some(first) = top.first()
-        && pinned(ui, &mut px, "artist-radio", "Radio", Some(icon::RADIO), false) {
-            acts.push(Action::Radio(first.clone()));
-        }
-    // Greyed out while a subscribe or unsubscribe runs: a click then wouldn't count.
-    if a.channel_id.is_some()
-        && ui.add_enabled_ui(!subscribing, |ui| pinned(ui, &mut px, "artist-sub", if a.subscribed { "Subscribed" } else { "Subscribe" }, None, false)).inner
-    {
-        acts.push(Action::Subscribe(!a.subscribed));
+    // The subscribe, the songs' star over the transparent disc: filled in the cover's
+    // accent while subscribed, with the little pop the player bar's star turns with.
+    if a.channel_id.is_some() {
+        let rect = Rect::from_center_size(pos2(cx + gap, cy), Vec2::splat(side_r * 2.0));
+        ui.add_enabled_ui(!subscribing, |ui| {
+            let resp = ui.interact(rect, egui::Id::unique(("artist-sub", id)), Sense::click());
+            let resp = widgets::named(resp, if a.subscribed { "Subscribed" } else { "Subscribe" }).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
+            let pop = theme::anim_bool(ui.ctx(), egui::Id::unique(("artist-subbed", id)), a.subscribed, 0.3);
+            let r = rect.shrink(if resp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
+            if h > 0.0 {
+                ui.painter().circle_filled(r.center(), r.width() / 2.0 + 1.5 * h, theme::glass(0.1 * h));
+            }
+            let size = 16.0 * (1.0 + 0.25 * (pop * std::f32::consts::PI).sin());
+            super::glyphs::draw(ui, r.center(), size, super::glyphs::STAR, ink);
+            if pop > 0.0 {
+                super::glyphs::draw(ui, r.center(), size, super::glyphs::STAR_FILLED, theme::with_alpha(accent, pop));
+            }
+            if resp.clicked() {
+                acts.push(Action::Subscribe(!a.subscribed));
+            }
+        });
     }
-    let base = pos2(x, pill_top - 16.0);
+    // With the buttons out of the art, the name and its subscriber count settle toward
+    // the foot's own inset, clear of the circles riding the edge.
+    let base = pos2(x, bleed.bottom() - 26.0);
     match &signature {
         // The artist's own hand, credited above it the way a page signs itself off.
         Some(tex) => {
@@ -1486,35 +1528,49 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     if let Some(s) = a.subscribers {
         ui.painter().text(base - vec2(0.0, 18.0), Align2::LEFT_BOTTOM, format!("{} subscribers", compact(s)), theme::regular(14.0), theme::text_dim());
     }
-    // The About, in the banner's bottom-right corner where the foot ramp leaves it
-    // room beside the pills: a few rows ending in an ellipsis, the whole card a
-    // click into the full text (with the channel's picture) that used to close the page.
+    // The radio, pinned to the image's bottom-right edge where the website keeps its
+    // corner button. The About card stacks above it, ending short of it.
+    let mut radio_top = None;
+    if let Some(first) = top.first() {
+        let text = ui.painter().layout_no_wrap("Radio".to_owned(), theme::semibold(14.0), Color32::PLACEHOLDER);
+        let rw = text.size().x + 24.0 + 36.0;
+        let rect = Rect::from_min_size(pos2(bleed.right() - PAGE_INSET as f32 - rw, bleed.bottom() - 24.0 - 38.0), vec2(rw, 38.0));
+        if widgets::pill_at(ui, rect, "artist-radio", "Radio", Some(icon::RADIO), false).clicked() {
+            acts.push(Action::Radio(first.clone()));
+        }
+        radio_top = Some(rect.top());
+    }
+    // The About, stacked over the radio in the banner's bottom-right corner: a few rows
+    // ending in an ellipsis, the whole card — sized to its text, no pane above the rows
+    // for the hover to light up — a click into the full text (with the channel's
+    // picture) that used to close the page.
     if let Some(d) = a.description.as_deref().filter(|d| !d.trim().is_empty())
         && bleed.width() >= 640.0
     {
         let aw = (bleed.width() * 0.26).clamp(220.0, 340.0);
-        // The card hangs off the foot ramp's line — the pills' own inset, on the
-        // opposite flank — and stays clear of what shares the corner: the pills row's
-        // end, and the name running the same left flank above them.
-        let abottom = bleed.bottom() - 24.0;
+        let full = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), aw, usize::MAX);
+        let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), aw, 4);
+        let g_size = g.size().y;
+        // "More" only says something when rows were actually cut.
+        let cut = full.size().y > g_size + 1.0;
+        let block_h = 24.0 + g_size + if cut { 30.0 } else { 0.0 };
+        // The card sits on the radio's head (the foot ramp's own inset where the radio
+        // isn't), right-flush with it, and stays clear of the name running the left
+        // flank at the same height.
+        let abottom = radio_top.map_or(bleed.bottom() - 24.0, |t| t - 12.0);
+        let aright = bleed.right() - PAGE_INSET as f32;
+        let aleft = aright - aw;
         let name_w = ui.painter().layout_no_wrap(name.clone(), theme::bold(58.0), Color32::PLACEHOLDER).size().x;
-        let aleft = bleed.right() - PAGE_INSET as f32 - aw;
-        if aleft > (px + 30.0).max(x + name_w + 30.0) {
-            let arect = Rect::from_min_max(pos2(aleft, (abottom - 210.0).max(bleed.top() + 56.0)), pos2(bleed.right() - PAGE_INSET as f32, abottom));
+        if aleft > x + name_w + 30.0 {
+            let arect = Rect::from_min_max(pos2(aleft, (abottom - block_h).max(bleed.top() + 56.0)), pos2(aright, abottom));
             let resp = widgets::named(ui.interact(arect, egui::Id::unique(("artist-about", id)), Sense::click()), "About this artist")
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
             if h > 0.0 {
                 ui.painter().rect_filled(arect, 14.0, theme::glass(0.12 * h));
             }
-            let full = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), arect.width(), usize::MAX);
-            let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), arect.width(), 4);
-            let g_size = g.size().y;
-            // "More" only says something when rows were actually cut.
-            let cut = full.size().y > g_size + 1.0;
-            // The text hangs from the card's bottom edge: the ABOUT header its top,
-            // the rows under it, the More that opens it all at the ramp's line.
-            let block_h = 24.0 + g_size + if cut { 30.0 } else { 0.0 };
+            // The card is its text: the ABOUT header at the top, the rows under it, the
+            // More that opens it all at the foot.
             let ty = (arect.bottom() - block_h).max(arect.top());
             ui.painter().text(pos2(arect.left(), ty), Align2::LEFT_TOP, "ABOUT", theme::semibold(11.5), theme::with_alpha(Color32::WHITE, 0.72));
             ui.painter().galley(pos2(arect.left(), ty + 24.0), g, Color32::PLACEHOLDER);
@@ -1535,17 +1591,16 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     if !top.is_empty() {
         ui.add_space(26.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(if uploaded { "Songs" } else { "Top songs" }).font(theme::bold(24.0)).color(theme::text()));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // With a "Top songs" playlist behind the shelf, Show all opens it; without
-                // one, the shelf page stands in and lists everything the page holds.
-                if pill(ui, "Show all", None, false).clicked() {
-                    match a.top_playlist.clone() {
-                        Some(pl) => acts.push(Action::Open(Target::Playlist(pl))),
-                        None => acts.push(Action::Go(Page::ArtistShelf { artist: id.to_owned(), title: super::SONGS_SHELF.to_owned() })),
-                    }
+            // The website's heading: the arrow after the title opens what the Show all
+            // pill listed, and the title clicks with it. With a "Top songs" playlist
+            // behind the shelf it opens; without one, the shelf page stands in and
+            // lists everything the page holds.
+            if widgets::heading_link(ui, if uploaded { "Songs" } else { "Top songs" }, theme::bold(24.0)) {
+                match a.top_playlist.clone() {
+                    Some(pl) => acts.push(Action::Open(Target::Playlist(pl))),
+                    None => acts.push(Action::Go(Page::ArtistShelf { artist: id.to_owned(), title: super::SONGS_SHELF.to_owned() })),
                 }
-            });
+            }
         });
         ui.add_space(12.0);
         // They can be dragged onto a playlist in the sidebar.
