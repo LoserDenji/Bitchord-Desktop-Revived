@@ -14,9 +14,6 @@ use crate::theme::{self, icon};
 
 const CARD: f32 = 180.0;
 
-/// The website's own play red — the big circle its artist pages start the music with.
-const PLAY_RED: Color32 = Color32::from_rgb(0xFA, 0x23, 0x3B);
-
 /// The central panel's left inset (its frame, in `mod.rs`), which full-bleed art —
 /// the artist's banner, home's hero — paints across to reach the sidebar's edge.
 pub(crate) const PAGE_INSET: i8 = 28;
@@ -1430,21 +1427,28 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     // instead of sitting as a black band over it.
     let fy = ((bleed.bottom() - screen.top()) / screen_h).clamp(0.0, 1.0);
     widgets::melt_edges(ui, bleed, super::shell::page_line_color(app, fy), 110.0, 64.0, bleed.height() * 0.55);
+    // The melt's own ramp lands a shade short of the page, leaving the banner's foot to
+    // read as a line. A tight second pass takes the last stretch the rest of the way,
+    // and a wash of the same colour bleeds below the edge, so the header marries the
+    // background under it instead of ending against it.
+    let foot = super::shell::page_line_color(app, fy);
+    super::shell::vgradient(ui.painter(), Rect::from_min_max(pos2(bleed.left(), bleed.bottom() - 72.0), pos2(bleed.right(), bleed.bottom())), theme::with_alpha(foot, 0.0), foot);
+    super::shell::vgradient(ui.painter(), Rect::from_min_max(pos2(bleed.left(), bleed.bottom()), pos2(bleed.right(), bleed.bottom() + 110.0)), foot, theme::with_alpha(foot, 0.0));
     let x = bleed.left() + PAGE_INSET as f32;
-    // The buttons live on the art now, in the foot ramp, each its own pinned circle
-    // (a flow row would sit below the banner): the website's big red play, with the
-    // shuffle and the subscribe at its sides as white icon-only circles — the
+    // The buttons ride the banner's foot, centred on the page and cut exactly in half
+    // by its bottom edge — half over the art, half over the melt — which leaves the art
+    // above them to the name. The website's play circle in the accent, with the shuffle
+    // and the subscribe at its sides as the player's own transparent circles — the
     // subscribe wearing the songs' star.
     let acts = &mut app.actions;
     let play_r = 32.0;
     let side_r = 22.0;
-    let cy = bleed.bottom() - 24.0 - play_r;
+    let cy = bleed.bottom();
     let gap = play_r + side_r + 12.0;
-    // Leave room for the shuffle circle and its hover growth inside the banner clip.
-    let cx = (x + play_r).max(bleed.left() + gap + side_r + 2.0);
-    // The side circles are white in the dark pages the website draws; light pages get
-    // the Play pill's own treatment instead, or a white circle would vanish on them.
-    let (wash, ink) = if theme::light() { (theme::text(), theme::on_text()) } else { (Color32::WHITE, widgets::contrast(Color32::WHITE)) };
+    let cx = bleed.center().x;
+    // The transparent discs take their colour from the art they sit on; the glyphs stay
+    // white on the dark pages, the theme's own ink on light ones.
+    let ink = if theme::light() { theme::text() } else { Color32::WHITE };
     let active = widgets::active_state(ui, &Target::Artist(id.to_owned()));
     let (play_glyph, play_name) = if active == Some(true) { (icon::PAUSE, "Pause") } else { (icon::PLAY, "Play") };
     let prect = Rect::from_center_size(pos2(cx, cy), Vec2::splat(play_r * 2.0));
@@ -1452,7 +1456,7 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let presp = widgets::named(presp, play_name).on_hover_cursor(egui::CursorIcon::PointingHand);
     let h = theme::anim_bool(ui.ctx(), presp.id.with("h"), presp.hovered(), 0.15);
     let pr = prect.shrink(if presp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
-    ui.painter().circle_filled(pr.center(), pr.width() / 2.0, theme::lerp_color(PLAY_RED, Color32::WHITE, 0.1 * h));
+    ui.painter().circle_filled(pr.center(), pr.width() / 2.0, theme::lerp_color(accent, Color32::WHITE, 0.1 * h));
     widgets::icon_at(ui, pr.center(), play_glyph, 26.0, Color32::WHITE);
     if presp.clicked() {
         if active.is_some() {
@@ -1467,15 +1471,17 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let sresp = widgets::named(sresp, "Shuffle").on_hover_cursor(egui::CursorIcon::PointingHand);
     let sh = theme::anim_bool(ui.ctx(), sresp.id.with("h"), sresp.hovered(), 0.15);
     let sr = srect.shrink(if sresp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
-    ui.painter().circle_filled(sr.center(), sr.width() / 2.0 + 1.5 * sh, wash);
+    if sh > 0.0 {
+        ui.painter().circle_filled(sr.center(), sr.width() / 2.0 + 1.5 * sh, theme::glass(0.1 * sh));
+    }
     widgets::icon_at(ui, sr.center(), icon::SHUFFLE, 17.0, ink);
     if sresp.clicked() && !top.is_empty() {
         let mut t = top.clone();
         super::shuffle(&mut t);
         acts.push(Action::Play(t, 0));
     }
-    // The subscribe, the songs' star in a white circle: filled in the cover's accent
-    // while subscribed, with the little pop the player bar's star turns with.
+    // The subscribe, the songs' star over the transparent disc: filled in the cover's
+    // accent while subscribed, with the little pop the player bar's star turns with.
     if a.channel_id.is_some() {
         let rect = Rect::from_center_size(pos2(cx + gap, cy), Vec2::splat(side_r * 2.0));
         ui.add_enabled_ui(!subscribing, |ui| {
@@ -1484,7 +1490,9 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
             let pop = theme::anim_bool(ui.ctx(), egui::Id::unique(("artist-subbed", id)), a.subscribed, 0.3);
             let r = rect.shrink(if resp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
-            ui.painter().circle_filled(r.center(), r.width() / 2.0 + 1.5 * h, wash);
+            if h > 0.0 {
+                ui.painter().circle_filled(r.center(), r.width() / 2.0 + 1.5 * h, theme::glass(0.1 * h));
+            }
             let size = 16.0 * (1.0 + 0.25 * (pop * std::f32::consts::PI).sin());
             super::glyphs::draw(ui, r.center(), size, super::glyphs::STAR, ink);
             if pop > 0.0 {
@@ -1495,8 +1503,9 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             }
         });
     }
-    let px = cx + gap + side_r;
-    let base = pos2(x, cy - play_r - 16.0);
+    // With the buttons out of the art, the name and its subscriber count settle toward
+    // the foot's own inset, clear of the circles riding the edge.
+    let base = pos2(x, bleed.bottom() - 26.0);
     match &signature {
         // The artist's own hand, credited above it the way a page signs itself off.
         Some(tex) => {
@@ -1520,8 +1529,8 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         ui.painter().text(base - vec2(0.0, 18.0), Align2::LEFT_BOTTOM, format!("{} subscribers", compact(s)), theme::regular(14.0), theme::text_dim());
     }
     // The radio, pinned to the image's bottom-right edge where the website keeps its
-    // corner button. The About card shares the corner, and ends short of it.
-    let mut radio_left = None;
+    // corner button. The About card stacks above it, ending short of it.
+    let mut radio_top = None;
     if let Some(first) = top.first() {
         let text = ui.painter().layout_no_wrap("Radio".to_owned(), theme::semibold(14.0), Color32::PLACEHOLDER);
         let rw = text.size().x + 24.0 + 36.0;
@@ -1529,38 +1538,39 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         if widgets::pill_at(ui, rect, "artist-radio", "Radio", Some(icon::RADIO), false).clicked() {
             acts.push(Action::Radio(first.clone()));
         }
-        radio_left = Some(rect.left());
+        radio_top = Some(rect.top());
     }
-    // The About, in the banner's bottom-right corner where the foot ramp leaves it
-    // room beside the buttons: a few rows ending in an ellipsis, the whole card a
-    // click into the full text (with the channel's picture) that used to close the page.
+    // The About, stacked over the radio in the banner's bottom-right corner: a few rows
+    // ending in an ellipsis, the whole card — sized to its text, no pane above the rows
+    // for the hover to light up — a click into the full text (with the channel's
+    // picture) that used to close the page.
     if let Some(d) = a.description.as_deref().filter(|d| !d.trim().is_empty())
         && bleed.width() >= 640.0
     {
         let aw = (bleed.width() * 0.26).clamp(220.0, 340.0);
-        // The card hangs off the foot ramp's line — the buttons' own inset, on the
-        // opposite flank — and stays clear of what shares the corner: the radio, the
-        // buttons row's end, and the name running the same left flank above them.
-        let abottom = bleed.bottom() - 24.0;
-        let name_w = ui.painter().layout_no_wrap(name.clone(), theme::bold(58.0), Color32::PLACEHOLDER).size().x;
-        let aright = radio_left.map_or(bleed.right() - PAGE_INSET as f32, |l| l - 30.0);
+        let full = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), aw, usize::MAX);
+        let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), aw, 4);
+        let g_size = g.size().y;
+        // "More" only says something when rows were actually cut.
+        let cut = full.size().y > g_size + 1.0;
+        let block_h = 24.0 + g_size + if cut { 30.0 } else { 0.0 };
+        // The card sits on the radio's head (the foot ramp's own inset where the radio
+        // isn't), right-flush with it, and stays clear of the name running the left
+        // flank at the same height.
+        let abottom = radio_top.map_or(bleed.bottom() - 24.0, |t| t - 12.0);
+        let aright = bleed.right() - PAGE_INSET as f32;
         let aleft = aright - aw;
-        if aleft > (px + 30.0).max(x + name_w + 30.0) {
-            let arect = Rect::from_min_max(pos2(aleft, (abottom - 210.0).max(bleed.top() + 56.0)), pos2(aright, abottom));
+        let name_w = ui.painter().layout_no_wrap(name.clone(), theme::bold(58.0), Color32::PLACEHOLDER).size().x;
+        if aleft > x + name_w + 30.0 {
+            let arect = Rect::from_min_max(pos2(aleft, (abottom - block_h).max(bleed.top() + 56.0)), pos2(aright, abottom));
             let resp = widgets::named(ui.interact(arect, egui::Id::unique(("artist-about", id)), Sense::click()), "About this artist")
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
             if h > 0.0 {
                 ui.painter().rect_filled(arect, 14.0, theme::glass(0.12 * h));
             }
-            let full = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), arect.width(), usize::MAX);
-            let g = widgets::galley_wrapped(ui, d.trim(), theme::regular(14.0), theme::with_alpha(Color32::WHITE, 0.88), arect.width(), 4);
-            let g_size = g.size().y;
-            // "More" only says something when rows were actually cut.
-            let cut = full.size().y > g_size + 1.0;
-            // The text hangs from the card's bottom edge: the ABOUT header its top,
-            // the rows under it, the More that opens it all at the ramp's line.
-            let block_h = 24.0 + g_size + if cut { 30.0 } else { 0.0 };
+            // The card is its text: the ABOUT header at the top, the rows under it, the
+            // More that opens it all at the foot.
             let ty = (arect.bottom() - block_h).max(arect.top());
             ui.painter().text(pos2(arect.left(), ty), Align2::LEFT_TOP, "ABOUT", theme::semibold(11.5), theme::with_alpha(Color32::WHITE, 0.72));
             ui.painter().galley(pos2(arect.left(), ty + 24.0), g, Color32::PLACEHOLDER);

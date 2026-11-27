@@ -507,7 +507,9 @@ pub fn melt_edges(ui: &Ui, rect: Rect, bg: Color32, side: f32, top: f32, bottom:
         super::shell::vgradient(p, Rect::from_min_max(rect.left_top(), pos2(rect.right(), rect.top() + top.min(rect.height() / 2.0))), theme::with_alpha(bg, 0.85), theme::with_alpha(bg, 0.0));
     }
     if bottom > 0.0 {
-        super::shell::vgradient(p, Rect::from_min_max(pos2(rect.left(), rect.bottom() - bottom.min(rect.height() / 2.0)), rect.right_bottom()), theme::with_alpha(bg, 0.0), theme::with_alpha(bg, 0.92));
+        // Full opacity at the foot: a ramp that lands short of it leaves the image's
+        // last rows showing as a line against the page it was melting into.
+        super::shell::vgradient(p, Rect::from_min_max(pos2(rect.left(), rect.bottom() - bottom.min(rect.height() / 2.0)), rect.right_bottom()), theme::with_alpha(bg, 0.0), bg);
     }
 }
 
