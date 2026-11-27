@@ -2346,8 +2346,10 @@ impl eframe::App for App {
             mini::video_pip(self, ui, now);
             // Any shape: by every edge and corner, unlike the strip.
             titlebar::resize_edges(&ctx);
-            // "Sign in to like songs" and such: shown here too, not timed out unseen.
-            shell::toast(self, &ctx, now);
+            // A toast would cover the compact prompt.
+            if !self.draw_backup_prompt(&ctx, true) {
+                shell::toast(self, &ctx, now);
+            }
             self.mini.fade_in(&ctx, now, Color32::BLACK);
             dev_screenshot(&ctx, now);
             return;
@@ -2360,8 +2362,9 @@ impl eframe::App for App {
             if layout == mini::Layout::Mini {
                 mini::strip(self, ui, now);
                 titlebar::resize_sides(&ctx);
-                // "Sign in to like songs" and such: shown here too, not timed out unseen.
-                shell::toast(self, &ctx, now);
+                if !self.draw_backup_prompt(&ctx, true) {
+                    shell::toast(self, &ctx, now);
+                }
                 self.mini.fade_in(&ctx, now, shell::base_color(self));
             }
             dev_screenshot(&ctx, now);

@@ -11,13 +11,8 @@ use super::{Action, App, BackupPrompt, Dialog, Page, notes, pages, widgets};
 impl App {
     pub(super) fn draw_dialog(&mut self, ctx: &egui::Context) {
         // The backup-stream prompt, below every dialog: a dialog over it would be its own.
-        if self.dialog.is_none() && self.backup_prompt == BackupPrompt::Open {
-            if self.backup_stream {
-                self.backup_prompt = BackupPrompt::Hidden;
-            } else {
-                self.backup_stream_dialog(ctx);
-                return;
-            }
+        if self.dialog.is_none() && self.draw_backup_prompt(ctx, false) {
+            return;
         }
         if let Some(Dialog::ConfirmClearCache) = &self.dialog {
             let mut body = "Saved covers, translated lyrics and the lyrics check's browser data are deleted. They come back as you play and browse. Your library and your downloads stay as they are.".to_owned();
@@ -166,9 +161,30 @@ impl App {
 
     /// The prompt a refused bot-checked stream opens: turn the backup stream on (and
     /// pick the song up where it stopped), open it in Settings, or dismiss it.
-    fn backup_stream_dialog(&mut self, ctx: &egui::Context) {
+    pub(super) fn draw_backup_prompt(&mut self, ctx: &egui::Context, compact: bool) -> bool {
+        if self.backup_prompt != BackupPrompt::Open {
+            return false;
+        }
+        if self.backup_stream {
+            self.backup_prompt = BackupPrompt::Hidden;
+            return false;
+        }
+
         let id = egui::Id::unique("backup-stream-dialog");
-        let modal = egui::Modal::new(id).frame(notes::surface()).backdrop_color(theme::shade(0.55)).show(ctx, |ui| {
+        let surface = notes::surface();
+        let surface = if compact { surface.inner_margin(8.0) } else { surface };
+        let modal = egui::Modal::new(id).frame(surface).backdrop_color(theme::shade(0.55)).show(ctx, |ui| {
+            if compact {
+                ui.set_width(310.0_f32.min(ctx.content_rect().width() - 28.0).max(0.0));
+                ui.label(egui::RichText::new("Use the backup stream?").font(theme::bold(15.0)));
+                ui.label("It can resume this song. A sign-in is required.");
+                return ui.horizontal_wrapped(|ui| {
+                    let enable = ui.button("Turn it on").clicked();
+                    let open = ui.button("Settings").clicked();
+                    let dismiss = ui.button("Not now").clicked();
+                    (enable, open, dismiss)
+                }).inner;
+            }
             ui.set_width(400.0_f32.min(ctx.content_rect().width() - 48.0));
             egui::Frame::new().inner_margin(egui::Margin { left: 26, right: 26, top: 24, bottom: 22 }).show(ui, |ui| {
                 ui.label(egui::RichText::new("Some songs stop on this network").font(theme::bold(22.0)).color(theme::text()));
@@ -207,7 +223,12 @@ impl App {
             self.settings_tab = pages::SettingsTab::General;
             self.reveal_backup_setting = true;
             self.go(Page::Settings);
+            if compact {
+                self.mini.request(false);
+                ctx.request_repaint();
+            }
         }
+        true
     }
 
     /// The Collaborate dialog's body: the two switches, the invite link and who has
