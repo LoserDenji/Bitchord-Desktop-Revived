@@ -774,6 +774,11 @@ async fn open_first(http: &reqwest::Client, client: &Arc<Client>, candidates: &[
     let upgrade = matches!(lookup, Lookup::Upgrade { .. });
     let mut sent_lossless = false;
     for (index, candidate) in rows.iter().enumerate() {
+        // A quiet period belongs to the addon, not to this row. Spend only the
+        // overall lookup budget waiting, including after a preceding row hit 429.
+        if !matches!(tokio::time::timeout_at(deadline, wait_for_quiet(&client.quiet_until)).await, Ok(Ok(()))) {
+            return;
+        }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return;
@@ -1251,6 +1256,18 @@ const VERSION_WORDS: &[&str] = &[
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
+async fn wait_for_quiet(quiet_until: &QuietUntil) -> anyhow::Result<()> {
+    loop {
+        // A sibling request may extend the quiet period while this one sleeps.
+        let until = *quiet_until.lock().await;
+        let Some(until) = until else { anyhow::bail!("the addon requested a quiet period beyond the clock range") };
+        if tokio::time::Instant::now() >= until {
+            return Ok(());
+        }
+        tokio::time::sleep_until(until).await;
+    }
+}
+
 async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_until: &QuietUntil) -> anyhow::Result<Value> {
     // A 429 is waited out rather than surfaced, for the Android app's reason: the
     // callers above this read a failure as "this addon has nothing", which is a
@@ -1264,15 +1281,7 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_un
         // addon's real answer to us.
         let mut refused = None;
         for agent_attempt in 0..2 {
-            // A sibling request may extend the quiet period while this one sleeps.
-            loop {
-                let until = *quiet_until.lock().await;
-                let Some(until) = until else { anyhow::bail!("the addon requested a quiet period beyond the clock range") };
-                if tokio::time::Instant::now() >= until {
-                    break;
-                }
-                tokio::time::sleep_until(until).await;
-            }
+            wait_for_quiet(quiet_until).await?;
             let response = http.get(url).timeout(timeout).header("Accept", "application/json").header("User-Agent", agent()).send().await.map_err(addon_err)?;
             let code = response.status();
             if code == reqwest::StatusCode::NOT_FOUND {
@@ -1313,6 +1322,12 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_un
             if let Some(msg) = auth_answer(&body) {
                 return Err(AuthError { status: code, message: msg }.into());
             }
+            if code.is_server_error() {
+                // A server having a bad minute (the Android app's AddonUnavailable), not a
+                // verdict on the addon: the caller moves to the next row or the next
+                // source, and the next track asks again — nothing here holds a grudge.
+                anyhow::bail!("the addon is having a bad minute (HTTP {})", code.as_u16());
+            }
             // Other addons guard themselves behind a sign-in on their own site and point
             // at it ("login":"/auth/discord/login"): they work once the listener has
             // signed in there and pasted the personal link that comes out of it.
@@ -1326,12 +1341,6 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_un
         if code == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < THROTTLE_WAITS {
             attempt += 1;
             continue;
-        }
-        if code.is_server_error() {
-            // A server having a bad minute (the Android app's AddonUnavailable), not a
-            // verdict on the addon: the caller moves to the next row or the next
-            // source, and the next track asks again — nothing here holds a grudge.
-            anyhow::bail!("the addon is having a bad minute (HTTP {})", code.as_u16());
         }
         anyhow::bail!("HTTP {}", code.as_u16());
     }
@@ -1518,9 +1527,11 @@ mod tests {
     #[tokio::test]
     async fn probe_distinguishes_search_outages_from_rejection() {
         let (base, server) = serve(|path, _| std::future::ready(match path.as_str() {
-            "/offline/manifest.json" | "/auth/manifest.json" | "/verifier/manifest.json" => (200, r#"{"id":"test"}"#.to_owned()),
+            "/offline/manifest.json" | "/auth/manifest.json" | "/verifier/manifest.json" | "/login/manifest.json" | "/login-outage/manifest.json" => (200, r#"{"id":"test"}"#.to_owned()),
             "/absent/manifest.json" | "/search-only/manifest.json" => (404, String::new()),
             "/offline/search" | "/absent/search" => (503, String::new()),
+            "/login/search" => (401, r#"{"login":"/sign-in"}"#.to_owned()),
+            "/login-outage/search" => (503, r#"{"login":"/sign-in"}"#.to_owned()),
             "/search-only/search" => (200, r#"{"tracks":[{}]}"#.to_owned()),
             "/auth/search" | "/locked/manifest.json" => (401, r#"{"error":"bitchord_auth","code":"expired"}"#.to_owned()),
             "/verifier/search" | "/verifier-manifest/manifest.json" => (503, r#"{"error":"bitchord_auth","code":"unavailable"}"#.to_owned()),
@@ -1537,6 +1548,8 @@ mod tests {
         for path in ["verifier", "verifier-manifest"] {
             assert!(matches!(Client::new(&format!("{base}/{path}")).unwrap().probe(&http).await, Health::Unreachable(reason) if reason.contains("HTTP 503") && reason.contains("verifier couldn't load")));
         }
+        assert!(matches!(Client::new(&format!("{base}/login")).unwrap().probe(&http).await, Health::Rejected(reason) if reason.contains("sign-in link")));
+        assert!(matches!(Client::new(&format!("{base}/login-outage")).unwrap().probe(&http).await, Health::Unreachable(reason) if reason.contains("HTTP 503")));
         server.abort();
     }
 
@@ -1617,6 +1630,85 @@ mod tests {
             assert_eq!(answers.try_recv().unwrap().info.rung(), 1);
             assert_eq!(answers.try_recv().unwrap().info.rung(), 2);
             assert!(answers.try_recv().is_err());
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn quiet_period_extensions_do_not_spend_the_first_rows_request_budget() {
+        let (sent, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let (base, server) = serve(move |path, _| std::future::ready(match path.as_str() {
+            "/manifest.json" => (200, r#"{"id":"test"}"#.to_owned()),
+            "/stream/first" => {
+                sent.send(tokio::time::Instant::now()).unwrap();
+                (200, r#"{"url":"https://example.invalid/first.flac","size":100}"#.to_owned())
+            }
+            "/stream/second" | "/stream/third" => (404, String::new()),
+            _ => panic!("unexpected addon request: {path}"),
+        })).await;
+        let client = Arc::new(Client::new(&base).unwrap());
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        client.manifest(&http).await.unwrap();
+        let rows = ["first", "second", "third"].map(|id| candidate(&serde_json::json!({"id":id,"title":"Test Song"})).unwrap());
+        let now = tokio::time::Instant::now();
+        *client.quiet_until.lock().await = Some(now + Duration::from_millis(150));
+        let deadline = now + Duration::from_secs(1);
+        let (send, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        let find = open_first(&http, &client, &rows, false, Lookup::Playback, deadline, &send);
+        tokio::pin!(find);
+        tokio::select! {
+            biased;
+            _ = &mut find => panic!("lookup finished during the quiet period"),
+            _ = std::future::ready(()) => {}
+        }
+        let extended = now + Duration::from_millis(500);
+        *client.quiet_until.lock().await = Some(extended);
+        tokio::time::timeout_at(deadline, find).await.unwrap();
+        assert_eq!(answers.try_recv().unwrap().url, "https://example.invalid/first.flac");
+        assert!(requests.try_recv().unwrap() >= extended);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn download_completion_survives_probe_and_whole_file_failures() {
+        use std::sync::atomic::AtomicUsize;
+        use crate::stream::{self, Media, Ranging, Refresh, Shared};
+
+        let whole = AtomicUsize::new(0);
+        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+        let (base, server) = serve(move |path, _| {
+            let response = match path.as_str() {
+                "/reject" => Some((403, String::new())),
+                "/whole" if whole.fetch_add(1, Ordering::Relaxed) == 0 => Some((200, "data".to_owned())),
+                "/whole" => Some((500, String::new())),
+                "/stall" => {
+                    started.send(()).unwrap();
+                    None
+                }
+                _ => panic!("unexpected media request: {path}"),
+            };
+            async move {
+                match response {
+                    Some(value) => value,
+                    None => std::future::pending().await,
+                }
+            }
+        }).await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        for path in ["reject", "whole", "stall"] {
+            let shared = Shared::new(4, 0, None, Format::Opus, None, false);
+            let refresh = Refresh { once: true, callback: Arc::new(|| Box::pin(async { anyhow::bail!("no fresh URL") })) };
+            let task = tokio::spawn(stream::download(http.clone(), Media::File(format!("{base}/{path}")), agent().to_owned(), shared.clone(), Some(refresh), Ranging::Header));
+            if path == "stall" {
+                tokio::time::timeout(Duration::from_secs(1), starts.recv()).await.unwrap().unwrap();
+                shared.cancel();
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+            } else {
+                task.await.unwrap();
+                assert!(shared.error().is_some());
+            }
+            tokio::time::timeout(Duration::from_millis(250), shared.finished()).await.expect(path);
         }
         server.abort();
     }

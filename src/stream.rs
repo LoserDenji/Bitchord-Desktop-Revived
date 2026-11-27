@@ -422,9 +422,19 @@ pub async fn download(http: reqwest::Client, media: Media, ua: String, shared: A
 /// The buffer a background download makes way for (the playing song's), if any.
 pub type Ahead = Arc<dyn Fn() -> Option<Arc<Shared>> + Send + Sync>;
 
+/// Notify completion even if the download returns early or its task is dropped.
+struct DownloadDone<'a>(&'a tokio::sync::watch::Sender<bool>);
+
+impl Drop for DownloadDone<'_> {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
 /// `download`, but before each block it waits while `ahead`'s buffer still has blocks
 /// to come that a reader may need: the playing song gets the bandwidth first.
 pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, shared: Arc<Shared>, refresh: Option<Refresh>, ranging: Ranging, ahead: Option<Ahead>) {
+    let _done = DownloadDone(&shared.done);
     let addon = refresh.as_ref().is_some_and(|r| r.once);
     let segments = shared.segments.as_ref().map(|s| s.len());
     let slot = Arc::new(UrlSlot { url: tokio::sync::Mutex::new((media, 0)), refresh, attempted: Default::default(), segments });
@@ -453,13 +463,15 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
                 Some(_) => {}
             }
             match download_whole(&client, &url, &ua, &shared).await {
-                Ok(()) => { shared.done.send_replace(true); }
+                Ok(()) => {}
                 Err(e) if !shared.is_stopped() => {
                     let rejected = addon && is_media_rejected(&e);
                     if rejected && slot.renew(version).await {
                         continue;
                     }
-                    shared.fail(format!("stream: {e:#}"), rejected);
+                    if !shared.is_stopped() {
+                        shared.fail(format!("stream: {e:#}"), rejected);
+                    }
                 }
                 Err(_) => {}
             }
@@ -582,7 +594,6 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
         });
     }
     while set.join_next().await.is_some() {}
-    shared.done.send_replace(true);
 }
 
 fn rejected_media(status: reqwest::StatusCode) -> bool {
