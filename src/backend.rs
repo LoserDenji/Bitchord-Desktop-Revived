@@ -820,7 +820,11 @@ type StreamSlot = Arc<std::sync::Mutex<Option<(String, Arc<Shared>)>>>;
 type SongCell = Arc<tokio::sync::OnceCell<Option<Track>>>;
 
 /// A music video's stream opened while its song was looked up. Left unused, it stops.
-struct EarlyVideo(Option<tokio::task::JoinHandle<anyhow::Result<Arc<Shared>>>>);
+struct EarlyVideo(Option<tokio::task::JoinHandle<anyhow::Result<Opened>>>);
+
+type DeferredAddons = Option<(Vec<Arc<hires::Client>>, Track)>;
+type Opened = (Arc<Shared>, DeferredAddons);
+type PrefetchSlot = Arc<std::sync::Mutex<Option<(String, Opened)>>>;
 
 impl Drop for EarlyVideo {
     fn drop(&mut self) {
@@ -828,7 +832,7 @@ impl Drop for EarlyVideo {
             && let Ok(rt) = tokio::runtime::Handle::try_current()
         {
             rt.spawn(async move {
-                if let Ok(Ok(s)) = open.await {
+                if let Ok(Ok((s, _))) = open.await {
                     s.cancel();
                 }
             });
@@ -874,7 +878,7 @@ pub struct Backend {
     lyrics: Arc<lyrics::Client>,
     translate: Arc<crate::translate::Client>,
     /// The upcoming track, resolved and downloading ahead of time.
-    prefetched: StreamSlot,
+    prefetched: PrefetchSlot,
     /// The stream most recently started, kept so a replay of a fully downloaded song
     /// (repeat one, restart) doesn't download it again.
     current: StreamSlot,
@@ -1938,8 +1942,9 @@ impl Backend {
             return Ok(());
         }
         log::debug!("prefetch {video_id}");
-        let shared = self.start_stream(&video_id, found?, true);
-        if let Some((_, old)) = self.prefetched.lock().unwrap().replace((video_id, shared)) {
+        let (found, deferred_addons) = found?;
+        let shared = self.start_stream(&video_id, found, true);
+        if let Some((_, (old, _))) = self.prefetched.lock().unwrap().replace((video_id, (shared, deferred_addons))) {
             old.cancel();
         }
         Ok(())
@@ -2068,21 +2073,21 @@ impl Backend {
         let ready = match prefetched {
             // Not one whose download failed (refused, say): that opens afresh.
             // Nor a file stream fetched before file streams turned out to be cut off.
-            Some((id, s)) if id == video_id && s.error().is_none() && !(self.visionos_hls.load(Ordering::Relaxed) && s.segments.is_none() && !s.is_complete()) => Some(s),
+            Some((id, (s, deferred))) if id == video_id && s.error().is_none() && !(self.visionos_hls.load(Ordering::Relaxed) && s.segments.is_none() && !s.is_complete()) => Some((s, deferred)),
             // Replaying the current song keeps the next one's prefetch.
             other if replay.is_some() => {
                 *self.prefetched.lock().unwrap() = other;
-                replay
+                replay.map(|s| (s, None))
             }
             // Playback went elsewhere: that prefetch is moot.
             other => {
-                if let Some((_, s)) = other {
+                if let Some((_, (s, _))) = other {
                     s.cancel();
                 }
                 None
             }
         };
-        let shared = match ready {
+        let (shared, deferred_addons) = match ready {
             Some(s) => {
                 log::debug!("play {video_id} (gen {generation}): using buffered stream");
                 s
@@ -2132,8 +2137,7 @@ impl Backend {
                 (self.wake)();
             }
         }
-        let video_id = video_id.as_str();
-        *self.current.lock().unwrap() = Some((video_id.to_owned(), shared.clone()));
+        *self.current.lock().unwrap() = Some((video_id.clone(), shared.clone()));
         log::debug!("play {video_id} (gen {generation}): stream open in {:?}", t0.elapsed());
         if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
             shared.cancel();
@@ -2143,82 +2147,98 @@ impl Backend {
         let audio = self.audio.clone();
         let tx = self.tx.clone();
         let wake = self.wake.clone();
-        // Opening the decoder reads the container header, which blocks on the download.
-        // Starting mid-song needs the seekable decoder (it waits for every fragment
-        // header); from the top, the non-seekable one starts sooner.
-        let seek = !at.is_zero();
-        let shared2 = shared.clone();
         // A local play is the listener's own file: nothing to report to YouTube, and no
         // addon is asked to better the copy they picked.
         let local = crate::local::is_local(listed);
-        let report = (report && !local && self.is_logged_in() && reports_plays()).then(|| (self.clone(), video_id.to_owned()));
-        // A stream that started from YouTube or a provider can still be upgraded in
-        // place once a finer source answers (see `try_upgrade_hires`): the swap is
-        // gated on a strictly higher tier, so a stream already at the top of the
-        // ladder is never re-asked.
-        let upgrade = (!local).then(|| (self.clone(), video_id.to_owned(), meta));
-        let open = move || -> anyhow::Result<crate::audio::TrackDecoder> {
-            let mut d = stream::decoder(shared.clone(), seek)?;
-            if seek {
-                rodio::Source::try_seek(&mut d, at).map_err(|e| anyhow::anyhow!("seek: {e}"))?;
-            }
-            Ok(d)
-        };
-        tokio::task::spawn_blocking(move || match open() {
-            Ok(decoder) => {
-                log::debug!("play gen {generation}: decoder ready at {at:?} in {:?}", t0.elapsed());
-                let _ = tx.send(Resp::StreamStats { generation, stats: stream::Stats::of(&shared2, &decoder) });
-                // What a hi-res stream is, as the decoder actually reads it.
-                if let Some(mut info) = shared2.info.clone() {
-                    info.sample_rate = Some(rodio::Source::sample_rate(&decoder).get());
-                    info.channels = Some(rodio::Source::channels(&decoder).get() as u8);
-                    let _ = tx.send(Resp::AudioInfo { generation, info });
-                }
-                wake();
-                audio.send(AudioCmd::Start { generation, decoder, shared: shared2, at });
-                // Skipped past before it started: that one doesn't count.
-                if let Some((this, id)) = report.filter(|_| audio.status.wanted_gen.load(Ordering::Relaxed) == generation) {
-                    let rt = this.rt.clone();
-                    rt.spawn(async move {
-                        // The player request needs the current signatureTimestamp, or YouTube
-                        // leaves out the stats URL. Without a solver, try anyway as before.
-                        let sts = match this.jsc.player(&this.http()).await {
-                            Ok(p) => Some(p.sts),
-                            Err(e) => {
-                                log::debug!("report play of {id} without signatureTimestamp: {e:#}");
-                                None
-                            }
-                        };
-                        match ytm::report_play(&this.api, &id, sts).await {
-                            Ok(w) => {
-                                log::debug!("reported play of {id}");
-                                this.report_watchtime(&id, generation, w).await;
-                            }
-                            Err(e) => log::warn!("couldn't report play of {id}: {e:#}"),
+        let report = (report && !local && self.is_logged_in() && reports_plays()).then(|| (self.clone(), video_id.clone()));
+        // The background swap is gated on a strictly higher tier.
+        let upgrade = (!local).then(|| (self.clone(), video_id.clone(), meta));
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let mut shared2 = shared;
+            let mut decoded = playback_decoder(shared2.clone(), at).await;
+            if decoded.is_err()
+                && fallback.is_none()
+                && audio.status.wanted_gen.load(Ordering::Relaxed) == generation
+                && let Some(deferred) = deferred_addons
+            {
+                shared2.cancel();
+                if let Some(found) = this.startup_addon(&video_id, &deferred).await {
+                    let retry = this.start_stream(&video_id, found, false);
+                    {
+                        let mut current = this.current.lock().unwrap();
+                        if audio.status.wanted_gen.load(Ordering::Relaxed) != generation
+                            || !current.as_ref().is_some_and(|(_, active)| Arc::ptr_eq(active, &shared2))
+                        {
+                            retry.cancel();
+                            return;
                         }
-                    });
-                }
-                // Started from YouTube: look for a hi-res copy in the background, and
-                // swap it in place if one answers while the song is still the one wanted.
-                if let Some((this, id, Some(track))) = upgrade.filter(|_| audio.status.wanted_gen.load(Ordering::Relaxed) == generation) {
-                    let rt = this.rt.clone();
-                    rt.spawn(async move {
-                        this.try_upgrade_hires(id, generation, track, false).await;
-                    });
+                        *current = Some((video_id.clone(), retry.clone()));
+                    }
+                    shared2 = retry;
+                    decoded = playback_decoder(shared2.clone(), at).await;
                 }
             }
-            Err(e) => match fallback {
-                Some((this, listed, report)) => {
-                    log::warn!("{listed}'s song won't start ({e}); playing the music video");
-                    let _ = tx.send(Resp::PlayingAs { generation, listed: listed.clone(), song: None });
-                    this.request(Req::Play { video_id: listed, generation, at, report, song_of: None, song: None, track: None });
+            if audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
+                shared2.cancel();
+                return;
+            }
+            match decoded {
+                Ok(decoder) => {
+                    log::debug!("play gen {generation}: decoder ready at {at:?} in {:?}", t0.elapsed());
+                    let _ = tx.send(Resp::StreamStats { generation, stats: stream::Stats::of(&shared2, &decoder) });
+                    // What a hi-res stream is, as the decoder actually reads it.
+                    if let Some(mut info) = shared2.info.clone() {
+                        info.sample_rate = Some(rodio::Source::sample_rate(&decoder).get());
+                        info.channels = Some(rodio::Source::channels(&decoder).get() as u8);
+                        let _ = tx.send(Resp::AudioInfo { generation, info });
+                    }
                     wake();
+                    audio.send(AudioCmd::Start { generation, decoder, shared: shared2, at });
+                    // Skipped past before it started: that one doesn't count.
+                    if let Some((this, id)) = report.filter(|_| audio.status.wanted_gen.load(Ordering::Relaxed) == generation) {
+                        let rt = this.rt.clone();
+                        rt.spawn(async move {
+                            // The player request needs the current signatureTimestamp, or YouTube
+                            // leaves out the stats URL. Without a solver, try anyway as before.
+                            let sts = match this.jsc.player(&this.http()).await {
+                                Ok(p) => Some(p.sts),
+                                Err(e) => {
+                                    log::debug!("report play of {id} without signatureTimestamp: {e:#}");
+                                    None
+                                }
+                            };
+                            match ytm::report_play(&this.api, &id, sts).await {
+                                Ok(w) => {
+                                    log::debug!("reported play of {id}");
+                                    this.report_watchtime(&id, generation, w).await;
+                                }
+                                Err(e) => log::warn!("couldn't report play of {id}: {e:#}"),
+                            }
+                        });
+                    }
+                    // Started from YouTube: look for a hi-res copy in the background, and
+                    // swap it in place if one answers while the song is still the one wanted.
+                    if let Some((this, id, Some(track))) = upgrade.filter(|_| audio.status.wanted_gen.load(Ordering::Relaxed) == generation) {
+                        let rt = this.rt.clone();
+                        rt.spawn(async move {
+                            this.try_upgrade_hires(id, generation, track, false).await;
+                        });
+                    }
                 }
-                None => {
-                    let _ = tx.send(Resp::PlayError { generation, msg: format!("decode: {e}") });
-                    wake();
-                }
-            },
+                Err(e) => match fallback {
+                    Some((this, listed, report)) => {
+                        log::warn!("{listed}'s song won't start ({e}); playing the music video");
+                        let _ = tx.send(Resp::PlayingAs { generation, listed: listed.clone(), song: None });
+                        this.request(Req::Play { video_id: listed, generation, at, report, song_of: None, song: None, track: None });
+                        wake();
+                    }
+                    None => {
+                        let _ = tx.send(Resp::PlayError { generation, msg: format!("decode: {e}") });
+                        wake();
+                    }
+                },
+            }
         });
         Ok(())
     }
@@ -2366,24 +2386,33 @@ impl Backend {
         ytm::searched_song(&self.api, video, clean).await
     }
 
-    async fn open_stream(&self, video_id: &str, prefetch: bool, track: Option<&Track>) -> anyhow::Result<Arc<Shared>> {
-        let found = self.find_stream(video_id, track, prefetch).await?;
-        Ok(self.start_stream(video_id, found, prefetch))
+    async fn open_stream(&self, video_id: &str, prefetch: bool, track: Option<&Track>) -> anyhow::Result<Opened> {
+        let (found, deferred) = self.find_stream(video_id, track, prefetch).await?;
+        Ok((self.start_stream(video_id, found, prefetch), deferred))
     }
 
     /// The saved download, a file of this computer's, or a stream URL to download from.
     /// `prefetch`: only somewhere to start is needed, so an addon rendition that has to
     /// be fetched and decoded whole is left for the play.
-    async fn find_stream(&self, video_id: &str, track: Option<&Track>, prefetch: bool) -> anyhow::Result<Found> {
+    async fn find_stream(&self, video_id: &str, track: Option<&Track>, prefetch: bool) -> anyhow::Result<(Found, DeferredAddons)> {
         let id = video_id.to_owned();
         if let Some(shared) = tokio::task::spawn_blocking(move || crate::downloads::open(&id).or_else(|| crate::local::open(&id))).await? {
-            return Ok(Found::Saved(shared));
+            return Ok((Found::Saved(shared), None));
         }
         // With "play YouTube first" on, the addons are left to the background upgrade
         // instead of the play path.
         let allow_hires = !self.disable_direct.load(Ordering::Relaxed);
-        let (source, s) = self.resolve(video_id, false, track, allow_hires, prefetch).await?;
-        Ok(Found::Url(source, s))
+        let mut deferred = None;
+        let (source, s) = self.resolve(video_id, false, track, allow_hires, prefetch, &mut deferred).await?;
+        Ok((Found::Url(source, s), deferred))
+    }
+
+    async fn startup_addon(&self, video_id: &str, deferred: &(Vec<Arc<hires::Client>>, Track)) -> Option<Found> {
+        if self.disable_direct.load(Ordering::Relaxed) || !self.source_on(MusicSource::Addons) || self.reverted.lock().unwrap().contains(video_id) {
+            return None;
+        }
+        let (sources, track) = deferred;
+        self.from_hires(sources, track, hires::Lookup::Startup).await.map(|s| Found::Url(Source::HiRes, s))
     }
 
     fn start_stream(&self, video_id: &str, found: Found, prefetch: bool) -> Arc<Shared> {
@@ -2457,7 +2486,7 @@ impl Backend {
         if let Some(path) = reuse_download(&t.id, for_video.clone()).await {
             return Ok((path, false));
         }
-        let (source, s) = self.resolve(&t.id, true, Some(t), false, false).await?;
+        let (source, s) = self.resolve(&t.id, true, Some(t), false, false, &mut None).await?;
         log::info!("download {}: {} bytes from {source:?}", t.id, s.size);
         // Downloads stay on the file stream: they're saved as the .m4a it is.
         anyhow::ensure!(s.starts.is_none(), "downloads need the file stream");
@@ -2596,9 +2625,8 @@ impl Backend {
     /// is one (Premium's 774 at ~256 kbps, else 251); downloads stay AAC, which saves
     /// as a tagged .m4a.
     /// `allow_hires`: the sources before YouTube are tried (playback only).
-    async fn resolve(&self, video_id: &str, best: bool, track: Option<&Track>, allow_hires: bool, prefetch: bool) -> anyhow::Result<(Source, ResolvedStream)> {
+    async fn resolve(&self, video_id: &str, best: bool, track: Option<&Track>, allow_hires: bool, prefetch: bool, deferred_addons: &mut DeferredAddons) -> anyhow::Result<(Source, ResolvedStream)> {
         let youtube = best || self.source_on(MusicSource::Youtube);
-        let mut deferred_addons = None;
         let reverted = self.reverted.lock().unwrap().contains(video_id);
         if allow_hires
             && !reverted
@@ -2620,8 +2648,8 @@ impl Backend {
                             continue;
                         }
                         let found = self.from_hires(&sources, track, lookup).await.map(|s| (Source::HiRes, s));
-                        if found.is_none() && matches!(lookup, hires::Lookup::Playback) {
-                            deferred_addons = Some((sources, track));
+                        if found.is_none() && matches!(lookup, hires::Lookup::Playback | hires::Lookup::Prefetch) {
+                            *deferred_addons = Some((sources, track.clone()));
                         }
                         found
                     }
@@ -2648,8 +2676,9 @@ impl Backend {
             Err(anyhow::anyhow!("YouTube Music is switched off in Settings \u{203a} Music sources, and no source before it has the song"))
         };
         if result.is_err()
-            && let Some((sources, track)) = deferred_addons
-            && let Some(stream) = self.from_hires(&sources, track, hires::Lookup::Startup).await
+            && !prefetch
+            && let Some((sources, track)) = deferred_addons.take()
+            && let Some(stream) = self.from_hires(&sources, &track, hires::Lookup::Startup).await
         {
             return Ok((Source::HiRes, stream));
         }
@@ -3346,6 +3375,19 @@ enum Source {
     HiRes,
     /// A music provider (see `providers`): Monochrome or JioSaavn.
     Provider,
+}
+
+async fn playback_decoder(shared: Arc<Shared>, at: std::time::Duration) -> anyhow::Result<crate::audio::TrackDecoder> {
+    // Reading the container header blocks on the download. Mid-song starts
+    // also need the seekable decoder, which waits for every fragment header.
+    tokio::task::spawn_blocking(move || {
+        let seek = !at.is_zero();
+        let mut decoder = stream::decoder(shared, seek)?;
+        if seek {
+            rodio::Source::try_seek(&mut decoder, at).map_err(|e| anyhow::anyhow!("seek: {e}"))?;
+        }
+        Ok(decoder)
+    }).await?
 }
 
 enum Found {

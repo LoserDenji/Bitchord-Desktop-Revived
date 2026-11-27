@@ -52,8 +52,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 /// and the song believed not to exist.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(45);
 /// A 429 is waited out, not surfaced (the Android app's back-off): `Retry-After` is
-/// believed when sent, otherwise the wait doubles from half a second, and both are
-/// clamped so a rate-limited addon delays a track rather than stalling it.
+/// honored when sent. The generated wait doubles from half a second up to the cap;
+/// the playback deadline still bounds how long a track can wait.
 const THROTTLE_BASE: Duration = Duration::from_millis(500);
 const THROTTLE_CAP: Duration = Duration::from_secs(8);
 /// How many 429s one call waits out before the addon is left alone for this track.
@@ -227,13 +227,16 @@ pub struct Client {
     /// happened to draw it, so a search landing on one holds back the stream lookup
     /// queued behind it too — without that, a fan-out simply re-trips the limiter
     /// with every sibling request and the addon never gets the quiet it asked for.
-    quiet_until: tokio::sync::Mutex<tokio::time::Instant>,
+    quiet_until: QuietUntil,
     /// Recent `/stream` answers, keyed by candidate id — the same track passes this
     /// way several times over (the play, the upgrade pass, a re-open when the player
     /// asks for fresh URLs), and each re-mint is another session an addon's backend
     /// has to stand up for a link it had already handed out.
     streams: tokio::sync::Mutex<StreamCache>,
 }
+
+// None represents a server delay beyond the range of the platform clock.
+type QuietUntil = tokio::sync::Mutex<Option<tokio::time::Instant>>;
 
 struct Manifest {
     name: Option<String>,
@@ -327,7 +330,7 @@ impl Client {
             manifest: Default::default(),
             searches: Default::default(),
             // The epoch is "never quiet": an addon starts owed its first question.
-            quiet_until: tokio::sync::Mutex::new(tokio::time::Instant::now()),
+            quiet_until: tokio::sync::Mutex::new(Some(tokio::time::Instant::now())),
             streams: Default::default(),
         })
     }
@@ -602,11 +605,11 @@ impl Client {
                 }
                 match probe_search(http, &self.base, &self.quiet_until).await {
                     Ok(n) => Health::Ok(format!("No manifest · search works · {n} result{}", if n == 1 { "" } else { "s" })),
-                    // Transport trouble (timeout, connect) is a server having a bad
-                    // minute; anything the server itself answered is the addon being wrong.
-                    // get_json maps the transport errors to words, not reqwest types.
-                    Err(_) if transport_failure(&reason) => Health::Unreachable(reason),
-                    Err(_) => Health::Rejected(reason),
+                    Err(e) => {
+                        let search = format!("search failed: {e:#}");
+                        let message = format!("{search} (manifest: {reason})");
+                        if transport_failure(&search) { Health::Unreachable(message) } else { Health::Rejected(message) }
+                    }
                 }
             }
         }
@@ -627,7 +630,7 @@ const AUTH_DESKTOP_MSG: &str = "requires BitChord Android authentication (only t
 
 /// One `/search`, counted. Zero is a success — an addon holding nothing for one query
 /// is answering correctly — so callers read the count, not emptiness.
-async fn probe_search(http: &reqwest::Client, base: &str, quiet_until: &tokio::sync::Mutex<tokio::time::Instant>) -> anyhow::Result<usize> {
+async fn probe_search(http: &reqwest::Client, base: &str, quiet_until: &QuietUntil) -> anyhow::Result<usize> {
     let mut url = base_url_with(base, &["search"])?;
     url.query_pairs_mut().append_pair("q", PROBE_QUERY);
     let json = get_json(http, url.as_str(), REQUEST_TIMEOUT, quiet_until).await?;
@@ -664,58 +667,36 @@ fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
 pub(crate) async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, deadline: tokio::time::Instant, lookup: Lookup) -> Option<Stream> {
     let upgrade = matches!(lookup, Lookup::Upgrade { .. });
     let mut tasks = tokio::task::JoinSet::new();
+    let (send, mut found) = tokio::sync::mpsc::unbounded_channel();
     for client in sources.iter().cloned() {
-        let (http, track) = (http.clone(), track.clone());
+        let (http, track, send) = (http.clone(), track.clone(), send.clone());
         tasks.spawn(async move {
-            let found = match client.picks(&http, &track, atmos).await {
-                Ok(picks) => open_first(&http, &client, &picks, atmos, lookup).await,
-                Err(e) => Err(e),
-            };
-            (client, found)
+            match client.picks(&http, &track, atmos).await {
+                Ok(picks) => open_first(&http, &client, &picks, atmos, lookup, &send).await,
+                Err(e) => log::info!("hi-res {}: \"{}\": {e:#}", client.host(), track.title),
+            }
         });
     }
+    drop(send);
     let mut lossless: Option<Stream> = None;
     let mut held_at: Option<tokio::time::Instant> = None;
     loop {
         // Playback gives Atmos a short grace; an upgrade can keep comparing until
         // its full lookup budget expires because audio is already playing.
         let deadline = held_at.map_or(deadline, |t| (t + ATMOS_GRACE).min(deadline));
-        let joined = match tokio::time::timeout_at(deadline, tasks.join_next()).await {
-            Ok(joined) => joined,
-            Err(_) => break,
-        };
-        let Some(joined) = joined else { break };
-        let (client, found) = match joined {
-            Ok(v) => v,
-            Err(e) => {
-                log::info!("hi-res: a lookup stopped: {e}");
-                continue;
+        let Ok(Some(s)) = tokio::time::timeout_at(deadline, found.recv()).await else { break };
+        if s.info.atmos || (!upgrade && !atmos) {
+            log::info!("hi-res: \"{}\" plays {} ({})", track.title, s.info.badge(), s.info.host);
+            return Some(s);
+        }
+        if upgrade {
+            if lossless.as_ref().is_none_or(|best| s.info.rung() > best.info.rung()) {
+                lossless = Some(s);
             }
-        };
-        match found {
-            Ok(Some(s)) if s.info.atmos => {
-                log::info!("hi-res: \"{}\" plays Atmos ({})", track.title, client.host());
-                tasks.abort_all();
-                return Some(s);
-            }
-            Ok(Some(s)) if usable(&s) => {
-                if upgrade {
-                    if lossless.as_ref().is_none_or(|best| s.info.rung() > best.info.rung()) {
-                        lossless = Some(s);
-                    }
-                    continue;
-                }
-                if !atmos {
-                    log::info!("hi-res: \"{}\" plays {} ({})", track.title, s.info.badge(), client.host());
-                    tasks.abort_all();
-                    return Some(s);
-                }
-                // No Atmos answer yet: keep the lossless copy in case none turns up.
-                held_at.get_or_insert_with(tokio::time::Instant::now);
-                lossless = lossless.or(Some(s));
-            }
-            Ok(_) => {}
-            Err(e) => log::info!("hi-res {}: \"{}\": {e:#}", client.host(), track.title),
+        } else {
+            // No Atmos answer yet: keep the lossless copy in case none turns up.
+            held_at.get_or_insert_with(tokio::time::Instant::now);
+            lossless = lossless.or(Some(s));
         }
     }
     if let Some(s) = &lossless {
@@ -731,27 +712,28 @@ pub(crate) async fn find(http: &reqwest::Client, sources: &[Arc<Client>], track:
 /// beside each other for a race two of them are about to lose — an origin that
 /// proxies its own audio (rather than handing out a CDN link) exhausts under exactly
 /// that burst, and 503s for everyone until its pool recovers.
-async fn open_first(http: &reqwest::Client, client: &Arc<Client>, candidates: &[Candidate], atmos: bool, lookup: Lookup) -> anyhow::Result<Option<Stream>> {
+async fn open_first(http: &reqwest::Client, client: &Arc<Client>, candidates: &[Candidate], atmos: bool, lookup: Lookup, found: &tokio::sync::mpsc::UnboundedSender<Stream>) {
     let rounds: &[bool] = if atmos { &[true, false] } else { &[false] };
-    let mut held: Option<Stream> = None;
+    let mut sent_lossless = false;
     for &round in rounds {
         for candidate in candidates.iter().filter(|c| !atmos || c.atmos == round).take(STREAM_TRIES) {
             match client.open(http, candidate, atmos && candidate.atmos, lookup).await {
                 Ok(Some(s)) if usable(&s) => {
-                    if s.info.atmos {
-                        return Ok(Some(s));
+                    let done = s.info.atmos || !atmos;
+                    // Hand off the first playable copy before another candidate can stall.
+                    if (done || !sent_lossless) && found.send(s).is_err() {
+                        return;
                     }
-                    held.get_or_insert(s);
-                    if !atmos {
-                        return Ok(held);
+                    if done {
+                        return;
                     }
+                    sent_lossless = true;
                 }
                 Ok(_) => {}
                 Err(e) => log::info!("hi-res {}: candidate {} skipped: {e:#}", client.host(), candidate.id),
             }
         }
     }
-    Ok(held)
 }
 
 /// The chain is lossless or Atmos; a lossy copy from an addon isn't better than YouTube.
@@ -1206,7 +1188,7 @@ const VERSION_WORDS: &[&str] = &[
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
-async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_until: &tokio::sync::Mutex<tokio::time::Instant>) -> anyhow::Result<Value> {
+async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_until: &QuietUntil) -> anyhow::Result<Value> {
     // A 429 is waited out rather than surfaced, for the Android app's reason: the
     // callers above this read a failure as "this addon has nothing", which is a
     // different and wrong conclusion from "this addon is busy". The wait lands in
@@ -1222,6 +1204,7 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_un
             // A sibling request may extend the quiet period while this one sleeps.
             loop {
                 let until = *quiet_until.lock().await;
+                let Some(until) = until else { anyhow::bail!("the addon requested a quiet period beyond the clock range") };
                 if tokio::time::Instant::now() >= until {
                     break;
                 }
@@ -1250,12 +1233,16 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration, quiet_un
             if code == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 // Even the final 429 must hold back the next request to this addon.
                 // Retry-After is in seconds; without it, double the wait per retry.
-                // Bound both waits so a throttled addon doesn't stall playback.
+                // Only the generated backoff is capped; the lookup deadline still
+                // bounds playback's wait when a server asks for a longer pause.
                 let retry_after = response.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).and_then(|s| s.trim().parse::<u64>().ok()).map(Duration::from_secs);
                 let backoff = THROTTLE_BASE * (1 << attempt);
-                let wait = retry_after.unwrap_or(backoff).clamp(THROTTLE_BASE, THROTTLE_CAP);
+                let wait = retry_after.unwrap_or(backoff.min(THROTTLE_CAP));
                 let mut quiet = quiet_until.lock().await;
-                *quiet = (*quiet).max(tokio::time::Instant::now() + wait);
+                *quiet = match (*quiet, tokio::time::Instant::now().checked_add(wait)) {
+                    (Some(previous), Some(next)) => Some(previous.max(next)),
+                    _ => None,
+                };
             }
             // BitChord addon auth answers 401 (503 while its verifier can't load keys)
             // with a JSON body naming itself; say what that means rather than "HTTP 401".
@@ -1358,6 +1345,20 @@ mod tests {
         F: Fn(String, &str) -> R + Send + 'static,
         R: Future<Output = (u16, String)> + Send + 'static,
     {
+        serve_with_headers(move |path, origin| {
+            let response = respond(path, origin);
+            async move {
+                let (status, body) = response.await;
+                (status, "", body)
+            }
+        }).await
+    }
+
+    async fn serve_with_headers<F, R>(respond: F) -> (String, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(String, &str) -> R + Send + 'static,
+        R: Future<Output = (u16, &'static str, String)> + Send + 'static,
+    {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let origin = base.clone();
@@ -1376,8 +1377,8 @@ mod tests {
                 let path = request.split_whitespace().nth(1).unwrap().split('?').next().unwrap().to_owned();
                 let response = respond(path, &origin);
                 tokio::spawn(async move {
-                    let (status, body) = response.await;
-                    let response = format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), if head { "" } else { &body });
+                    let (status, headers, body) = response.await;
+                    let response = format!("HTTP/1.1 {status} Test\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), if head { "" } else { &body });
                     let _ = socket.write_all(response.as_bytes()).await;
                 });
             }
@@ -1428,13 +1429,63 @@ mod tests {
     async fn probe_distinguishes_search_outages_from_rejection() {
         let (base, server) = serve(|path, _| std::future::ready(match path.as_str() {
             "/offline/manifest.json" | "/auth/manifest.json" => (200, r#"{"id":"test"}"#.to_owned()),
-            "/offline/search" => (503, String::new()),
+            "/absent/manifest.json" | "/search-only/manifest.json" => (404, String::new()),
+            "/offline/search" | "/absent/search" => (503, String::new()),
+            "/search-only/search" => (200, r#"{"tracks":[{}]}"#.to_owned()),
             "/auth/search" => (401, r#"{"error":"bitchord_auth","code":"expired"}"#.to_owned()),
             _ => panic!("unexpected addon request: {path}"),
         })).await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        assert!(matches!(Client::new(&format!("{base}/offline")).unwrap().probe(&http).await, Health::Unreachable(reason) if reason.contains("HTTP 503")));
+        for path in ["offline", "absent"] {
+            assert!(matches!(Client::new(&format!("{base}/{path}")).unwrap().probe(&http).await, Health::Unreachable(reason) if reason.contains("HTTP 503")));
+        }
+        assert!(matches!(Client::new(&format!("{base}/search-only")).unwrap().probe(&http).await, Health::Ok(reason) if reason.contains("1 result")));
         assert!(matches!(Client::new(&format!("{base}/auth")).unwrap().probe(&http).await, Health::Rejected(reason) if reason.contains(AUTH_DESKTOP_MSG)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn retry_after_outlasts_the_playback_deadline() {
+        let (base, server) = serve_with_headers(|_, _| std::future::ready((429, "Retry-After: 60\r\n", String::new()))).await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let started = tokio::time::Instant::now();
+        let quiet = tokio::sync::Mutex::new(Some(started));
+        // Cancellation of the request must leave its server-supplied delay intact.
+        assert!(tokio::time::timeout(Duration::from_secs(1), get_json(&http, &base, REQUEST_TIMEOUT, &quiet)).await.is_err());
+        assert!(quiet.lock().await.unwrap() >= started + Duration::from_secs(60));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn atmos_lookup_keeps_lossless_when_the_next_row_stalls() {
+        let (asked, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let (base, server) = serve(move |path, _| {
+            let asked = asked.clone();
+            async move {
+                let body = match path.as_str() {
+                    "/manifest.json" => r#"{"id":"test"}"#,
+                    "/search" => r#"{"tracks":[{"id":"first","title":"Test Song","artist":"Test Artist"},{"id":"slow","title":"Test Song","artist":"Test Artist"}]}"#,
+                    "/stream/first" => r#"{"url":"https://example.invalid/first.flac","format":"flac","size":100}"#,
+                    "/stream/slow" => {
+                        asked.send(()).unwrap();
+                        return std::future::pending().await;
+                    }
+                    _ => panic!("unexpected addon request: {path}"),
+                };
+                (200, body.to_owned())
+            }
+        }).await;
+        let client = Arc::new(Client::new(&base).unwrap());
+        let track = crate::model::Track {
+            title: "Test Song".into(),
+            artists: vec![crate::model::Link { name: "Test Artist".into(), id: None }],
+            ..Default::default()
+        };
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let stream = find(&http, &[client], &track, true, deadline, Lookup::Playback).await.unwrap();
+        assert_eq!(stream.url, "https://example.invalid/first.flac");
+        assert!(requests.try_recv().is_ok());
         server.abort();
     }
 
@@ -1446,14 +1497,14 @@ mod tests {
             std::future::ready(if path == "/busy" { (429, String::new()) } else { (200, "{}".to_owned()) })
         }).await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let quiet = tokio::sync::Mutex::new(tokio::time::Instant::now());
+        let quiet = tokio::sync::Mutex::new(Some(tokio::time::Instant::now()));
         let err = get_json(&http, &format!("{base}/busy"), REQUEST_TIMEOUT, &quiet).await.unwrap_err();
         assert_eq!(err.to_string(), "HTTP 429");
         assert_eq!(requests.len(), 3);
         for _ in 0..3 {
             requests.try_recv().unwrap();
         }
-        let old = *quiet.lock().await;
+        let old = quiet.lock().await.unwrap();
         assert!(old > tokio::time::Instant::now());
         let url = format!("{base}/next");
         let next = get_json(&http, &url, REQUEST_TIMEOUT, &quiet);
@@ -1465,7 +1516,7 @@ mod tests {
         }
         // Model the deadline extension a sibling response records during the wait.
         let extended = old + Duration::from_millis(250);
-        *quiet.lock().await = extended;
+        *quiet.lock().await = Some(extended);
         next.await.unwrap();
         assert!(requests.try_recv().unwrap() >= extended);
         server.abort();
