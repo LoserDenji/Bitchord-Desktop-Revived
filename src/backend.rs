@@ -891,6 +891,7 @@ pub struct Backend {
     hq: Arc<std::sync::atomic::AtomicBool>,
     /// The backup stream is on: a bot-check refusal offers Safari's HLS (Settings › Network).
     backup_stream: Arc<std::sync::atomic::AtomicBool>,
+    backup_stream_revision: Arc<std::sync::atomic::AtomicU64>,
     /// Explicit songs are hidden: a music video's song version has to be clean.
     clean: Arc<std::sync::atomic::AtomicBool>,
     /// The visionOS player's file URLs were refused past 1 MiB this session (YouTube
@@ -978,7 +979,7 @@ impl Backend {
         {
             log::warn!("proxy relay: {e:#}");
         }
-        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), backup_stream: Default::default(), clean: Default::default(), visionos_hls: Default::default(), hires: Default::default(), monochrome: Arc::new(providers::Monochrome::new()), jiosaavn: Arc::new(providers::JioSaavn::new()), sources: Arc::new(std::sync::RwLock::new(DEFAULT_SOURCES.to_vec())), atmos: Default::default(), disable_direct: Default::default(), reverted: Default::default(), songs: Default::default(), batch: Default::default(), canvas_spotify: Default::default(), canvas_cache: Default::default() };
+        let backend = Self { rt: Arc::new(rt), api, tx, audio, wake, prefetched: Default::default(), current: Default::default(), data_dir, lyrics, translate, jsc, premium: Arc::new(tokio::sync::Mutex::new(Err(None))), hq: Default::default(), backup_stream: Default::default(), backup_stream_revision: Default::default(), clean: Default::default(), visionos_hls: Default::default(), hires: Default::default(), monochrome: Arc::new(providers::Monochrome::new()), jiosaavn: Arc::new(providers::JioSaavn::new()), sources: Arc::new(std::sync::RwLock::new(DEFAULT_SOURCES.to_vec())), atmos: Default::default(), disable_direct: Default::default(), reverted: Default::default(), songs: Default::default(), batch: Default::default(), canvas_spotify: Default::default(), canvas_cache: Default::default() };
         backend.keep_signed_in();
         Ok(backend)
     }
@@ -1919,6 +1920,7 @@ impl Backend {
         // does a later prefetch (the queue changed: another song is next now).
         static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let ticket = LATEST.fetch_add(1, Ordering::Relaxed) + 1;
+        let backup_stream_revision = self.backup_stream_revision.load(Ordering::Relaxed);
         let generation = self.audio.status.wanted_gen.load(Ordering::Relaxed);
         // Looked up now, so the play doesn't wait for it.
         let song = self.song_version(&video_id, song_of.as_ref(), PREFETCH_SONG_WAIT).await;
@@ -1934,7 +1936,6 @@ impl Backend {
         }
         // The URL is looked up meanwhile, but the playing song finishes downloading
         // first: it gets the whole bandwidth.
-        let backup_stream = self.backup_stream.load(Ordering::Relaxed);
         let playing = self.current.lock().unwrap().as_ref().map(|(_, s)| s.clone());
         let (found, ()) = tokio::join!(self.find_stream(&video_id, meta.as_ref(), true), async {
             if let Some(s) = playing {
@@ -1945,8 +1946,8 @@ impl Backend {
             return Ok(());
         }
         let mut prefetched = self.prefetched.lock().unwrap();
-        // The setting turned off while the URL was looked up: this prefetch is moot too.
-        if self.backup_stream.load(Ordering::Relaxed) != backup_stream {
+        // Even a switch back to the original setting can leave a stream from the other mode.
+        if self.backup_stream_revision.load(Ordering::Relaxed) != backup_stream_revision {
             return Ok(());
         }
         log::debug!("prefetch {video_id}");
@@ -2074,25 +2075,27 @@ impl Backend {
             return Ok(());
         }
         let mut video_id = song.as_ref().map_or(listed, |s| s.id.as_str()).to_owned();
-        let prefetched = self.prefetched.lock().unwrap().take();
         // A reverted song must not replay its buffered hi-res copy: it re-resolves to YouTube.
         let reverted = self.reverted.lock().unwrap().contains(&video_id);
         let replay = self.current.lock().unwrap().take().filter(|(id, s)| !reverted && *id == video_id && s.is_complete()).map(|(_, s)| s);
-        let ready = match prefetched {
-            // Not one whose download failed (refused, say): that opens afresh.
-            // Nor a file stream fetched before file streams turned out to be cut off.
-            Some((id, (s, deferred))) if id == video_id && s.error().is_none() && !(self.visionos_hls.load(Ordering::Relaxed) && s.segments.is_none() && !s.is_complete()) => Some((s, deferred)),
-            // Replaying the current song keeps the next one's prefetch.
-            other if replay.is_some() => {
-                *self.prefetched.lock().unwrap() = other;
-                replay.map(|s| (s, None))
-            }
-            // Playback went elsewhere: that prefetch is moot.
-            other => {
-                if let Some((_, (s, _))) = other {
-                    s.cancel();
+        let ready = {
+            let mut prefetched = self.prefetched.lock().unwrap();
+            match prefetched.take() {
+                // Not one whose download failed (refused, say): that opens afresh.
+                // Nor a file stream fetched before file streams turned out to be cut off.
+                Some((id, (s, deferred))) if id == video_id && s.error().is_none() && !(self.visionos_hls.load(Ordering::Relaxed) && s.segments.is_none() && !s.is_complete()) => Some((s, deferred)),
+                // Replaying the current song keeps the next one's prefetch.
+                other if replay.is_some() => {
+                    *prefetched = other;
+                    replay.map(|s| (s, None))
                 }
-                None
+                // Playback went elsewhere: that prefetch is moot.
+                other => {
+                    if let Some((_, (s, _))) = other {
+                        s.cancel();
+                    }
+                    None
+                }
             }
         };
         let (shared, deferred_addons) = match ready {
@@ -3048,10 +3051,11 @@ impl Backend {
     /// so it doesn't hand a song a stream the setting now refuses.
     pub fn set_backup_stream(&self, on: bool) {
         let mut prefetched = self.prefetched.lock().unwrap();
-        if self.backup_stream.swap(on, Ordering::Relaxed) != on
-            && let Some((_, (stream, _))) = prefetched.take()
-        {
-            stream.cancel();
+        if self.backup_stream.swap(on, Ordering::Relaxed) != on {
+            self.backup_stream_revision.fetch_add(1, Ordering::Relaxed);
+            if let Some((_, (stream, _))) = prefetched.take() {
+                stream.cancel();
+            }
         }
     }
 
