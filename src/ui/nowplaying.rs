@@ -760,8 +760,7 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
     if total > 0.0 {
         let time = format!("{} / {}", super::fmt_time(pos as u32), super::fmt_time(total as u32));
         let g = widgets::time_galley(&left, &time, theme::regular(13.5), Color32::WHITE);
-        let (r, _) = left.allocate_exact_size(g.size(), Sense::hover());
-        left.painter().galley(r.min, g, Color32::WHITE);
+        left.label(g);
     }
     let mut right = ui.new_child(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::right_to_left(egui::Align::Center)));
     right.spacing_mut().item_spacing.x = 2.0;
@@ -1099,7 +1098,7 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let g = widgets::time_galley(ui, &super::fmt_time(pos as u32), theme::semibold(11.0), tc);
     ui.painter().galley(pos2(x0, hit.bottom() + 2.0), g, tc);
     let left = super::fmt_time((total - pos).max(0.0) as u32);
-    let g = widgets::galley(ui, &format!("-{left}"), theme::semibold(11.0), tc, 80.0);
+    let g = widgets::time_galley(ui, &format!("-{left}"), theme::semibold(11.0), tc);
     ui.painter().galley(pos2(x0 + w - g.size().x, hit.bottom() + 2.0), g, tc);
     // The quality mark sits between the two times, as the reference draws it.
     let badge_w = audio_badge_width(ui, app, false);
