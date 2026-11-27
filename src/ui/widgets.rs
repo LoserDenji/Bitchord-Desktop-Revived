@@ -264,7 +264,7 @@ pub fn heart(ui: &Ui, center: Pos2, size: f32, fill: f32, outline: Color32, fill
 
 /// Circular icon button with an animated hover halo.
 pub fn icon_button(ui: &mut Ui, glyph: char, size: f32, name: &str, active: bool) -> Response {
-    let d = size + 16.0;
+    let d = size + ICON_BUTTON_PADDING;
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(d), Sense::click());
     let resp = named(resp, name).on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand);
     let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
@@ -276,6 +276,8 @@ pub fn icon_button(ui: &mut Ui, glyph: char, size: f32, name: &str, active: bool
     icon_at(ui, rect.center(), glyph, size * press, color);
     resp
 }
+
+const ICON_BUTTON_PADDING: f32 = 16.0;
 
 /// Dark or light text, whichever reads on `bg`.
 pub fn contrast(bg: Color32) -> Color32 {
@@ -1290,14 +1292,26 @@ pub fn shelf_header(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thumb: 
 /// both clickable; on hover the arrow brightens and nudges toward where it opens.
 /// Returns whether either was clicked.
 pub fn heading_link(ui: &mut Ui, title: &str, font: egui::FontId) -> bool {
-    let text = ui.painter().layout_no_wrap(title.to_owned(), font.clone(), Color32::PLACEHOLDER);
-    let chev = (font.size * 0.75).round();
-    let (rect, resp) = ui.allocate_exact_size(vec2(text.size().x + 6.0 + chev, text.size().y.max(chev + 6.0)), Sense::click());
+    let width = ui.available_rect_before_wrap().intersect(ui.clip_rect()).width().max(0.0);
+    let chev = (font.size * 0.75).round().min(width);
+    let nudge = 2.0_f32.min(width - chev);
+    let title_width = (width - chev - nudge - 6.0).max(0.0);
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), font, Color32::PLACEHOLDER);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(title_width);
+    let text = ui.fonts_mut(|f| f.layout_job(job));
+    // Even the ellipsis can be too wide when only the chevron fits.
+    let text_width = if text.size().x <= title_width { text.size().x } else { 0.0 };
+    let gap = if text_width > 0.0 { 6.0 } else { 0.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(text_width + gap + chev + nudge, text.size().y.max(chev + 6.0)), Sense::click());
     let resp = named(resp, title).on_hover_cursor(egui::CursorIcon::PointingHand);
     let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
-    ui.painter().galley(pos2(rect.left(), rect.center().y - text.size().y / 2.0), text, theme::lerp_color(theme::text(), theme::text_dim(), 0.35 * h));
+    if text_width > 0.0 {
+        ui.painter().galley(pos2(rect.left(), rect.center().y - text.size().y / 2.0), text, theme::lerp_color(theme::text(), theme::text_dim(), 0.35 * h));
+    }
     let ink = theme::lerp_color(theme::text_dim(), theme::text(), h);
-    icon_at(ui, pos2(rect.right() - chev / 2.0 + 2.0 * h, rect.center().y), icon::CHEVRON_RIGHT, chev, ink);
+    if chev > 0.0 {
+        icon_at(ui, pos2(rect.right() - chev / 2.0 - nudge * (1.0 - h), rect.center().y), icon::CHEVRON_RIGHT, chev, ink);
+    }
     resp.clicked()
 }
 
@@ -1305,6 +1319,7 @@ pub fn heading_link(ui: &mut Ui, title: &str, font: egui::FontId) -> bool {
 /// (the arrow after it, as the website's headings wear). Returns (left, right, show-all clicked).
 pub fn shelf_header_ext(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thumb: Option<&str>, arrows: bool, show_all: bool) -> (bool, bool, bool) {
     let mut res = (false, false, false);
+    let arrow_size = 18.0;
     ui.add_space(30.0);
     ui.horizontal(|ui| {
         if let Some(url) = strap_thumb {
@@ -1314,6 +1329,10 @@ pub fn shelf_header_ext(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thu
             ui.add_space(4.0);
         }
         ui.vertical(|ui| {
+            if show_all && arrows {
+                let reserved = 2.0 * (arrow_size + ICON_BUTTON_PADDING + ui.spacing().item_spacing.x);
+                ui.set_max_width((ui.available_width() - reserved).max(0.0));
+            }
             if let Some(s) = strap {
                 ui.label(egui::RichText::new(s.to_uppercase()).font(theme::semibold(10.5)).color(theme::text_dim()));
             }
@@ -1325,8 +1344,8 @@ pub fn shelf_header_ext(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thu
         });
         if arrows {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                res.1 = icon_button(ui, icon::CHEVRON_RIGHT, 18.0, &format!("Scroll {title} right"), false).clicked();
-                res.0 = icon_button(ui, icon::CHEVRON_LEFT, 18.0, &format!("Scroll {title} left"), false).clicked();
+                res.1 = icon_button(ui, icon::CHEVRON_RIGHT, arrow_size, &format!("Scroll {title} right"), false).clicked();
+                res.0 = icon_button(ui, icon::CHEVRON_LEFT, arrow_size, &format!("Scroll {title} left"), false).clicked();
             });
         }
     });
