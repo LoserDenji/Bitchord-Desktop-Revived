@@ -478,6 +478,9 @@ pub struct App {
     /// device has played since. When the cross-device queue was last asked for (`now`).
     listened_at: u64,
     queue_checked: Option<f64>,
+    /// When Liked Music was last asked for on the window regaining focus (see
+    /// `sync_server_queue`): likes changed elsewhere show, at most every ten minutes.
+    liked_checked: Option<f64>,
     was_focused: bool,
     /// Album / playlist / artist the queue was started from, so its card shows pause.
     queue_source: Option<Target>,
@@ -1171,6 +1174,7 @@ impl App {
             resume_as_song: false,
             listened_at: 0,
             queue_checked: None,
+            liked_checked: None,
             was_focused: false,
             queue_source: None,
             played_title: None,
