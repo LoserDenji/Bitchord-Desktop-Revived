@@ -3794,6 +3794,30 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
 /// restart when the setting changed.
 fn network(app: &mut App, ui: &mut Ui) {
     use crate::proxy::{self, Setting};
+    const HIGHLIGHT_SECS: f64 = 3.0;
+    setting_row(ui, "Backup stream", Some("Play songs through Safari's HLS when YouTube refuses the usual stream partway, as VPNs make it. Starts each song a little slower."), |ui| {
+        let response = toggle(ui, &mut app.backup_stream, "Backup stream");
+        let now = ui.input(|input| input.time);
+        if std::mem::take(&mut app.reveal_backup_setting) {
+            response.scroll_to_me(Some(egui::Align::Center));
+            response.request_focus();
+            app.backup_setting_highlight_until = now + HIGHLIGHT_SECS;
+        }
+        let remaining = app.backup_setting_highlight_until - now;
+        if remaining > 0.0 {
+            let elapsed = (HIGHLIGHT_SECS - remaining) as f32;
+            let pulse = 0.5 + 0.5 * (elapsed * std::f32::consts::TAU).cos();
+            let fade = (remaining / 0.25).min(1.0) as f32;
+            let color = theme::with_alpha(app.accent_color(), (0.2 + 0.8 * pulse) * fade);
+            let stroke = egui::Stroke::new(2.0, color);
+            ui.painter().rect_stroke(response.rect.expand(4.0), response.rect.height() / 2.0 + 4.0, stroke, egui::StrokeKind::Outside);
+            ui.ctx().request_repaint();
+        }
+        if response.changed() {
+            app.backend.set_backup_stream(app.backup_stream);
+        }
+    });
+    divider(ui);
     let same = |a: &Setting, b: &Setting| std::mem::discriminant(a) == std::mem::discriminant(b);
     let mut pick = None;
     setting_row(ui, "Proxy", Some("Send everything BitChord fetches through a proxy: songs, lyrics, sign-in and Listen together."), |ui| {

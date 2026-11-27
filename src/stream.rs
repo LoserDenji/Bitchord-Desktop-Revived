@@ -66,6 +66,14 @@ pub enum Media {
     Feed(String),
     /// An HLS playlist's segments, one block each.
     Segments(Vec<String>),
+    /// HLS segments carrying audio and video in MPEG-TS. Only the AAC is buffered.
+    TransportStream(Vec<String>),
+}
+
+/// Why a download stopped, and whether the backup stream should be offered for it.
+pub struct DownloadFailure {
+    pub reason: String,
+    pub offer_backup: bool,
 }
 
 /// Resolves fresh URLs for the same video and format.
@@ -112,6 +120,8 @@ struct Inner {
     error: Option<String>,
     /// The download stopped on HTTP 403s that fresh URLs didn't get past.
     refused: bool,
+    /// The stream started after a bot check (the yt-dlp file stream behind it can be refused).
+    after_bot_check: bool,
     readers: usize,
     /// Set once a reader existed and all were dropped.
     cancelled: bool,
@@ -204,6 +214,7 @@ impl Shared {
                 want: 0,
                 error: None,
                 refused: false,
+                after_bot_check: false,
                 readers: 0,
                 cancelled: false,
                 limit,
@@ -284,6 +295,22 @@ impl Shared {
     /// The download failed on HTTP 403s that fresh URLs didn't get past.
     pub fn refused(&self) -> bool {
         self.inner.lock().unwrap().refused
+    }
+
+    /// The stream was opened after a bot check refused the main player (see
+    /// `mark_after_bot_check`), so its being refused is the case the backup stream is for.
+    pub fn mark_after_bot_check(&self) {
+        self.inner.lock().unwrap().after_bot_check = true;
+    }
+
+    /// Why the download stopped, if it failed: the error, and whether the backup stream
+    /// should be offered (both a bot check before it and 403s on it).
+    pub fn failure(&self) -> Option<DownloadFailure> {
+        let inner = self.inner.lock().unwrap();
+        Some(DownloadFailure {
+            reason: inner.error.as_ref()?.clone(),
+            offer_backup: inner.after_bot_check && inner.refused,
+        })
     }
 
     /// A block a reader may need now is still to come (a windowed file counts only its
@@ -392,12 +419,13 @@ impl UrlSlot {
         }
         match (refresh.callback)().await {
             // The buffer is laid out for the stream it started with.
-            Ok(Media::Segments(urls)) if Some(urls.len()) != self.segments => {
+            // A TransportStream is one more kind of segment list: same count, or no.
+            Ok(Media::Segments(urls) | Media::TransportStream(urls)) if Some(urls.len()) != self.segments => {
                 log::warn!("stream URL refresh: {} segments for a buffer of {:?}", urls.len(), self.segments);
                 false
             }
-            Ok(Media::File(_) | Media::Feed(_)) if self.segments.is_some() => {
-                log::warn!("stream URL refresh: a file for a segmented buffer");
+            Ok(media) if std::mem::discriminant(&media) != std::mem::discriminant(&slot.0) => {
+                log::warn!("stream URL refresh: the media type changed");
                 false
             }
             Ok(media) => {
@@ -437,6 +465,11 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
     let _done = DownloadDone(&shared.done);
     let addon = refresh.as_ref().is_some_and(|r| r.once);
     let segments = shared.segments.as_ref().map(|s| s.len());
+    let transport_stream = matches!(&media, Media::TransportStream(_));
+    // YouTube sometimes ends a Safari playlist with an empty segment shorter
+    // than one AAC frame (e.g. 2 ms).
+    let short_tail = transport_stream && shared.segments.as_ref().and_then(|starts| starts.last())
+        .is_some_and(|&start| (shared.duration_ms as f64 - start * 1000.0) < 10.0);
     let slot = Arc::new(UrlSlot { url: tokio::sync::Mutex::new((media, 0)), refresh, attempted: Default::default(), segments });
     // Some media servers ignore ranges. Probe each URL before choosing between
     // parallel workers and a single download; either path can see an expired URL.
@@ -512,7 +545,7 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
                             Media::File(url) => (if ranging == Ranging::Query { format!("{url}&range={a}-{b}") } else { url.clone() }, Some(b - a + 1), slot.1),
                             // A podcast feed's file: its own server, ranges as a header.
                             Media::Feed(url) => (url.clone(), Some(b - a + 1), slot.1),
-                            Media::Segments(urls) => (urls[idx].clone(), None, slot.1),
+                            Media::Segments(urls) | Media::TransportStream(urls) => (urls[idx].clone(), None, slot.1),
                         }
                     };
                     // A refreshed URL is tied to the address that resolved it, which is the
@@ -529,6 +562,17 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
                             _ => fetch(&client, &url, &ua, None).await,
                         }
                     };
+                    // A Safari segment carries AAC and video in MPEG-TS: only the AAC is
+                    // buffered, in place of the segment itself. An empty final segment is
+                    // the playlist's own oddity, kept empty as it is.
+                    let res = res.and_then(|data| {
+                        let empty_tail = short_tail && Some(idx + 1) == segments && data.is_empty();
+                        if transport_stream && !empty_tail {
+                            crate::hls::unpack_audio(&data)
+                        } else {
+                            Ok(data)
+                        }
+                    });
                     match res {
                         Ok(data) => {
                             shared.put(idx, data);
@@ -1094,6 +1138,25 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use rodio::Source;
+
+    #[test]
+    fn backup_offer_requires_both_a_bot_check_and_a_refused_stream() {
+        let shared = || super::Shared::new(1, 0, None, super::Format::Aac, None, false);
+        let ordinary = shared();
+        ordinary.fail("403".into(), true);
+        assert!(!ordinary.failure().unwrap().offer_backup);
+
+        let interrupted = shared();
+        interrupted.mark_after_bot_check();
+        assert!(interrupted.failure().is_none());
+        interrupted.fail("connection lost".into(), false);
+        assert!(!interrupted.failure().unwrap().offer_backup);
+
+        let refused = shared();
+        refused.mark_after_bot_check();
+        refused.fail("403".into(), true);
+        assert!(refused.failure().unwrap().offer_backup);
+    }
 
     /// A real podcast's newest episode played the way an RSS episode is: found past its
     /// tracking redirects, downloaded in `Range` requests, decoded as MP3, seeked.

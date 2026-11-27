@@ -17,7 +17,59 @@ use symphonia::core::codecs::{CODEC_TYPE_AAC, CodecParameters, Decoder, DecoderO
 use symphonia::core::formats::Packet;
 use symphonia::default::codecs::AacDecoder;
 
+mod transport;
+
+pub(crate) use transport::unpack_audio;
+
 use crate::stream::StreamReader;
+
+/// A media playlist's segments: each one's start (s, the `#EXTINF` durations before it)
+/// and its URL, resolved against the playlist's own address, and their length in all.
+pub(crate) struct MediaPlaylist {
+    pub segments: Vec<(f64, String)>,
+    pub duration: f64,
+}
+
+pub(crate) fn media_playlist(base: &reqwest::Url, text: &str) -> anyhow::Result<MediaPlaylist> {
+    let mut segments = Vec::new();
+    let mut duration = 0.0;
+    let mut pending = None;
+    for line in text.lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix("#EXTINF:") {
+            anyhow::ensure!(pending.is_none(), "HLS duration has no segment");
+            let seconds = value.split(',').next().unwrap_or_default().trim().parse::<f64>()?;
+            anyhow::ensure!(seconds.is_finite() && seconds >= 0.0, "invalid HLS segment duration");
+            pending = Some(seconds);
+        } else if !line.starts_with('#') && !line.is_empty() {
+            let seconds = pending.take().ok_or_else(|| anyhow::anyhow!("HLS segment has no duration"))?;
+            let url = base.join(line)?;
+            anyhow::ensure!(matches!(url.scheme(), "http" | "https"), "unsupported HLS segment URL");
+            segments.push((duration, url.into()));
+            duration += seconds;
+        }
+    }
+    anyhow::ensure!(pending.is_none(), "HLS duration has no segment");
+    anyhow::ensure!(duration.is_finite() && duration > 0.0, "empty HLS audio playlist");
+    Ok(MediaPlaylist { segments, duration })
+}
+
+/// Safari's HLS: the audio muxed into its video segments as MPEG-TS. The playlist is
+/// read the same way; the AAC is unpacked from each segment on its way into the buffer
+/// (`stream::Media::TransportStream`).
+pub(crate) async fn safari_playlist(http: &reqwest::Client, url: &str, ua: &str) -> anyhow::Result<(Vec<(f64, String)>, u64)> {
+    let response = http.get(url).header("User-Agent", ua).timeout(Duration::from_secs(8))
+        .send().await.and_then(reqwest::Response::error_for_status).map_err(reqwest::Error::without_url)?;
+    let base = response.url().clone();
+    let text = response.text().await.map_err(reqwest::Error::without_url)?;
+    anyhow::ensure!(text.lines().any(|line| line.trim() == "#EXT-X-ENDLIST"), "Safari returned an unfinished HLS playlist");
+    anyhow::ensure!(!text.lines().map(str::trim).any(|line| {
+        line.starts_with("#EXT-X-MAP:") || line.starts_with("#EXT-X-BYTERANGE:")
+            || line.strip_prefix("#EXT-X-KEY:").is_some_and(|key| key != "METHOD=NONE")
+    }), "unsupported Safari HLS playlist");
+    let playlist = media_playlist(&base, &text)?;
+    let duration_ms = (playlist.duration * 1000.0).round() as u64;
+    Ok((playlist.segments, duration_ms))
+}
 
 /// AAC's sample rates, by ADTS index.
 const RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
@@ -292,6 +344,26 @@ mod tests {
     #[test]
     fn untagged_segments_start_at_their_first_byte() {
         assert_eq!(id3(&frame(10)), (0, None));
+    }
+
+    #[test]
+    fn playlist_segments_resolve_against_the_playlist() {
+        let base = reqwest::Url::parse("https://s/index.m3u8").unwrap();
+        let media = "#EXTM3U\n#EXT-X-TARGETDURATION:7\n#EXTINF:7.0,\nhttps://s/0\n#EXTINF:7.0,\n1\n#EXTINF:5.04,\n/2\n#EXT-X-ENDLIST\n";
+        let playlist = media_playlist(&base, media).unwrap();
+        assert_eq!(playlist.segments, vec![(0.0, "https://s/0".to_owned()), (7.0, "https://s/1".to_owned()), (14.0, "https://s/2".to_owned())]);
+        assert_eq!(playlist.duration, 19.04);
+    }
+
+    #[test]
+    fn playlist_rejects_durations_without_segments() {
+        let base = reqwest::Url::parse("https://example.com/index.m3u8").unwrap();
+        for playlist in [
+            "#EXTM3U\n#EXTINF:7,\n#EXTINF:2,\na.ts\n#EXT-X-ENDLIST",
+            "#EXTM3U\n#EXTINF:7,\na.ts\n#EXTINF:2,\n#EXT-X-ENDLIST",
+        ] {
+            assert!(media_playlist(&base, playlist).is_err());
+        }
     }
 
     /// Signed out: plays a song's HLS audio end to end, and seeks in it.
