@@ -1439,8 +1439,9 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let play_r = 32.0;
     let side_r = 22.0;
     let cy = bleed.bottom() - 24.0 - play_r;
-    let cx = x + play_r;
     let gap = play_r + side_r + 12.0;
+    // Leave room for the shuffle circle and its hover growth inside the banner clip.
+    let cx = (x + play_r).max(bleed.left() + gap + side_r + 2.0);
     // The side circles are white in the dark pages the website draws; light pages get
     // the Play pill's own treatment instead, or a white circle would vanish on them.
     let (wash, ink) = if theme::light() { (theme::text(), theme::on_text()) } else { (Color32::WHITE, widgets::contrast(Color32::WHITE)) };
