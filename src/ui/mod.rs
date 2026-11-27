@@ -227,6 +227,16 @@ enum Dialog {
     ArtistAbout { name: String, description: String, avatar: Option<String>, subscribers: Option<u64> },
 }
 
+/// The backup-stream prompt's state: hidden until a bot-checked stream is refused,
+/// dismissed once the listener answers it (either way).
+#[derive(Default, PartialEq, Eq)]
+enum BackupPrompt {
+    #[default]
+    Hidden,
+    Open,
+    Dismissed,
+}
+
 /// Songs picked in a list for a batch action: Ctrl-click toggles one, Shift-click a range,
 /// or the Select button makes every click pick.
 #[derive(Default)]
@@ -634,6 +644,10 @@ pub struct App {
     /// Pausing and playing again fade, rather than cut off and start at once.
     pause_fade: bool,
     high_quality: bool,
+    backup_stream: bool,
+    backup_prompt: BackupPrompt,
+    reveal_backup_setting: bool,
+    backup_setting_highlight_until: f64,
     /// Play an official music video as its song version when one is found.
     play_songs: bool,
     /// Show music videos moving, playing their own audio to stay in time.
@@ -1073,6 +1087,8 @@ impl App {
         let logged_in = backend.is_logged_in();
         // Before any request: a song started at launch (dev hooks) must see this setting.
         backend.set_high_quality(get("high_quality").is_none_or(|v| v == "1"));
+        let backup_stream = get("backup_stream").is_some_and(|v| v == "1");
+        backend.set_backup_stream(backup_stream);
         let hide_explicit = get("hide_explicit").is_some_and(|v| v == "1");
         let restricted_mode = get("restricted_mode").is_some_and(|v| v == "1");
         backend.set_hide_explicit(hide_explicit, restricted_mode);
@@ -1264,6 +1280,10 @@ impl App {
             log_volume: get("log_volume").is_none_or(|v| v == "1"),
             pause_fade: get("pause_fade").is_none_or(|v| v == "1"),
             high_quality: get("high_quality").is_none_or(|v| v == "1"),
+            backup_stream,
+            backup_prompt: BackupPrompt::default(),
+            reveal_backup_setting: false,
+            backup_setting_highlight_until: 0.0,
             play_songs: get("play_songs").is_none_or(|v| v == "1"),
             show_video: dev_var("YTM_VIDEO").is_some() || get("show_video").is_some_and(|v| v == "1"),
             video_quality: get("video_quality").and_then(|v| v.parse().ok()).filter(|h| VIDEO_QUALITIES.contains(h)).unwrap_or(720),
@@ -2517,6 +2537,7 @@ impl eframe::App for App {
         storage.set_string("log_volume", b(self.log_volume));
         storage.set_string("pause_fade", b(self.pause_fade));
         storage.set_string("high_quality", b(self.high_quality));
+        storage.set_string("backup_stream", b(self.backup_stream));
         storage.set_string("play_songs", b(self.play_songs));
         storage.set_string("show_video", b(self.show_video));
         storage.set_string("video_quality", self.video_quality.to_string());
