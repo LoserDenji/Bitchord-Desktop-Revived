@@ -95,7 +95,9 @@ const SECTIONS: [(&str, SettingsTab); 33] = {
     use SettingsTab::*;
     [
         ("Account", Account),
-        ("Connections", Account),
+        // Its own tab, not Account's: opening it lands on General › Network, where the
+        // connections themselves sit.
+        ("Connections", General),
         ("Import", Account),
         ("Discord", Discord),
         ("Discord connection", Discord),
@@ -500,6 +502,10 @@ mod tests {
     fn sections_are_in_settings() {
         // A renamed section would else turn into a plain search for its old name.
         let code = [include_str!("pages.rs"), include_str!("keybinds.rs"), include_str!("presence.rs"), include_str!("storage.rs"), include_str!("transfer.rs")].concat();
+        // Every tab is listed as itself, so running it opens the tab.
+        for tab in SettingsTab::ALL {
+            assert!(SECTIONS.iter().any(|&(name, t)| t == tab && name == tab.label()), "{:?} isn't listed as its own tab", tab.label());
+        }
         for (name, tab) in SECTIONS.into_iter().filter(|(name, tab)| *name != tab.label()) {
             assert!(code.contains(&format!("(ui, \"{name}\"")), "no section titled {name:?} in {:?}", tab.label());
         }
