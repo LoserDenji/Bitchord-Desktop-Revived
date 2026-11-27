@@ -317,12 +317,10 @@ impl App {
     /// Ask for the queue YouTube Music keeps across devices when the app starts and
     /// whenever its window comes back into focus with nothing playing, so a song
     /// started on the phone is here to carry on with.
-    pub(super) fn sync_server_queue(&mut self, ctx: &egui::Context, now: f64) {
+    pub(super) fn sync_server_queue(&mut self, refocused: bool, now: f64) {
         if self.playing() {
             self.listened_at = unix_now();
         }
-        let focused = ctx.input(|i| i.focused);
-        let refocused = focused && !std::mem::replace(&mut self.was_focused, focused);
         // Back in the window: likes changed on another device show. Liked Music's entries
         // stand in for individual like reads, so it's asked for again, at most every ten
         // minutes (upstream's Ratings::refresh_if_stale); the cross-device queue keeps its

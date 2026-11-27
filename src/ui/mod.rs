@@ -2206,15 +2206,6 @@ impl eframe::App for App {
         self.mini.tick(ctx, now);
         self.tray_window(ctx, frame);
         self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
-        // In the tray, or minimized: nothing would be seen, so nothing is drawn. eframe
-        // skips a minimized window itself, but not one hidden in the tray (it can't tell on
-        // Windows or X11), and would otherwise draw the whole window, background and all,
-        // for every frame the player asks for. The player's bookkeeping above is all in
-        // `logic`; `ui` below returns before drawing anything while hidden.
-        if self.window_hidden {
-            return;
-        }
-        self.sync_tempo();
         if let Some((slot, result)) = self.discord_artwork.take_import() {
             match result {
                 Ok(file) => self.discord_prefs.images[slot].file = Some(file),
@@ -2224,7 +2215,28 @@ impl eframe::App for App {
         self.sync_discord(ctx);
         self.sync_song_notification(ctx);
         self.sync_lastfm();
-        self.sync_server_queue(ctx, now);
+        let focused = ctx.input(|i| i.focused);
+        let refocused = focused && !self.was_focused;
+        self.was_focused = focused;
+        // In the tray, or minimized: nothing would be seen, so nothing is drawn. eframe
+        // skips a minimized window itself, but not one hidden in the tray (it can't tell on
+        // Windows or X11), and would otherwise draw the whole window, background and all,
+        // for every frame the player asks for. The player's bookkeeping above is all in
+        // `logic`; `ui` below returns before drawing anything while hidden.
+        if self.window_hidden {
+            if self.playing() || self.buffering {
+                ctx.request_repaint_after(Duration::from_millis(250));
+            } else {
+                // Fully idle and hidden, nothing else schedules a repaint: keep a
+                // slow heartbeat going anyway, so a show request (from the tray, or
+                // a later launch) is always picked up within seconds, even if its
+                // wake-up was lost.
+                ctx.request_repaint_after(Duration::from_secs(2));
+            }
+            return;
+        }
+        self.sync_tempo();
+        self.sync_server_queue(refocused, now);
         self.tick_updates(ctx, now);
         let np = widgets::NowPlaying {
             song: self.current_id().map(str::to_owned),
@@ -2252,18 +2264,7 @@ impl eframe::App for App {
         // lyrics ask for every frame while they animate (the karaoke sweep must be
         // smooth). Each egui frame re-lays-out the UI, so frame rate is the main CPU cost.
         let playing = self.playing();
-        if self.window_hidden {
-            // In the tray or minimized: nothing to draw, only the player bookkeeping.
-            if playing || self.buffering {
-                ctx.request_repaint_after(Duration::from_millis(250));
-            } else {
-                // Fully idle and hidden, nothing else schedules a repaint: keep a
-                // slow heartbeat going anyway, so a show request (from the tray, or
-                // a later launch) is always picked up within seconds, even if its
-                // wake-up was lost.
-                ctx.request_repaint_after(Duration::from_secs(2));
-            }
-        } else if self.np_open && playing && !self.mini.busy() {
+        if self.np_open && playing && !self.mini.busy() {
             // Blur off halves the rate — but the record's spin and a moving cover
             // read as stutter at half of it, so they keep the full one.
             let spinning = !self.reduce_motion && self.look().cover.shape == crate::preset::Shape::Record;
