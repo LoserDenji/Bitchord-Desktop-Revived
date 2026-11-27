@@ -2482,6 +2482,7 @@ impl Backend {
                     }
                     None => {
                         let s = this.resolve_from(source, &id, format.clone()).await?;
+                        anyhow::ensure!(same_segments(source, starts.as_deref(), s.starts.as_deref()), "the stream changed segment boundaries");
                         (s.media, s.format, s.size)
                     }
                 };
@@ -2489,7 +2490,6 @@ impl Backend {
                 anyhow::ensure!(refreshed_format == format, "the stream changed format");
                 // A podcast host may put other ads in, which makes another file.
                 anyhow::ensure!(refreshed_size == size, "the stream changed size");
-                anyhow::ensure!(same_segments(source, starts.as_deref(), s.starts.as_deref()), "the stream changed segment boundaries");
                 Ok(media)
             })
         }) }
@@ -2520,7 +2520,8 @@ impl Backend {
             let current = self.current.clone();
             Arc::new(move || current.lock().unwrap().as_ref().map(|(_, s)| s.clone())) as stream::Ahead
         });
-        stream::download_behind(self.http(), s.media, s.user_agent, shared.clone(), Some(self.refresher(source, &t.id, s.format.clone(), s.size, s.selection)), s.ranging, ahead).await;
+        let refresh = Some(self.refresher(source, &t.id, &s));
+        stream::download_behind(self.http(), s.media, s.user_agent, shared.clone(), refresh, s.ranging, ahead).await;
         if let Some(e) = shared.error() {
             anyhow::bail!("{e}");
         }
@@ -3212,12 +3213,13 @@ impl Backend {
             Shared::from_bytes_with_format(data, s.duration_ms, s.loudness_db, s.format.clone(), s.info.clone())
         } else {
             let shared = Shared::new(s.size, s.duration_ms, s.loudness_db, s.format.clone(), s.info.clone(), false);
+            let refresh = Some(self.refresher(source, &video_id, &s));
             self.rt.spawn(stream::download(
                 self.http(),
                 s.media,
                 s.user_agent,
                 shared.clone(),
-                Some(self.refresher(source, &video_id, s.format.clone(), s.size, s.selection)),
+                refresh,
                 s.ranging,
             ));
             shared
