@@ -2597,7 +2597,8 @@ impl Backend {
     /// as a tagged .m4a.
     /// `allow_hires`: the sources before YouTube are tried (playback only).
     async fn resolve(&self, video_id: &str, best: bool, track: Option<&Track>, allow_hires: bool, prefetch: bool) -> anyhow::Result<(Source, ResolvedStream)> {
-        let hq = best || self.hq.load(Ordering::Relaxed);
+        let youtube = best || self.source_on(MusicSource::Youtube);
+        let mut deferred_addons = None;
         let reverted = self.reverted.lock().unwrap().contains(video_id);
         if allow_hires
             && !reverted
@@ -2605,6 +2606,8 @@ impl Backend {
         {
             // Snapshotted first: the read guard must not live across the awaits below.
             let sources = self.sources.read().unwrap().clone();
+            let has_fallback = youtube || sources.iter().any(|&(kind, on)| on && !matches!(kind, MusicSource::Addons | MusicSource::Youtube));
+            let lookup = if prefetch { hires::Lookup::Prefetch } else if has_fallback { hires::Lookup::Playback } else { hires::Lookup::Startup };
             for (kind, on) in sources {
                 if !on || kind == MusicSource::Youtube {
                     continue;
@@ -2616,7 +2619,11 @@ impl Backend {
                         if sources.is_empty() {
                             continue;
                         }
-                        self.from_hires(&sources, track, prefetch, false, false).await.map(|s| (Source::HiRes, s))
+                        let found = self.from_hires(&sources, track, lookup).await.map(|s| (Source::HiRes, s));
+                        if found.is_none() && matches!(lookup, hires::Lookup::Playback) {
+                            deferred_addons = Some((sources, track));
+                        }
+                        found
                     }
                     MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                     MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
@@ -2633,12 +2640,24 @@ impl Backend {
                 log::info!("{video_id}: {} had nothing ({:.1}s)", kind.label(), started.elapsed().as_secs_f32());
             }
         }
-        // YouTube, the fallback everything ends at. Downloads always come from here;
-        // playback can be sent back to it per song, and switching it off in Settings
-        // leaves only the sources above.
-        if !best && !self.source_on(MusicSource::Youtube) {
-            anyhow::bail!("YouTube Music is switched off in Settings \u{203a} Music sources, and no source before it has the song");
+        // Downloads always come from YouTube. For playback, try it if enabled
+        // before going back to any addons whose manifest renditions were deferred.
+        let result = if youtube {
+            self.resolve_youtube(video_id, best).await
+        } else {
+            Err(anyhow::anyhow!("YouTube Music is switched off in Settings \u{203a} Music sources, and no source before it has the song"))
+        };
+        if result.is_err()
+            && let Some((sources, track)) = deferred_addons
+            && let Some(stream) = self.from_hires(&sources, track, hires::Lookup::Startup).await
+        {
+            return Ok((Source::HiRes, stream));
         }
+        result
+    }
+
+    async fn resolve_youtube(&self, video_id: &str, best: bool) -> anyhow::Result<(Source, ResolvedStream)> {
+        let hq = best || self.hq.load(Ordering::Relaxed);
         if best
             && !self.jsc.ready()
             && let Some(session) = self.api.account()
@@ -2796,16 +2815,11 @@ impl Backend {
 
     /// The listener's addons, searched together. Atmos leads when the preference is on,
     /// then hi-res/lossless; `None` when none of them has a copy (a miss, not a fault).
-    /// `fresh` (the manual upgrade ask) skips the addons' cached stream answers.
-    async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, prefetch: bool, upgrade: bool, fresh: bool) -> Option<ResolvedStream> {
+    async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, lookup: hires::Lookup) -> Option<ResolvedStream> {
         let atmos = self.atmos.load(Ordering::Relaxed);
         let http = self.http();
-        let found = if upgrade {
-            hires::find_finer(&http, sources, track, atmos, UPGRADE_ADDON_WAIT, fresh).await
-        } else {
-            let deadline = tokio::time::Instant::now() + HIRES_WAIT;
-            hires::find_all(&http, sources, track, atmos, prefetch, deadline).await
-        };
+        let budget = if matches!(lookup, hires::Lookup::Upgrade { .. }) { UPGRADE_ADDON_WAIT } else { HIRES_WAIT };
+        let found = hires::find(&http, sources, track, atmos, tokio::time::Instant::now() + budget, lookup).await;
         let Some(found) = found else {
             log::info!("hi-res: no copy of \"{}\" on {} source(s)", track.title, sources.len());
             return None;
@@ -3048,7 +3062,7 @@ impl Backend {
                         if clients.is_empty() {
                             return None;
                         }
-                        this.from_hires(&clients, &track, false, true, fresh).await.map(|s| (Source::HiRes, s))
+                        this.from_hires(&clients, &track, hires::Lookup::Upgrade { fresh }).await.map(|s| (Source::HiRes, s))
                     }
                     MusicSource::MonoServers => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
                     MusicSource::Monochrome => tokio::time::timeout(UPGRADE_WAIT, this.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
