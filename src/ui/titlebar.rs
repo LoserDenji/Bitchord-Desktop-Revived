@@ -399,10 +399,27 @@ fn edges(ctx: &egui::Context, sides_only: bool) {
 /// opaque, so it never shows. Anything else winit decides (the work area when maximized)
 /// stays as it is.
 #[cfg_attr(not(windows), allow(unused_variables))]
-pub fn set_hwnd(hwnd: *mut std::ffi::c_void) {
+pub fn set_hwnd(hwnd: *mut std::ffi::c_void, gl_vendor: Option<&str>) {
     #[cfg(windows)]
     if custom() {
-        frame::init(hwnd);
+        frame::init(hwnd, drop_caption(gl_vendor, std::env::var("YTM_DROP_CAPTION").ok().as_deref()));
+    }
+}
+
+/// Whether the frameless window goes without the caption style too (#196). winit keeps
+/// it (for snapping and the minimize and maximize animations) though the window shows
+/// no caption. Intel's OpenGL drivers for older chips (HD 5500) then put the picture
+/// where a captioned window's drawable area would start, a caption's height lower than
+/// the window's, while the pointer lands where it should. Full screen, which drops the
+/// style, and the system title bar, whose drawable area does start below a caption,
+/// show it in place. Dropping the style costs only those animations, so it's for
+/// Intel's OpenGL alone. `YTM_DROP_CAPTION=1` drops it anywhere, `=0` keeps it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn drop_caption(gl_vendor: Option<&str>, forced: Option<&str>) -> bool {
+    match forced {
+        Some("1") => true,
+        Some("0") => false,
+        _ => gl_vendor.is_some_and(|v| v.to_ascii_lowercase().contains("intel")),
     }
 }
 
@@ -524,15 +541,22 @@ mod mac {
 
 #[cfg(windows)]
 mod frame {
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, MonitorFromWindow};
     use windows::Win32::UI::Controls::MARGINS;
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, NCCALCSIZE_PARAMS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_CHAR, WM_NCCALCSIZE, WM_SYSCHAR};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongW, IsZoomed, MINMAXINFO, NCCALCSIZE_PARAMS, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos,
+        WM_CHAR, WM_GETMINMAXINFO, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_STYLECHANGING, WM_SYSCHAR, WS_CAPTION,
+    };
 
-    pub fn init(hwnd: *mut std::ffi::c_void) {
+    /// See `super::drop_caption`.
+    static NO_CAPTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    pub fn init(hwnd: *mut std::ffi::c_void, no_caption: bool) {
         let hwnd = HWND(hwnd);
+        NO_CAPTION.store(no_caption, std::sync::atomic::Ordering::Relaxed);
         // SAFETY: the app's own window, on the thread that made it (still hidden: eframe
         // shows it after the first frame); the subclass lives as long as the window.
         unsafe {
@@ -541,6 +565,11 @@ mod frame {
                 return;
             }
             let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 0, cyBottomHeight: 1 });
+            if no_caption {
+                // The subclass keeps it off when winit sets the style again.
+                log::info!("title bar: window without the caption style");
+                SetWindowLongW(hwnd, GWL_STYLE, GetWindowLongW(hwnd, GWL_STYLE) & !(WS_CAPTION.0 as i32));
+            }
             // Have Windows ask for the window's areas again.
             let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
@@ -548,7 +577,8 @@ mod frame {
 
     unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _: usize, _: usize) -> LRESULT {
         // SAFETY: called by Windows with the window's own message; for WM_NCCALCSIZE with
-        // wparam set, lparam points at an NCCALCSIZE_PARAMS.
+        // wparam set, lparam points at an NCCALCSIZE_PARAMS; for WM_STYLECHANGING, at a
+        // STYLESTRUCT.
         unsafe {
             // A character with no key press for winit to pair it with (an IME commit
             // sends these) is left to Windows' default handling, which answers with the
@@ -557,8 +587,34 @@ mod frame {
                 let _ = DefSubclassProc(hwnd, msg, wparam, lparam);
                 return LRESULT(0);
             }
+            if msg == WM_STYLECHANGING && wparam.0 as i32 == GWL_STYLE.0 && NO_CAPTION.load(std::sync::atomic::Ordering::Relaxed) {
+                (*(lparam.0 as *mut STYLESTRUCT)).styleNew &= !WS_CAPTION.0;
+            }
+            // Without the caption style, as GLFW's frameless windows (#196): maximized to
+            // the work area, and no old-style title bar drawn on activation or a new title.
+            if NO_CAPTION.load(std::sync::atomic::Ordering::Relaxed) {
+                if msg == WM_GETMINMAXINFO {
+                    let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+                    to_work_area(hwnd, &mut *(lparam.0 as *mut MINMAXINFO));
+                    return result;
+                }
+                // Activation still goes to winit, which tracks focus by it; lparam -1 asks
+                // Windows not to repaint the frame for it, so no old-style title bar shows.
+                if msg == WM_NCACTIVATE {
+                    DefSubclassProc(hwnd, msg, wparam, LPARAM(-1));
+                    return LRESULT(1);
+                }
+                if msg == WM_NCPAINT {
+                    clear_edge(hwnd);
+                    return LRESULT(1);
+                }
+            }
             if msg != WM_NCCALCSIZE || wparam.0 == 0 {
-                return DefSubclassProc(hwnd, msg, wparam, lparam);
+                let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+                if msg == WM_NCPAINT {
+                    clear_edge(hwnd);
+                }
+                return result;
             }
             let params = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
             let proposed = params.rgrc[0];
@@ -582,6 +638,27 @@ mod frame {
         }
     }
 
+    /// Without the caption style Windows maximizes a window over its whole monitor, the
+    /// taskbar included, as it does a full-screen game's. winit still keeps the app's area
+    /// to the work area, so the strip past it went unseen but took the taskbar's clicks
+    /// (#196). Maximized, it fills the work area instead, as GLFW's frameless windows do.
+    fn to_work_area(hwnd: HWND, mm: &mut MINMAXINFO) {
+        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        // SAFETY: the app's own window; `info` is ours and sized.
+        if !unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) }.as_bool() {
+            return;
+        }
+        let (m, w) = (info.rcMonitor, info.rcWork);
+        mm.ptMaxPosition = POINT { x: w.left - m.left, y: w.top - m.top };
+        mm.ptMaxSize = POINT { x: w.right - w.left, y: w.bottom - w.top };
+    }
+
+    /// The reserved row is outside egui's clear. Black lets DWM show the material there.
+    /// This fork has no backdrop material, so there is nothing to put in that row: the
+    /// call stays as the no-op placeholder for the day one arrives, the way upstream
+    /// keeps its `backdrop::shows()` guard.
+    fn clear_edge(_: HWND) {}
+
     /// Whether `r` covers all of the monitor it's on: the one it's going to, while the
     /// window moves to another.
     fn fills_monitor(r: &RECT) -> bool {
@@ -597,7 +674,17 @@ mod frame {
 
 #[cfg(test)]
 mod tests {
-    use super::Choice;
+    use super::{Choice, drop_caption};
+
+    #[test]
+    fn only_intel_opengl_drops_the_caption_style_unless_forced() {
+        assert!(drop_caption(Some("Intel"), None));
+        assert!(!drop_caption(Some("NVIDIA Corporation"), None));
+        assert!(!drop_caption(None, None));
+        assert!(drop_caption(None, Some("1")));
+        assert!(!drop_caption(Some("Intel"), Some("0")));
+        assert!(!drop_caption(Some("ATI Technologies Inc."), Some("")));
+    }
 
     #[test]
     fn linux_draws_its_own_title_bar_only_where_the_desktop_draws_none() {
