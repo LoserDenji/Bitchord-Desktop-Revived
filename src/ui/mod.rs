@@ -2178,6 +2178,14 @@ impl eframe::App for App {
         self.mini.tick(ctx, now);
         self.tray_window(ctx, frame);
         self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
+        // In the tray, or minimized: nothing would be seen, so nothing is drawn. eframe
+        // skips a minimized window itself, but not one hidden in the tray (it can't tell on
+        // Windows or X11), and would otherwise draw the whole window, background and all,
+        // for every frame the player asks for. The player's bookkeeping above is all in
+        // `logic`; `ui` below returns before drawing anything while hidden.
+        if self.window_hidden {
+            return;
+        }
         self.sync_tempo();
         if let Some((slot, result)) = self.discord_artwork.take_import() {
             match result {
