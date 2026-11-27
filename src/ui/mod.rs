@@ -631,6 +631,8 @@ pub struct App {
     /// The level volume normalization brings songs to.
     normalize: crate::audio::Normalize,
     log_volume: bool,
+    /// Pausing and playing again fade, rather than cut off and start at once.
+    pause_fade: bool,
     high_quality: bool,
     /// Play an official music video as its song version when one is found.
     play_songs: bool,
@@ -1260,6 +1262,7 @@ impl App {
             watched_frame: 0.0,
             normalize: get("normalize").map_or_else(Default::default, |v| crate::audio::Normalize::from_key(&v)),
             log_volume: get("log_volume").is_none_or(|v| v == "1"),
+            pause_fade: get("pause_fade").is_none_or(|v| v == "1"),
             high_quality: get("high_quality").is_none_or(|v| v == "1"),
             play_songs: get("play_songs").is_none_or(|v| v == "1"),
             show_video: dev_var("YTM_VIDEO").is_some() || get("show_video").is_some_and(|v| v == "1"),
@@ -1562,6 +1565,7 @@ impl App {
         app.rebuild_home_rows();
         app.audio.set_normalize(app.normalize);
         app.set_crossfade();
+        app.audio.set_pause_fade(app.pause_fade);
         app.set_eq();
         app
     }
@@ -2511,6 +2515,7 @@ impl eframe::App for App {
         storage.set_string("account_cache", cache.and_then(|c| serde_json::to_string(&c).ok()).unwrap_or_default());
         storage.set_string("normalize", self.normalize.key().to_owned());
         storage.set_string("log_volume", b(self.log_volume));
+        storage.set_string("pause_fade", b(self.pause_fade));
         storage.set_string("high_quality", b(self.high_quality));
         storage.set_string("play_songs", b(self.play_songs));
         storage.set_string("show_video", b(self.show_video));

@@ -2384,6 +2384,12 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
+        setting_row(ui, "Fade when pausing", Some("Turn the music down when you pause, and back up when you play again, over a fifth of a second. Off, it stops and starts right away."), |ui| {
+            if toggle(ui, &mut app.pause_fade, "Fade when pausing").changed() {
+                app.audio.set_pause_fade(app.pause_fade);
+            }
+        });
+        divider(ui);
         setting_row(ui, "Play songs, not music videos", Some("An official music video plays as its song, the album recording, when YouTube Music has one: no intros, skits or video-only edits. Lists still show what they hold."), |ui| {
             toggle(ui, &mut app.play_songs, "Play songs, not music videos");
         });
