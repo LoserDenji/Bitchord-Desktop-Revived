@@ -52,7 +52,7 @@ impl App {
         if let Req::RemoveFromPlaylist { playlist_id, items } = &req {
             self.lists.edits.remove(playlist_id, items.iter().map(|(_, set)| set.clone()));
         }
-        self.backend.request(req);
+        self.send_rating_edit(req);
     }
 
     /// The same, waited for: the app closing, or signing out or switching channel,
@@ -74,11 +74,9 @@ impl App {
         let liked: Vec<String> = tracks.iter().filter(|t| self.liked.contains(&t.id)).map(|t| t.id.clone()).collect();
         let was = self.lists.unliking(&tracks);
         self.set_liked(&tracks, false);
-        // Without the notice there's nothing to wait for: it goes now, and the rating
-        // stands as this app knows it.
+        // Without the notice there's nothing to wait for: it goes now.
         if !self.rating_settings.unlike_notices || self.mini.busy() {
-            self.confirm_unliked(&liked);
-            self.backend.request(send);
+            self.send_rating_edit(send);
             return;
         }
         self.toast_undo("Removed from liked songs", Undo::Unlike { liked, was, taste, send });
@@ -92,11 +90,19 @@ impl App {
         }
     }
 
-    /// The ratings stand as these unlikes left them, without waiting for the account's reply.
-    fn confirm_unliked(&mut self, ids: &[String]) {
-        for id in ids {
-            self.ratings.confirm(id, crate::ytm::SongRating::Indifferent);
+    /// Keep edits visible between dispatch (including when Undo expires) and the reply.
+    pub(super) fn send_rating_edit(&mut self, req: Req) {
+        match &req {
+            Req::Like { video_id, like } => self.ratings.start_write(video_id, *like),
+            Req::Unlike(id) => self.ratings.start_write(id, false),
+            Req::LikeMany { video_ids, like } => {
+                for id in video_ids {
+                    self.ratings.start_write(id, *like);
+                }
+            }
+            _ => {}
         }
+        self.backend.request(req);
     }
 
     /// The like of `id` waits for its Undo to be taken away.

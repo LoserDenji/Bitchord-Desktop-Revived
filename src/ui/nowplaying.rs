@@ -760,8 +760,11 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
     left.add_space(14.0);
     if total > 0.0 {
         let time = super::fmt_running(pos, total, app.time_left);
-        let g = widgets::time_galley(&left, &time, theme::regular(13.5), Color32::WHITE);
-        left.label(g);
+        let font = theme::regular(13.5);
+        let g = widgets::time_galley(&left, &time, font.clone(), Color32::WHITE);
+        let size = widgets::time_galley(&left, &super::fmt_running(0.0, total, true), font, Color32::WHITE).size().max(g.size());
+        let (hit, _) = left.allocate_exact_size(size, Sense::hover());
+        widgets::time_toggle(&left, hit, hit.min, g, [theme::text_dim(), Color32::WHITE], &mut app.time_left);
     }
     let mut right = ui.new_child(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::right_to_left(egui::Align::Center)));
     right.spacing_mut().item_spacing.x = 2.0;
@@ -1020,7 +1023,7 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     }
     // The star: a 30 px disc that washes under the pointer and fills in the accent
     // once liked. The ⋯ menu sits at the line's end, as on music.youtube.com.
-    let liked = app.liked.contains(&heard.id);
+    let liked = app.song_is_liked(&heard.id);
     let star = Rect::from_center_size(pos2(art.right() - 55.0, info_y + 14.0), Vec2::splat(30.0));
     let sr = ui.interact(star, ui.scope_id().with(("np-like", &heard.id)), Sense::click());
     let sr = named(sr, if liked { "Remove from favourites" } else { "Add to favourites" }).on_hover_cursor(egui::CursorIcon::PointingHand);

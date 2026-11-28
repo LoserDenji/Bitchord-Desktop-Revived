@@ -1603,6 +1603,9 @@ pub async fn song_rating(api: &Api, video_id: &str) -> anyhow::Result<Option<Son
 }
 
 fn parse_song_rating(v: &Value, video_id: &str) -> Option<SongRating> {
+    if crate::ytmapi::logged_out(v) {
+        return None;
+    }
     let overlay = &v["playerOverlays"]["playerOverlayRenderer"];
     // The segmented player buttons use the current song's rating entity.
     if v["currentVideoEndpoint"]["watchEndpoint"]["videoId"].as_str() == Some(video_id)
@@ -2409,6 +2412,8 @@ mod tests {
         let status = &mut response["playerOverlays"]["playerOverlayRenderer"]["actions"][1]["likeButtonRenderer"]["likeStatus"];
         *status = json!("LIKE");
         assert_eq!(parse_song_rating(&response, "song"), Some(SongRating::Like));
+        response["responseContext"] = json!({"serviceTrackingParams": [{"params": [{"key": "logged_in", "value": "0"}]}]});
+        assert_eq!(parse_song_rating(&response, "song"), None);
     }
 
     #[test]

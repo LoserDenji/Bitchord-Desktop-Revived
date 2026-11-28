@@ -28,12 +28,16 @@ pub fn galley(ui: &Ui, text: &str, font: egui::FontId, color: Color32, width: f3
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+pub(super) fn time_toggle_id(ui: &Ui) -> egui::Id {
+    ui.scope_id().with("time-toggle")
+}
+
 /// A running time `g` painted at `at` that's a button too (on `hit`): a click swaps the
 /// song's length for the time left and back (`left`). Its own target, over the player
 /// bar's click for now playing; brighter while hovered or focused.
 pub fn time_toggle(ui: &Ui, hit: Rect, at: Pos2, g: std::sync::Arc<egui::Galley>, [rest, hover]: [Color32; 2], left: &mut bool) {
     let name = if *left { format!("{}. Show song length", g.text()) } else { format!("{}. Show time remaining", g.text()) };
-    let resp = named(ui.interact(hit, ui.scope_id().with("time-toggle"), Sense::click()), &name).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let resp = named(ui.interact(hit, time_toggle_id(ui), Sense::click()), &name).on_hover_cursor(egui::CursorIcon::PointingHand);
     if resp.clicked() {
         *left = !*left;
     }
@@ -1320,7 +1324,7 @@ pub fn track_row(ui: &mut Ui, t: &Track, o: &RowOpts, acts: &mut Vec<Action>) ->
             }
         }
     }
-    if let Some(rating) = rating.filter(|_| show_rating) {
+    if let Some(rating) = rating.filter(|_| show_rating && !o.pick && o.selected.is_none()) {
         // The song's rating: a star that likes, or holds to take the like away.
         let label = match rating {
             SongRating::Like => "Remove like",

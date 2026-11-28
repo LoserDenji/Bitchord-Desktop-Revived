@@ -465,7 +465,7 @@ pub enum Resp {
     /// What was asked to play (a `Req::PlayCollection`), its name, and its songs.
     PlayQueue { target: Target, title: String, tracks: Vec<Track> },
     Liked { video_id: String, like: bool },
-    SongRating { video_id: String, round: u64, rating: Option<ytm::SongRating> },
+    SongRating { video_id: String, round: u64, rating: Result<Option<ytm::SongRating>, ()> },
     /// A run of likes or unlikes: `done` of `total` tried.
     LikeProgress { done: usize, total: usize, like: bool },
     /// The songs YouTube Music took, and the ones it refused.
@@ -1448,12 +1448,8 @@ impl Backend {
                 },
                 Req::SongRating { video_id, round } => {
                     let rating = match tokio::time::timeout(std::time::Duration::from_secs(10), ytm::song_rating(api, &video_id)).await {
-                        Ok(Ok(rating)) => rating,
-                        Ok(Err(e)) => {
-                            log::debug!("song rating of {video_id}: {e:#}");
-                            None
-                        }
-                        Err(_) => None,
+                        Ok(result) => result.map_err(|e| log::debug!("song rating of {video_id}: {e:#}")),
+                        Err(_) => Err(()),
                     };
                     Resp::SongRating { video_id, round, rating }
                 }
@@ -1562,17 +1558,8 @@ impl Backend {
                     }
                     Resp::VideoStream { video_id, max_height, stream: found.ok() }
                 }
-                Req::Like { video_id, like } => {
-                    ytm::set_like(api, &video_id, like).await?;
-                    Resp::Liked { video_id, like }
-                }
-                Req::Unlike(video_id) => match ytm::set_like(api, &video_id, false).await {
-                    Ok(_) => Resp::Liked { video_id, like: false },
-                    Err(e) => {
-                        log::warn!("unliking {video_id}: {e:#}");
-                        Resp::LikedMany { video_ids: Vec::new(), failed: vec![video_id], like: false }
-                    }
-                },
+                Req::Like { video_id, like } => self.set_like(video_id, like).await,
+                Req::Unlike(video_id) => self.set_like(video_id, false).await,
                 Req::LikeMany { video_ids, like } => self.like_many(video_ids, like).await?,
                 Req::CreatePlaylist { title, video_ids } => {
                     let id = match video_ids.as_slice() {
@@ -3391,6 +3378,16 @@ impl Backend {
             log::warn!("hi-res sources: {rejected} entry(s) aren't http(s) links and were skipped");
         }
         *self.hires.write().unwrap() = clients;
+    }
+
+    async fn set_like(&self, video_id: String, like: bool) -> Resp {
+        match ytm::set_like(&self.api, &video_id, like).await {
+            Ok(()) => Resp::Liked { video_id, like },
+            Err(e) => {
+                log::warn!("like={like} for {video_id}: {e:#}");
+                Resp::LikedMany { video_ids: Vec::new(), failed: vec![video_id], like }
+            }
+        }
     }
 
     /// Like or unlike a selection, one at a time, then check Liked Music and try again

@@ -195,7 +195,7 @@ impl App {
         let (down, pointer) = ctx.input(|i| (i.pointer.any_down(), i.pointer.latest_pos()));
         // Nor for a jam guest the host hasn't given control: the bar would move, then go
         // back once the host said no.
-        if down || self.jam.locked() {
+        if down || self.jam.locked() || self.mix_hold().is_some() {
             self.seek_wheel.over = None;
         }
         if self.seek_wheel.take(events, time, pointer, pos, total) {
@@ -212,6 +212,10 @@ impl App {
     /// there.
     pub(super) fn seek_wheel_rest(&mut self, ctx: &egui::Context, now: f64) {
         self.seek_wheel_keep();
+        if self.mix_hold().is_some() {
+            self.seek_wheel_drop();
+            return;
+        }
         if let Some(t) = self.seek_wheel.settled(now) {
             self.apply(Action::Seek(t));
         }

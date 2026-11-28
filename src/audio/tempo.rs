@@ -331,13 +331,16 @@ impl<S: rodio::Source> Tempo<S> {
     /// exactly around the best of those.
     fn line_up(&self, target: usize, natural: usize) -> usize {
         let (ch, n, s) = (self.ch(), self.stretch.n, self.stretch.s);
-        let mono = |f: usize| -> f32 { self.buf[f * ch..(f + 1) * ch].iter().sum() };
         let score = |c: usize, step: usize| -> f32 {
             let (mut xc, mut e) = (0.0f32, 0.0f32);
             for i in (0..n).step_by(step) {
-                let a = mono(c + i);
-                xc += a * mono(natural + i);
-                e += a * a;
+                let candidate = (c + i) * ch;
+                let reference = (natural + i) * ch;
+                for channel in 0..ch {
+                    let a = self.buf[candidate + channel];
+                    xc += a * self.buf[reference + channel];
+                    e += a * a;
+                }
             }
             if e > 1e-9 { xc / e.sqrt() } else { f32::MIN }
         };
@@ -449,10 +452,14 @@ mod tests {
 
     /// `secs` of a stereo sine at `hz`.
     fn sine(hz: f32, secs: f32) -> rodio::buffer::SamplesBuffer {
+        stereo_sine(hz, secs, 1.0)
+    }
+
+    fn stereo_sine(hz: f32, secs: f32, polarity: f32) -> rodio::buffer::SamplesBuffer {
         let n = (secs * RATE as f32) as usize;
         let samples = (0..n).flat_map(|i| {
             let s = (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin() * 0.5;
-            [s, s]
+            [s, s * polarity]
         });
         rodio::buffer::SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(RATE).unwrap(), samples.collect::<Vec<_>>())
     }
@@ -567,20 +574,32 @@ mod tests {
 
     #[test]
     fn keeping_the_pitch_plays_faster_or_slower_at_the_same_pitch() {
-        for (at, secs) in [(1.5, 3.0), (0.75, 2.0), (2.0, 4.0), (0.5, 1.5)] {
-            let (t, _, pos) = tempo_with(sine(440.0, secs), at, true);
+        for (at, secs, pitch, polarity) in [
+            (1.5, 3.0, 440.0, 1.0),
+            (0.75, 2.0, 440.0, 1.0),
+            (2.0, 4.0, 440.0, 1.0),
+            (0.5, 1.5, 440.0, 1.0),
+            (1.5, 3.0, 100.0, -1.0),
+        ] {
+            let (t, _, pos) = tempo_with(stereo_sine(pitch, secs, polarity), at, true);
             let out: Vec<f32> = t.collect();
             let played = out.len() as f32 / 2.0 / RATE as f32;
             assert!((played - secs / at).abs() < 0.03, "{at}x: {played} s");
             let left = left(&out);
             let mid = &left[left.len() / 4..left.len() * 3 / 4];
-            assert!((hz(mid) - 440.0).abs() < 3.0, "{at}x: {} Hz", hz(mid));
+            assert!((hz(mid) - pitch).abs() < 3.0, "{at}x: {} Hz", hz(mid));
             assert!(pos.load(Ordering::Relaxed) as f32 >= secs * 1000.0 - 30.0, "{at}x: {}", pos.load(Ordering::Relaxed));
             // Windows that line up add back to the level that went in, without clicks.
             assert!(mid.iter().all(|s| s.abs() < 0.52), "{at}x: louder");
-            let step = std::f32::consts::TAU * 440.0 / RATE as f32 * 0.5;
+            let step = std::f32::consts::TAU * pitch / RATE as f32 * 0.5;
             let worst = mid.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
             assert!(worst < step * 1.3, "{at}x: {worst} vs {step}");
+            if polarity < 0.0 {
+                assert!(out.chunks_exact(2).all(|f| (f[0] + f[1]).abs() < 1e-6));
+                // Each cycle should keep its amplitude, even in the overlapped windows.
+                assert!(mid.chunks_exact((RATE as f32 / pitch) as usize)
+                    .all(|cycle| cycle.iter().any(|s| s.abs() > 0.47)));
+            }
         }
     }
 

@@ -550,7 +550,7 @@ impl App {
                 }
             }
             Resp::Liked { video_id, like } => {
-                self.ratings.invalidate(&video_id);
+                self.ratings.finish_write(&video_id, like, true);
                 if !self.unliking_soon(&video_id) {
                     self.lists.edits.confirm_likes(std::slice::from_ref(&video_id), &[]);
                     if like {
@@ -931,6 +931,12 @@ impl App {
     /// Music refused.
     fn on_liked_many(&mut self, video_ids: Vec<String>, failed: Vec<String>, like: bool) {
         log::debug!("like={like} answered: {} taken, {} refused {:?}", video_ids.len(), failed.len(), failed.iter().take(5).collect::<Vec<_>>());
+        for id in &video_ids {
+            self.ratings.finish_write(id, like, true);
+        }
+        for id in &failed {
+            self.ratings.finish_write(id, like, false);
+        }
         self.lists.edits.confirm_likes(&video_ids, &failed);
         // The refused ones come back as they were with a reload.
         if !failed.is_empty() {

@@ -18,7 +18,8 @@ use super::App;
 
 const MAX_READS: usize = 3;
 const READ_GAP: f64 = 0.2;
-const RETRY_DELAY: f64 = 2.0;
+// Give the longest account pause time to end before asking again.
+const RETRY_DELAY: f64 = crate::ytmapi::MAX_SIGNED_IN_PAUSE.as_secs_f64() + 1.0;
 /// Ratings kept for rows that have scrolled away.
 const KEEP: usize = 2000;
 /// Seconds before coming back to the window asks for the ratings on show again.
@@ -264,7 +265,7 @@ pub(super) fn unlike_star(ui: &Ui, center: egui::Pos2, size: f32, fill: f32, tin
 }
 
 enum Entry {
-    Reading { round: u64, retry_on_failure: bool },
+    Reading { round: u64 },
     RetryAt(f64),
     Ready(Option<SongRating>),
     Confirmed(SongRating),
@@ -277,6 +278,7 @@ enum Entry {
 pub(super) struct Ratings {
     entries: HashMap<String, Entry>,
     in_flight: HashSet<u64>,
+    pending_writes: HashMap<String, bool>,
     round: u64,
     next_read: f64,
     playing: Option<(String, u64)>,
@@ -287,6 +289,7 @@ impl Ratings {
     pub fn reset(&mut self) {
         self.entries.clear();
         self.in_flight.clear();
+        self.pending_writes.clear();
         self.next_read = 0.0;
         self.playing = None;
     }
@@ -300,8 +303,26 @@ impl Ratings {
         }
     }
 
-    pub fn invalidate(&mut self, id: &str) {
-        self.entries.remove(id);
+    pub fn writing(&self, id: &str) -> bool {
+        self.pending_writes.contains_key(id)
+    }
+
+    pub fn start_write(&mut self, id: &str, like: bool) {
+        self.pending_writes.insert(id.to_owned(), like);
+    }
+
+    pub fn finish_write(&mut self, id: &str, like: bool, ok: bool) {
+        if self.pending_writes.get(id) != Some(&like) {
+            return;
+        }
+        self.pending_writes.remove(id);
+        if ok {
+            self.confirm(id, if like { SongRating::Like } else { SongRating::Indifferent });
+        } else if !like && self.get(id).is_none() {
+            // Keep an account rating we already know. Otherwise restore the like
+            // that Liked Music showed before the edit, while the list reloads.
+            self.confirm(id, SongRating::Like);
+        }
     }
 
     pub fn confirm(&mut self, id: &str, rating: SongRating) {
@@ -314,6 +335,9 @@ impl Ratings {
     }
 
     pub fn get(&self, id: &str) -> Option<SongRating> {
+        if let Some(&like) = self.pending_writes.get(id) {
+            return Some(if like { SongRating::Like } else { SongRating::Indifferent });
+        }
         match self.entries.get(id) {
             Some(Entry::Ready(rating)) => *rating,
             Some(Entry::Confirmed(rating)) => Some(*rating),
@@ -321,24 +345,23 @@ impl Ratings {
         }
     }
 
-    pub fn finish(&mut self, video_id: String, round: u64, rating: Option<SongRating>, now: f64) {
+    pub fn finish(&mut self, video_id: String, round: u64, rating: Result<Option<SongRating>, ()>, now: f64) {
         self.in_flight.remove(&round);
-        if let Some(&Entry::Reading { round: current, retry_on_failure }) = self.entries.get(&video_id)
+        if let Some(&Entry::Reading { round: current }) = self.entries.get(&video_id)
             && round == current
         {
-            let entry = if rating.is_none() && retry_on_failure {
-                Entry::RetryAt(now + RETRY_DELAY)
-            } else {
-                Entry::Ready(rating)
+            let entry = match rating {
+                Ok(rating) => Entry::Ready(rating),
+                Err(()) => Entry::RetryAt(now + RETRY_DELAY),
             };
             self.entries.insert(video_id, entry);
         }
     }
 
-    fn request(&mut self, backend: &Backend, video_id: String, now: f64, retry_on_failure: bool) {
+    fn request(&mut self, backend: &Backend, video_id: String, now: f64) {
         self.round += 1;
         self.in_flight.insert(self.round);
-        self.entries.insert(video_id.clone(), Entry::Reading { round: self.round, retry_on_failure });
+        self.entries.insert(video_id.clone(), Entry::Reading { round: self.round });
         self.next_read = now + READ_GAP;
         backend.request(Req::SongRating { video_id, round: self.round });
     }
@@ -353,18 +376,18 @@ impl Ratings {
         // The overlay reports one upload at a time. The player goes first and large
         // lists only ask for rows on screen, spaced out even when scrolling.
         let mut next_retry = f64::INFINITY;
-        let next = wanted.iter().find_map(|id| match self.entries.get(id) {
-            None => Some((id, true)),
-            Some(Entry::RetryAt(at)) if *at <= now => Some((id, false)),
+        let next = wanted.iter().filter(|id| !self.writing(id)).find_map(|id| match self.entries.get(id) {
+            None => Some(id),
+            Some(Entry::RetryAt(at)) if *at <= now => Some(id),
             Some(Entry::RetryAt(at)) => {
                 next_retry = next_retry.min(*at);
                 None
             }
             _ => None,
         });
-        if let Some((id, retry_on_failure)) = next {
+        if let Some(id) = next {
             if now >= self.next_read {
-                self.request(backend, id.clone(), now, retry_on_failure);
+                self.request(backend, id.clone(), now);
                 ctx.request_repaint_after(Duration::from_secs_f64(READ_GAP));
             } else {
                 ctx.request_repaint_after(Duration::from_secs_f64(self.next_read - now));
@@ -423,6 +446,11 @@ pub(super) fn row(ui: &Ui, track: &Track, liked: bool, hovered: bool) -> (Option
 }
 
 impl App {
+    pub(super) fn song_is_liked(&self, id: &str) -> bool {
+        !self.unliking_soon(id)
+            && self.ratings.get(id).map_or_else(|| self.liked.contains(id), |rating| rating == SongRating::Like)
+    }
+
     // Run during painting, so a logic-only tick cannot consume the visible
     // tracks before the next frame has a chance to report them again.
     pub(super) fn sync_ratings(&mut self, ctx: &Context, now: f64) {
@@ -451,7 +479,10 @@ impl App {
         let fetch: Vec<String> = wanted
             .iter()
             .enumerate()
-            .filter(|(i, id)| (*i == 0 && self.ratings.playing.is_some()) || !self.liked.contains(*id))
+            .filter(|(i, id)| !crate::local::is_local(id)
+                && ((*i == 0 && self.ratings.playing.is_some())
+                    || matches!(self.ratings.entries.get(*id), Some(Entry::RetryAt(_)))
+                    || !self.liked.contains(*id)))
             .map(|(_, id)| id.clone())
             .collect();
         self.ratings.sync(&self.backend, ctx, now, &fetch);
@@ -546,15 +577,15 @@ mod tests {
     #[test]
     fn a_rating_from_before_an_edit_cannot_replace_a_new_read() {
         let mut ratings = Ratings::default();
-        ratings.entries.insert("song".into(), Entry::Reading { round: 1, retry_on_failure: true });
+        ratings.entries.insert("song".into(), Entry::Reading { round: 1 });
         ratings.in_flight.insert(1);
-        ratings.invalidate("song");
-        ratings.entries.insert("song".into(), Entry::Reading { round: 2, retry_on_failure: true });
+        ratings.refresh();
+        ratings.entries.insert("song".into(), Entry::Reading { round: 2 });
         ratings.in_flight.insert(2);
-        ratings.finish("song".into(), 1, Some(SongRating::Like), 0.0);
+        ratings.finish("song".into(), 1, Ok(Some(SongRating::Like)), 0.0);
         assert!(ratings.get("song").is_none());
         assert_eq!(ratings.in_flight.len(), 1);
-        ratings.finish("song".into(), 2, Some(SongRating::Indifferent), 0.0);
+        ratings.finish("song".into(), 2, Ok(Some(SongRating::Indifferent)), 0.0);
         assert_eq!(ratings.get("song"), Some(SongRating::Indifferent));
         assert!(ratings.in_flight.is_empty());
     }
@@ -565,12 +596,12 @@ mod tests {
 
         for (written, read) in [(Like, Some(Indifferent)), (Like, None), (Indifferent, Some(Like))] {
             let mut ratings = Ratings::default();
-            ratings.entries.insert("video".into(), Entry::Reading { round: 1, retry_on_failure: true });
+            ratings.entries.insert("video".into(), Entry::Reading { round: 1 });
             ratings.in_flight.insert(1);
             ratings.confirm("audio", Like);
             ratings.confirm("video", written);
             assert_eq!(ratings.get("video"), Some(written));
-            ratings.finish("video".into(), 1, read, 0.0);
+            ratings.finish("video".into(), 1, Ok(read), 0.0);
             assert_eq!(ratings.get("video"), Some(written));
             assert_eq!(ratings.get("audio"), Some(Like));
             assert!(ratings.in_flight.is_empty());
@@ -601,13 +632,29 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_rating_is_retried_once() {
+    fn failed_reads_keep_retrying_but_a_confirmed_missing_rating_is_cached() {
         let mut ratings = Ratings::default();
-        ratings.entries.insert("song".into(), Entry::Reading { round: 1, retry_on_failure: true });
-        ratings.finish("song".into(), 1, None, 10.0);
-        assert!(matches!(ratings.entries["song"], Entry::RetryAt(at) if at == 10.0 + RETRY_DELAY));
-        ratings.entries.insert("song".into(), Entry::Reading { round: 2, retry_on_failure: false });
-        ratings.finish("song".into(), 2, None, 13.0);
+        for (round, now) in [(1, 10.0), (2, 10.0 + RETRY_DELAY)] {
+            ratings.entries.insert("song".into(), Entry::Reading { round });
+            ratings.finish("song".into(), round, Err(()), now);
+            assert!(matches!(ratings.entries["song"], Entry::RetryAt(at) if at == now + RETRY_DELAY));
+        }
+        ratings.entries.insert("song".into(), Entry::Reading { round: 3 });
+        ratings.finish("song".into(), 3, Ok(None), 10.0 + 2.0 * RETRY_DELAY);
         assert!(matches!(ratings.entries["song"], Entry::Ready(None)));
+    }
+
+    #[test]
+    fn an_unlike_overrides_a_late_read_until_the_write_answers() {
+        for (ok, expected) in [(true, SongRating::Indifferent), (false, SongRating::Like)] {
+            let mut ratings = Ratings::default();
+            ratings.entries.insert("song".into(), Entry::Reading { round: 1 });
+            ratings.start_write("song", false);
+            ratings.finish("song".into(), 1, Ok(Some(SongRating::Like)), 0.0);
+            assert_eq!(ratings.get("song"), Some(SongRating::Indifferent));
+            ratings.finish_write("song", false, ok);
+            assert_eq!(ratings.get("song"), Some(expected));
+            assert!(!ratings.writing("song"));
+        }
     }
 }

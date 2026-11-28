@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 use crate::webmusic::{self, Session};
 
+pub(crate) const MAX_SIGNED_IN_PAUSE: Duration = Duration::from_secs(40);
+
 const ORIGIN: &str = "https://music.youtube.com";
 /// Used until the live version is read from music.youtube.com.
 const FALLBACK_VERSION: &str = "1.20261006.10.00";
@@ -201,7 +203,7 @@ impl Api {
         if n < RUN {
             return;
         }
-        let ms = 5_000 << (n - RUN).min(3);
+        let ms = (5_000 << (n - RUN).min(3)).min(MAX_SIGNED_IN_PAUSE.as_millis() as u64);
         let until = now_ms() + ms;
         if self.paused_until.fetch_max(until, Relaxed) < until {
             log::info!("{endpoint}: YouTube Music is limiting this account's requests; pausing them for {} s", ms / 1000);

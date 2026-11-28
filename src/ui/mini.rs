@@ -907,7 +907,7 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
         if let Some(t) = &track {
             // What's heard, like Now playing's menu: a song version standing in for the music video.
             let t = if hold { t.clone() } else { app.playing_track().cloned().unwrap_or_else(|| t.clone()) };
-            let liked = app.liked.contains(&t.id);
+            let liked = app.song_is_liked(&t.id);
             let lpos = pos2(cx - 88.0, cy);
             let lresp = ui.interact(Rect::from_center_size(lpos, Vec2::splat(32.0)), ui.scope_id().with("mini-like"), Sense::click());
             let name = if liked { "Remove like" } else { "Like" };
