@@ -887,6 +887,8 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         vgradient(ui.painter(), full, theme::panel(0.0), theme::panel(0.66));
         ui.interact(full, ui.scope_id().with("player-strip"), Sense::hover());
     }
+    // A finger swiping up the bar opens it too, and down closes it.
+    super::bar_swipe::player_bar(app, ui.ctx(), full);
     const H: f32 = 56.0;
     let w = (full.width() - 24.0).min(668.0);
     let cap = Rect::from_min_size(pos2(full.center().x - w / 2.0, full.bottom() - 16.0 - H), vec2(w, H));
