@@ -28,6 +28,7 @@ mod presence;
 mod queue;
 mod responses;
 mod row_drag;
+mod seek_wheel;
 mod shell;
 mod sorts;
 mod storage;
@@ -694,6 +695,8 @@ pub struct App {
     /// station must not become a request a frame.
     radio_retry_at: Option<std::time::Instant>,
     seek_drag: Option<f32>,
+    /// The mouse wheel over a seek bar: where it's seeking to until it rests.
+    seek_wheel: seek_wheel::SeekWheel,
 
     // visuals
     art_key: Option<String>,
@@ -1360,6 +1363,7 @@ impl App {
             used_radio_seeds: Default::default(),
             radio_retry_at: None,
             seek_drag: None,
+            seek_wheel: seek_wheel::SeekWheel::default(),
             art_key: None,
             track_art: None,
             clip_art: Default::default(),
@@ -2155,6 +2159,7 @@ impl eframe::App for App {
             self.apply(a);
         }
         jam::tick(self, ctx);
+        self.seek_wheel_rest(ctx, now);
         jam::dev_script(self, ctx, now);
         // The Discord sign-in window landed: file the account, bring the gateway up.
         if let Some(r) = self.take_discord_link_result() {
@@ -2507,6 +2512,8 @@ impl eframe::App for App {
             }
         }
         let viewport_h = raw.screen_rect.map_or(800.0, |r| r.height());
+        // Ahead of smooth scrolling: the wheel over a seek bar seeks rather than scrolls.
+        self.seek_by_wheel(ctx, &mut raw.events, raw.time.unwrap_or(0.0));
         if self.wheel.filter(&mut raw.events, raw.time.unwrap_or(0.0), raw.predicted_dt, viewport_h) {
             ctx.request_repaint();
         }

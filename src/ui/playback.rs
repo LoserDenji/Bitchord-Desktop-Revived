@@ -700,6 +700,7 @@ impl App {
     }
 
     pub(super) fn seek_to(&mut self, at: Duration) {
+        self.seek_wheel_seeked(at.as_secs_f32());
         // A needle this device moved is the room's to hear about; `publish` keeps telling
         // it until the room agrees. Only hand seeks come through here — the sync's own
         // corrections seek the player directly, so drift never gets reported as a move.
