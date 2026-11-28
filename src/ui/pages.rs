@@ -2494,7 +2494,7 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
 fn settings_tempo(app: &mut App, ui: &mut Ui) {
     let jam = app.jam.active();
     settings_section(ui, "Playback speed", None, jam.then_some(TEMPO_IN_JAM), |ui| {
-        setting_row(ui, "Playback speed", Some("Play songs faster or slower, also from a button in the player bar. Faster sounds higher and slower lower, like a record. Lyrics stay in time. Back to 1× each time BitChord starts."), |ui| {
+        setting_row(ui, "Playback speed", Some("Play songs faster or slower, also from a button in the player bar. Lyrics stay in time. Back to 1× each time BitChord starts."), |ui| {
             toggle(ui, &mut app.tempo_on, "Playback speed");
         });
         ui.add_enabled_ui(app.tempo_on && !jam, |ui| {
@@ -2502,6 +2502,10 @@ fn settings_tempo(app: &mut App, ui: &mut Ui) {
             divider(ui);
             setting_row(ui, "Speed", None, |ui| {
                 step_slider(ui, &mut app.speed, (MIN_SPEED, MAX_SPEED, 0.05), Some(1.0), times, "Speed");
+            });
+            divider(ui);
+            setting_row(ui, "Keep the pitch", Some("Faster or slower without sounding higher or lower. Off, the pitch changes with the speed, like a record."), |ui| {
+                toggle(ui, &mut app.keep_pitch, "Keep the pitch");
             });
         });
     });

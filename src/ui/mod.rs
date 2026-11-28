@@ -825,6 +825,8 @@ pub struct App {
     /// and the speed (not saved: 1× each launch).
     tempo_on: bool,
     speed: f32,
+    /// Speed changes the tempo only, not the pitch (saved; on unless switched off).
+    keep_pitch: bool,
     /// The next song starts because this one is ending: crossfade into it.
     handoff: bool,
     /// The handoff just begun, for the play that starts the next song to pick up.
@@ -1423,6 +1425,7 @@ impl App {
             eq_no_clip: get("eq_no_clip").is_none_or(|v| v == "1"),
             tempo_on: get("tempo").is_some_and(|v| v == "1"),
             speed: 1.0,
+            keep_pitch: get("keep_pitch").is_none_or(|v| v == "1"),
             segments: None,
             segment_skipped: f64::NEG_INFINITY,
             bg_time: 0.0,
@@ -2653,6 +2656,7 @@ impl eframe::App for App {
         storage.set_string("eq_gains", self.eq_gains.map(|g| g.to_string()).join(","));
         storage.set_string("eq_no_clip", b(self.eq_no_clip));
         storage.set_string("tempo", b(self.tempo_on));
+        storage.set_string("keep_pitch", b(self.keep_pitch));
         storage.set_string("show_roman", b(self.show_roman));
         storage.set_string("show_trans", b(self.show_trans));
         storage.set_string("lyrics_full_rate", b(self.lyrics_full_rate));
