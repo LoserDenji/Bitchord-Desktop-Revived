@@ -329,6 +329,10 @@ impl App {
             self.liked_checked = Some(now);
             self.request_liked(false);
         }
+        if refocused {
+            // Ratings changed on another device show once the window is back.
+            self.ratings.refresh_if_stale(now);
+        }
         let idle = !self.playing() && !self.buffering && !self.jam.active() && self.smoke.is_none();
         let due = self.queue_checked.is_none_or(|t| refocused && now - t > 60.0);
         if self.logged_in && idle && due && std::env::var_os("YTM_SMOKE").is_none() {

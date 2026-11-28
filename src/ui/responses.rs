@@ -550,11 +550,15 @@ impl App {
                 }
             }
             Resp::Liked { video_id, like } => {
-                self.lists.edits.confirm_likes(std::slice::from_ref(&video_id), &[]);
-                if like {
-                    self.liked.insert(video_id);
+                self.ratings.invalidate(&video_id);
+                if !self.unliking_soon(&video_id) {
+                    self.lists.edits.confirm_likes(std::slice::from_ref(&video_id), &[]);
+                    if like {
+                        self.liked.insert(video_id);
+                    }
                 }
             }
+            Resp::SongRating { video_id, round, rating } => self.ratings.finish(video_id, round, rating, now),
             Resp::QuickPicksMore { seed, tracks } => {
                 if let Some(h) = &mut self.home {
                     h.picks_loading = false;
@@ -573,7 +577,7 @@ impl App {
                 if done == 0 {
                     // A Spotify transfer is adding to Liked Music (maybe paused): this waits for it.
                     self.toast("Waiting for the transfer to finish adding to Liked Music…");
-                } else if total > 1 && done < total {
+                } else if total > 1 && done < total && (like || self.rating_settings.unlike_notices) {
                     let note = if self.backend.api().limited() { " (YouTube Music is limiting requests; waiting)" } else { "" };
                     self.toast(format!("{} {done} of {total} songs…{note}", if like { "Liking" } else { "Removing likes:" }));
                 }
@@ -1060,6 +1064,7 @@ impl App {
         self.subscriptions = Default::default();
         // Your own playlists show differently (and private ones not at all) to another
         // account, and its likes aren't this one's.
+        self.ratings.reset();
         self.lists.clear();
         self.lists.edits = Default::default();
         self.liked.clear();

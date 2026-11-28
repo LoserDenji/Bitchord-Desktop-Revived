@@ -1168,14 +1168,19 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.15);
         let pop = heard.as_ref().map_or(0.0, |t| theme::anim_bool(&ctx, ("liked", &t.id), liked, 0.3));
         let dim = if heard.is_some() { 1.0 } else { 0.4 };
+        // Held, the star drains and the like goes only once the hold is done (see `ratings`).
+        let gesture = super::ratings::like_gesture(ui, &r, heard.as_ref().map(|t| (t.id.clone(), app.generation)), liked, None);
         // The filled star grows in under the ring rather than replacing it, as the
         // reference's own two-weight mark does.
         let tint = theme::lerp_color(ink(h), accent, pop).gamma_multiply(dim);
         glyphs::draw(ui, r.rect.center(), 18.0, glyphs::STAR, tint);
         if pop > 0.0 {
-            glyphs::draw(ui, r.rect.center(), 18.0, glyphs::STAR_FILLED, theme::with_alpha(tint, tint.a() as f32 / 255.0 * pop));
+            glyphs::draw(ui, r.rect.center(), 18.0, glyphs::STAR_FILLED, theme::with_alpha(tint, tint.a() as f32 / 255.0 * pop * (1.0 - gesture.progress)));
         }
-        if r.clicked()
+        if gesture.hint {
+            super::ratings::unlike_hint(ui, &r);
+        }
+        if gesture.activate
             && let Some(t) = heard
         {
             app.actions.push(Action::Like(t, !liked));

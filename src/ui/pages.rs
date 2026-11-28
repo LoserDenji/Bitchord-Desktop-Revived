@@ -2489,6 +2489,7 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
     });
     settings_equalizer(app, ui);
     settings_tempo(app, ui);
+    settings_ratings(app, ui);
 }
 
 fn settings_tempo(app: &mut App, ui: &mut Ui) {
@@ -2506,6 +2507,36 @@ fn settings_tempo(app: &mut App, ui: &mut Ui) {
             divider(ui);
             setting_row(ui, "Keep the pitch", Some("Faster or slower without sounding higher or lower. Off, the pitch changes with the speed, like a record."), |ui| {
                 toggle(ui, &mut app.keep_pitch, "Keep the pitch");
+            });
+        });
+    });
+}
+
+/// Settings › Playback › Song ratings: the like half of YouTube Music's ratings, read
+/// and shown without the fork's removed dislikes.
+fn settings_ratings(app: &mut App, ui: &mut Ui) {
+    settings_section(ui, "Song ratings", None, None, |ui| {
+        let ratings = &mut app.rating_settings;
+        for (i, (title, description, value)) in [
+            ("Rating stars in song lists", "Show the like star beside the duration. Hover over an unrated song to reveal it.", &mut ratings.list_icons),
+            ("Safe liked songs", "Hold the star to remove a like.", &mut ratings.confirm_unlike),
+            ("Like removal notifications", "Show an Undo button before sending the removal to YouTube Music.", &mut ratings.unlike_notices),
+        ].into_iter().enumerate() {
+            if i != 0 {
+                divider(ui);
+            }
+            setting_row(ui, title, Some(description), |ui| {
+                toggle(ui, value, title);
+            });
+        }
+        divider(ui);
+        setting_row(ui, "Hold to remove like", None, |ui| {
+            ui.add_enabled_ui(ratings.confirm_unlike, |ui| {
+                use super::ratings::{DEFAULT_UNLIKE_MS, MAX_UNLIKE_MS, MIN_UNLIKE_MS};
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let width = ui.painter().layout_no_wrap("8888 ms".to_owned(), font, theme::text()).size().x;
+                ui.add_sized(vec2(width, 26.0), egui::Label::new(format!("{:.0} ms", ratings.unlike_hold_ms)).halign(egui::Align::RIGHT));
+                slider_track(ui, &mut ratings.unlike_hold_ms, (MIN_UNLIKE_MS, MAX_UNLIKE_MS, 50.0), Some(DEFAULT_UNLIKE_MS), 112.0, "Hold to remove like");
             });
         });
     });

@@ -84,6 +84,8 @@ pub enum Req {
     SwitchChannel { page_id: Option<String>, epoch: u64 },
     /// The queue another device left off with (YouTube Music's own cross-device queue).
     ServerQueue,
+    /// The signed-in account's current rating of a song.
+    SongRating { video_id: String, round: u64 },
     /// Upload audio files to the account's library.
     Upload(Vec<PathBuf>),
     /// Save a song's audio to the downloads folder. `for_video`: the music video it's the
@@ -194,6 +196,7 @@ impl Req {
             Req::Channels => "Channels",
             Req::SwitchChannel { .. } => "Switching channel",
             Req::ServerQueue => "Queue from other devices",
+            Req::SongRating { .. } => "Song rating",
             Req::Upload(_) => "Upload",
             Req::Download { .. } | Req::DownloadMany { .. } => "Download",
             Req::Lyrics(_) => "Lyrics",
@@ -227,7 +230,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::DailyDiscover { .. } | Req::AllTimeHits | Req::CommunityPlaylists(_) | Req::ArtistVideos(_) | Req::MusicVideo(_) | Req::AutoRadio { .. } | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::SongRating { .. } | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::DailyDiscover { .. } | Req::AllTimeHits | Req::CommunityPlaylists(_) | Req::ArtistVideos(_) | Req::MusicVideo(_) | Req::AutoRadio { .. } | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
     }
 }
 
@@ -462,6 +465,7 @@ pub enum Resp {
     /// What was asked to play (a `Req::PlayCollection`), its name, and its songs.
     PlayQueue { target: Target, title: String, tracks: Vec<Track> },
     Liked { video_id: String, like: bool },
+    SongRating { video_id: String, round: u64, rating: Option<ytm::SongRating> },
     /// A run of likes or unlikes: `done` of `total` tried.
     LikeProgress { done: usize, total: usize, like: bool },
     /// The songs YouTube Music took, and the ones it refused.
@@ -516,6 +520,7 @@ impl Resp {
                 | Resp::ServerQueue(_)
                 | Resp::SearchIn(_)
                 | Resp::Liked { .. }
+                | Resp::SongRating { .. }
                 | Resp::LikeProgress { .. }
                 | Resp::LikedMany { .. }
                 | Resp::Artist(_)
@@ -1441,6 +1446,17 @@ impl Backend {
                     Some(q) => Resp::ServerQueue(q),
                     None => return Ok(None),
                 },
+                Req::SongRating { video_id, round } => {
+                    let rating = match tokio::time::timeout(std::time::Duration::from_secs(10), ytm::song_rating(api, &video_id)).await {
+                        Ok(Ok(rating)) => rating,
+                        Ok(Err(e)) => {
+                            log::debug!("song rating of {video_id}: {e:#}");
+                            None
+                        }
+                        Err(_) => None,
+                    };
+                    Resp::SongRating { video_id, round, rating }
+                }
                 Req::Upload(files) => self.upload(&files).await?,
                 Req::Lyrics(track) => {
                     let video_id = track.id.clone();

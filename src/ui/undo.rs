@@ -71,15 +71,37 @@ impl App {
             .filter(|(_, t)| !crate::local::is_local(&t.id) && tracks.iter().any(|removed| removed.id == t.id))
             .map(|(i, t)| (i, t.clone()))
             .collect();
-        let liked = tracks.iter().filter(|t| self.liked.contains(&t.id)).map(|t| t.id.clone()).collect();
+        let liked: Vec<String> = tracks.iter().filter(|t| self.liked.contains(&t.id)).map(|t| t.id.clone()).collect();
         let was = self.lists.unliking(&tracks);
         self.set_liked(&tracks, false);
+        // Without the notice there's nothing to wait for: it goes now, and the rating
+        // stands as this app knows it.
+        if !self.rating_settings.unlike_notices || self.mini.busy() {
+            self.confirm_unliked(&liked);
+            self.backend.request(send);
+            return;
+        }
         self.toast_undo("Removed from liked songs", Undo::Unlike { liked, was, taste, send });
+    }
+
+    /// Songs the last of which is still waiting for its Undo to go to YouTube Music.
+    pub(super) fn pending_unlikes(&self) -> &[String] {
+        match &self.undo {
+            Some(Undo::Unlike { liked, .. }) => liked,
+            _ => &[],
+        }
+    }
+
+    /// The ratings stand as these unlikes left them, without waiting for the account's reply.
+    fn confirm_unliked(&mut self, ids: &[String]) {
+        for id in ids {
+            self.ratings.confirm(id, crate::ytm::SongRating::Indifferent);
+        }
     }
 
     /// The like of `id` waits for its Undo to be taken away.
     pub(super) fn unliking_soon(&self, id: &str) -> bool {
-        matches!(&self.undo, Some(Undo::Unlike { liked, .. }) if liked.iter().any(|l| l == id))
+        self.pending_unlikes().iter().any(|l| l == id)
     }
 
     /// A re-like cancels the pending unlike (the whole selection for a bulk unlike).

@@ -6,6 +6,7 @@ use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Response, Sense, Ui, Vec2,
 use super::Action;
 use crate::model::{Card, Link, Target, Thumb, Track, pick_thumb, sized};
 use crate::theme::{self, icon};
+use crate::ytm::SongRating;
 
 pub fn named(resp: Response, name: &str) -> Response {
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
@@ -1267,7 +1268,10 @@ pub fn track_row(ui: &mut Ui, t: &Track, o: &RowOpts, acts: &mut Vec<Action>) ->
     }
     let right = rect.right() - 51.0;
     let dur_w = 52.0;
-    let avail = right - dur_w - x;
+    // A star for the song's rating, when the list shows them.
+    let (rating, show_rating) = super::ratings::row(ui, t, o.liked, base.contains_pointer() && ui.ctx().dragged_id().is_none() && !o.pick && o.selected.is_none());
+    let rating_w = if show_rating { 28.0 } else { 0.0 };
+    let avail = right - dur_w - rating_w - x;
     let wide = avail > 520.0;
     // Album rows (numbered) are just song name and plays; other rows are
     // title + artists, then album, then plays when there's room.
@@ -1300,7 +1304,7 @@ pub fn track_row(ui: &mut Ui, t: &Track, o: &RowOpts, acts: &mut Vec<Action>) ->
         ui.painter().text(pos2(px, cy), Align2::LEFT_CENTER, p, theme::regular(13.5), theme::text_dim());
     }
     if let (Some(ax), Some(album)) = (album_x, &t.album) {
-        let w = plays_x.unwrap_or(right - dur_w) - ax - 10.0;
+        let w = plays_x.unwrap_or(right - dur_w - rating_w) - ax - 10.0;
         let g = galley(ui, &album.name, theme::regular(13.5), theme::text_dim(), w);
         let ar = Rect::from_min_size(pos2(ax, cy - 9.0), g.size());
         ui.painter().galley(ar.min, g, theme::text_dim());
@@ -1313,6 +1317,30 @@ pub fn track_row(ui: &mut Ui, t: &Track, o: &RowOpts, acts: &mut Vec<Action>) ->
             }
             if r.clicked() {
                 acts.push(Action::Open(Target::Album(id.clone())));
+            }
+        }
+    }
+    if let Some(rating) = rating.filter(|_| show_rating) {
+        // The song's rating: a star that likes, or holds to take the like away.
+        let label = match rating {
+            SongRating::Like => "Remove like",
+            _ => "Like song",
+        };
+        let slot = Rect::from_center_size(pos2(right - dur_w - rating_w + rating_w / 2.0, cy), Vec2::splat(26.0));
+        let button = named(ui.interact(slot, base.id.with("rating"), Sense::click()), label).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let gesture = super::ratings::like_gesture(ui, &button, &t.id, rating == SongRating::Like, None);
+        let highlighted = button.hovered() || button.has_focus();
+        if rating != SongRating::Indifferent || highlighted {
+            let ink = if highlighted { theme::text() } else { theme::text_dim() };
+            super::ratings::unlike_star(ui, slot.center(), 14.0, if rating == SongRating::Like { 1.0 } else { 0.0 }, ink, gesture.progress);
+        }
+        if gesture.hint {
+            super::ratings::unlike_hint(ui, &button);
+        }
+        if gesture.activate {
+            match rating {
+                SongRating::Like => acts.push(Action::Like(super::ratings::rated_track(t), false)),
+                _ => acts.push(Action::Like(super::ratings::rated_track(t), true)),
             }
         }
     }

@@ -921,11 +921,16 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
             }
             let size = 18.0 * (1.0 + 0.25 * (pop * std::f32::consts::PI).sin());
             let tint = theme::lerp_color(theme::lerp_color(theme::text_dim(), theme::text(), lh), app.accent_color(), pop);
+            // Held, the star drains and the like goes only once the hold is done (see `ratings`).
+            let gesture = super::ratings::like_gesture(ui, &lresp, (&t.id, app.generation), liked, None);
             glyphs::draw(ui, lpos, size, glyphs::STAR, tint);
             if pop > 0.0 {
-                glyphs::draw(ui, lpos, size, glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop));
+                glyphs::draw(ui, lpos, size, glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop * (1.0 - gesture.progress)));
             }
-            if lresp.clicked() {
+            if gesture.hint {
+                super::ratings::unlike_hint(ui, &lresp);
+            }
+            if gesture.activate {
                 app.actions.push(Action::Like(t.clone(), !liked));
             }
         }

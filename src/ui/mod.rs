@@ -26,6 +26,7 @@ mod palette;
 mod playback;
 mod presence;
 mod queue;
+mod ratings;
 mod responses;
 mod row_drag;
 mod seek_wheel;
@@ -606,6 +607,8 @@ pub struct App {
     /// Files chosen in the upload dialog, handed over from its thread.
     picked_uploads: Arc<std::sync::Mutex<Option<Vec<std::path::PathBuf>>>>,
     liked: HashSet<String>,
+    ratings: ratings::Ratings,
+    rating_settings: ratings::Settings,
     selection: Selection,
     account_name: Option<String>,
     account_avatar: Option<String>,
@@ -1262,6 +1265,8 @@ impl App {
             all_downloaded: HashMap::new(),
             picked_uploads: Default::default(),
             liked: HashSet::new(),
+            ratings: Default::default(),
+            rating_settings: ratings::Settings::load(get),
             selection: Selection::default(),
             account_name: None,
             account_avatar: None,
@@ -2314,9 +2319,11 @@ impl eframe::App for App {
             self.glow = None;
         }
         self.shortcuts(&ctx);
+        self.rating_settings.share_unlike_settings(&ctx);
         let now = ctx.input(|i| i.time);
         let screen = ctx.content_rect();
 
+        self.sync_ratings(&ctx, now);
         self.sync_look();
         let look = self.look();
         // Now playing is dark; once it's most of the way up, so is the player bar under it.
@@ -2570,6 +2577,7 @@ impl eframe::App for App {
         storage.set_string("ambient_light", b(self.ambient_light));
         storage.set_string("hide_search_videos", b(self.hide_search_videos));
         storage.set_string("hide_explicit", b(self.hide_explicit));
+        self.rating_settings.save(storage);
         storage.set_string("list_sorts", serde_json::to_string(&self.sorts.sorts).unwrap_or_default());
         storage.set_string("podcasts", b(self.show_podcasts));
         storage.set_string("comments", b(self.show_comments));

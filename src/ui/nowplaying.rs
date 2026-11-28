@@ -1024,6 +1024,8 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let star = Rect::from_center_size(pos2(art.right() - 55.0, info_y + 14.0), Vec2::splat(30.0));
     let sr = ui.interact(star, ui.scope_id().with(("np-like", &heard.id)), Sense::click());
     let sr = named(sr, if liked { "Remove from favourites" } else { "Add to favourites" }).on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Held, the star drains and the like goes only once the hold is done (see `ratings`).
+    let gesture = super::ratings::like_gesture(ui, &sr, (&heard.id, app.generation), liked, None);
     let sh = theme::anim_bool(ui.ctx(), sr.id.with("h"), sr.hovered(), 0.1);
     let pop = theme::anim_bool(ui.ctx(), ("liked", &heard.id), liked, 0.3);
     // The same translucent disc as the ⋯ beside it, a little brighter once liked.
@@ -1035,9 +1037,12 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let tint = theme::lerp_color(theme::with_alpha(Color32::WHITE, dim), app.accent_color(), pop);
     super::glyphs::draw(ui, star.center(), 19.0, super::glyphs::STAR, tint);
     if pop > 0.0 {
-        super::glyphs::draw(ui, star.center(), 19.0, super::glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop));
+        super::glyphs::draw(ui, star.center(), 19.0, super::glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop * (1.0 - gesture.progress)));
     }
-    if sr.clicked() {
+    if gesture.hint {
+        super::ratings::unlike_hint(ui, &sr);
+    }
+    if gesture.activate {
         app.actions.push(Action::Like(heard.clone(), !liked));
     }
     // The song's options, beside the star.
