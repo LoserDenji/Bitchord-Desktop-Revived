@@ -821,6 +821,8 @@ pub struct View {
     last_t: f64,
     last_wall: f64,
     user_until: f64,
+    /// A finger's flick coasting on after it let go, points per second (down positive).
+    coast: f32,
     /// Reader scrolling was on last frame: when it ends, scroll back to the current line.
     was_user: bool,
     glow: Glow,
@@ -897,6 +899,7 @@ impl View {
 
     pub fn resume(&mut self) {
         self.user_until = 0.0;
+        self.coast = 0.0;
     }
 
     /// CSS `text-shadow: 0 0 <blur>` for a laid-out text at `at`: the same Gaussian the
@@ -1065,7 +1068,28 @@ impl View {
 
         // Reader scrolling.
         let hovered = ui.rect_contains_pointer(rect);
-        let wheel = if hovered { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
+        let mut wheel = if hovered { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
+        // A finger drags them too, as egui's scroll areas let it, and a flick coasts on.
+        // Under the lines, which take only taps: a tap still jumps to its line.
+        // egui finds the press target in the previous pass, before the first touch.
+        let drag = ui.interact(rect, ui.scope_id().with("lyr-drag"), egui::Sense::DRAG);
+        if drag.dragged() && ui.input(|i| i.any_touches()) {
+            wheel += ui.input(|i| i.pointer.delta().y);
+            self.coast = 0.0;
+        }
+        if drag.drag_stopped() && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Touch { phase: egui::TouchPhase::End, .. }))) {
+            self.coast = ui.input(|i| i.pointer.velocity().y).clamp(-6000.0, 6000.0);
+        }
+        if self.coast != 0.0 {
+            let dt = ui.input(|i| i.stable_dt).min(0.1);
+            wheel += self.coast * dt;
+            // Slowing to a stop in about a second, like a scroll area's coast.
+            self.coast *= (1.0 - 3.0 * dt).max(0.0);
+            if self.coast.abs() < 20.0 || self.scroll_top - wheel <= 0.0 || self.scroll_top - wheel >= max_scroll {
+                self.coast = 0.0;
+            }
+            animating = true;
+        }
         if wheel != 0.0 {
             self.scroll_top = (self.scroll_top - wheel).clamp(0.0, max_scroll);
             self.user_until = f.now + USER_SCROLL_RESUME;
@@ -2835,6 +2859,78 @@ mod tests {
             println!("{text}: before first word x {:.0}, second {:.0} | after first {:.0}, second {:.0}", mean(&before, a), mean(&before, b), mean(&after, a), mean(&after, b));
             assert!(mean(&after, a) > mean(&after, b), "{text}: the first word should be on the right");
         }
+    }
+
+    /// A finger on a touch screen scrolls the lyrics and a flick coasts on, while a tap on
+    /// a line still jumps to it.
+    #[test]
+    fn a_finger_scrolls_the_lyrics_and_a_tap_still_seeks() {
+        use egui::{Event, Modifiers, PointerButton, TouchDeviceId, TouchId, TouchPhase};
+        let ctx = shot_ctx();
+        let lines: Vec<Line> = (0..30).map(|i| Line { start: i * 4000, dur: 3900, text: format!("line {i}"), ..Default::default() }).collect();
+        let lyrics = Lyrics { lines, sync: Sync::Line, provider: crate::lyrics::Provider::BLyricsRich, language: None, songwriters: vec![] };
+        let style: &'static crate::preset::LyricStyle = Box::leak(Box::new(crate::preset::LyricStyle::default()));
+        let mut view = View::default();
+        let mut now = 100.0;
+        let touch = |phase, pos| Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase, pos, force: None };
+        let press = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        // One frame, paused at the start; returns where it'd seek.
+        let mut frame = |view: &mut View, events: Vec<Event>| {
+            let input = egui::RawInput { time: Some(now), predicted_dt: 1.0 / 60.0, screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), events, ..Default::default() };
+            now += 1.0 / 60.0;
+            let mut seek = None;
+            let mut out = ctx.run_ui(input, |ui| {
+                let n = lyrics.lines.len();
+                let f = Frame { lyrics: &lyrics, key: 1, roman: (0..n).map(|_| None).collect(), trans: vec![None; n], t: 0.5, playing: false, now, rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 500.0)), style, accent: Color32::RED, centered: false, scale: 1.0, glow_boost: 0.0, light: false };
+                seek = view.show(ui, f).seek;
+            });
+            out.textures_delta.clear();
+            seek
+        };
+        frame(&mut view, vec![]);
+        for resume_during_coast in [false, true] {
+            let top = view.scroll_top;
+            // Up 200 points, quickly, and let go.
+            let mut at = pos2(300.0, 400.0);
+            frame(&mut view, vec![touch(TouchPhase::Start, at), Event::PointerMoved(at), press(at, true)]);
+            for _ in 0..10 {
+                at.y -= 20.0;
+                frame(&mut view, vec![touch(TouchPhase::Move, at), Event::PointerMoved(at)]);
+            }
+            let dragged = view.scroll_top - top;
+            assert!((150.0..=210.0).contains(&dragged), "dragged {dragged}");
+            frame(&mut view, vec![press(at, false), touch(TouchPhase::End, at), Event::PointerGone]);
+            let let_go = view.scroll_top;
+            if resume_during_coast {
+                assert_ne!(view.coast, 0.0, "flick stopped before resume could cancel it");
+                view.resume();
+                frame(&mut view, vec![]);
+                assert_eq!(view.user_until, 0.0, "coast paused automatic scrolling again");
+            } else {
+                for _ in 0..10 {
+                    frame(&mut view, vec![]);
+                }
+                assert!(view.scroll_top > let_go + 10.0, "didn't coast: {let_go} → {}", view.scroll_top);
+                for _ in 0..120 {
+                    frame(&mut view, vec![]);
+                }
+            }
+            assert_eq!(view.coast, 0.0, "still coasting");
+        }
+        // A tap on a line on screen jumps there.
+        let tap = pos2(100.0, 250.0);
+        frame(&mut view, vec![touch(TouchPhase::Start, tap), Event::PointerMoved(tap), press(tap, true)]);
+        let seek = frame(&mut view, vec![press(tap, false), touch(TouchPhase::End, tap)]);
+        assert!(seek.is_some(), "a tap didn't seek");
+
+        // A mouse drag still leaves the lyrics alone, even after using touch.
+        let from = pos2(300.0, 400.0);
+        let to = pos2(300.0, 200.0);
+        frame(&mut view, vec![Event::PointerMoved(from), press(from, true)]);
+        frame(&mut view, vec![Event::PointerMoved(to)]);
+        frame(&mut view, vec![press(to, false)]);
+        assert_eq!(view.user_until, 0.0, "mouse drag paused automatic scrolling");
+        assert_eq!(view.coast, 0.0, "mouse drag started coasting");
     }
 
     /// The app's fonts in a headless egui, for the pictures below.

@@ -602,6 +602,7 @@ impl App {
     /// or without them.
     pub(super) fn set_show_podcasts(&mut self) {
         crate::ytm::set_podcasts(self.show_podcasts);
+        self.clear_filtered_suggestions();
         if !self.show_podcasts && self.page == super::Page::Library(super::LibTab::Podcasts) {
             self.page = super::Page::Library(super::LibTab::Playlists);
         }
@@ -618,12 +619,21 @@ impl App {
     /// loads from now on.
     pub(super) fn set_hide_explicit(&mut self) {
         self.queue.hide_explicit = self.hide_explicit;
+        self.clear_filtered_suggestions();
         if !self.jam.follows() {
             self.queue.drop_explicit();
             // What was fetched ahead may have gone.
             self.prefetch_next();
         }
         self.backend.set_hide_explicit(self.hide_explicit, self.restricted_mode);
+    }
+
+    fn clear_filtered_suggestions(&mut self) {
+        // A reply sent before the filter changed may also be missing newly visible cards.
+        self.suggest_round += 1;
+        self.suggest_cache.clear();
+        self.suggestions = Default::default();
+        self.suggest_sel = None;
     }
 
     /// Ask SponsorBlock about the playing song, when that's switched on.

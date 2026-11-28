@@ -3209,23 +3209,26 @@ fn settings_updates(app: &mut App, ui: &mut Ui) {
     use crate::update::State;
     let mut channel = None;
     settings_section(ui, "Updates", None, None, |ui| {
-        let desc = "Stable: finished releases, ready for everyday listening.\nNightly: experimental. It can break at any time.";
-        setting_row(ui, "Update channel", Some(desc), |ui| {
-            let btn = dropdown_button(ui, if app.update_nightly { "Nightly" } else { "Stable" }, 140.0, "Update channel");
-            egui::Popup::menu(&btn).show(|ui| {
-                ui.set_width(140.0);
-                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                ui.add_space(4.0);
-                for (label, nightly) in [("Stable", false), ("Nightly", true)] {
-                    if option_row(ui, label, nightly == app.update_nightly).clicked() {
-                        channel = Some(nightly);
-                        ui.close();
+        // A Flatpak gets whichever version Flatpak gives it: there's no channel to pick.
+        if !crate::update::flatpak() {
+            let desc = "Stable: finished releases, ready for everyday listening.\nNightly: experimental. It can break at any time.";
+            setting_row(ui, "Update channel", Some(desc), |ui| {
+                let btn = dropdown_button(ui, if app.update_nightly { "Nightly" } else { "Stable" }, 140.0, "Update channel");
+                egui::Popup::menu(&btn).show(|ui| {
+                    ui.set_width(140.0);
+                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    ui.add_space(4.0);
+                    for (label, nightly) in [("Stable", false), ("Nightly", true)] {
+                        if option_row(ui, label, nightly == app.update_nightly).clicked() {
+                            channel = Some(nightly);
+                            ui.close();
+                        }
                     }
-                }
-                ui.add_space(4.0);
+                    ui.add_space(4.0);
+                });
             });
-        });
-        divider(ui);
+            divider(ui);
+        }
         let status = match app.updater.as_ref().map(|u| u.state()) {
             Some(State::Checking) => "Checking for updates…".to_owned(),
             Some(State::Downloading { percent, .. }) => format!("Downloading… {percent}%"),

@@ -5,6 +5,7 @@
 
 mod account;
 mod actions;
+mod bar_swipe;
 mod collections;
 mod comments;
 mod dev;
@@ -518,10 +519,13 @@ pub struct App {
     recent_searches: Vec<RecentSearch>,
     /// A search whose results are on screen, waiting for the first result to be opened.
     search_pending: bool,
-    suggestions: (String, Vec<crate::ytm::Suggestion>),
+    /// What was typed, the search terms for it, and the songs, artists and albums it
+    /// most likely means.
+    suggestions: (String, Vec<crate::ytm::Suggestion>, Vec<Card>),
     /// Up to 32 query results, oldest first, scoped to the current suggestion round.
-    suggest_cache: VecDeque<(String, Vec<crate::ytm::Suggestion>)>,
-    /// The suggestion picked with the arrow keys, which Enter searches.
+    suggest_cache: VecDeque<(String, Vec<crate::ytm::Suggestion>, Vec<Card>)>,
+    /// The suggestion picked with the arrow keys, which Enter searches (or, past the
+    /// terms, plays or opens).
     suggest_sel: Option<usize>,
     /// Bumped when a past search is removed or the account changes: suggestions
     /// requested before that are dropped when they arrive, rather than bring it back.
@@ -893,6 +897,8 @@ pub struct App {
     /// The keyboard shortcuts, and one being picked in Settings (see `keybinds`).
     keybinds: keybinds::State,
     queue_open: bool,
+    /// The side Up next's width, as its left edge was last dragged to.
+    queue_w: f32,
     fullscreen: bool,
     /// Full screen is the video alone, its controls showing while the pointer moves.
     video_full: bool,
@@ -1341,8 +1347,11 @@ impl App {
             pinned: get("pinned_playlists").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
             coll_search: None,
             update_checked: None,
-            // A nightly build stays on nightlies until told otherwise.
-            update_nightly: get("update_channel").map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
+            // A nightly build stays on nightlies until told otherwise. In a Flatpak,
+            // Flatpak picks the version, so it's whichever this build is.
+            update_nightly: get("update_channel")
+                .filter(|_| !crate::update::flatpak())
+                .map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
             update_announced: false,
             update_seen: get("update_seen"),
             notes_dialog: None,
@@ -1463,6 +1472,7 @@ impl App {
             row_drag: None,
             keybinds: keybinds::State::load(&get),
             queue_open: false,
+            queue_w: shell::load_queue_w(get("queue_width")),
             fullscreen: false,
             video_full: false,
             mini: mini::Mini::load(get),
@@ -1642,8 +1652,11 @@ impl App {
         self.page_loaded();
     }
 
-    fn nav_back(&mut self) {
-        if self.np_open {
+    /// In full screen, back leaves it, as Esc does.
+    fn nav_back(&mut self, ctx: &egui::Context) {
+        if self.fullscreen {
+            self.set_fullscreen(ctx, false);
+        } else if self.np_open {
             self.np_open = false;
         } else if let Some(p) = self.back.pop() {
             self.motion_views.clear();
@@ -2319,6 +2332,12 @@ impl eframe::App for App {
             self.glow = None;
         }
         self.shortcuts(&ctx);
+        // Full screen is now playing's: whatever closes it (L, a link to a page, the queue
+        // emptied under it) leaves full screen too, or the window would stay full screen
+        // with nothing in it (#239).
+        if self.fullscreen && !(self.np_open && self.current().is_some()) {
+            self.set_fullscreen(&ctx, false);
+        }
         self.rating_settings.share_unlike_settings(&ctx);
         let now = ctx.input(|i| i.time);
         let screen = ctx.content_rect();
@@ -2429,13 +2448,21 @@ impl eframe::App for App {
             let section = ui.available_rect_before_wrap();
             let q = theme::anim_bool(&ctx, "queue-drawer", self.queue_open && !self.np_open, 0.25);
             if q > 0.01 {
-                egui::Panel::right("queue").resizable(false)
-                    .exact_size(340.0 * q)
+                // As wide as it was dragged, leaving the page room beside it.
+                let nav_w = shell::SIDEBAR_W - (shell::SIDEBAR_W - shell::RAIL_W) * shell::sidebar_collapse(self, &ctx);
+                let room = screen.width() - nav_w - shell::QUEUE_PAGE_MIN;
+                let w = shell::queue_w(self, room);
+                let panel = egui::Panel::right("queue").resizable(false)
+                    .exact_size(w * q)
                     // Only the scroll bar's strip stays off the window's edge (and the
                     // resize border): the bar hugs the edge there, clear of the rows.
                     .frame(egui::Frame::new().fill(theme::panel(0.42)).inner_margin(egui::Margin { left: 14, right: titlebar::edge_inset() as i8, top: 16, bottom: 16 }))
                     .show_separator_line(false)
                     .show(ui, |ui| shell::queue_drawer(self, ui));
+                // Once it's all the way out: the left edge drags.
+                if q >= 1.0 {
+                    shell::queue_resize_handle(self, &ctx, panel.response.rect, room);
+                }
             }
             let main_right = ui.available_rect_before_wrap().right();
             egui::CentralPanel::default()
@@ -2627,6 +2654,7 @@ impl eframe::App for App {
             storage.set_string("update_seen", v.clone());
         }
         storage.set_string("update_channel", if self.update_nightly { "nightly" } else { "stable" }.to_owned());
+        storage.set_string("queue_width", format!("{:.0}", self.queue_w));
         storage.set_string("discord_enabled", b(self.discord_enabled));
         storage.set_string("discord", serde_json::to_string(&self.discord_prefs).unwrap_or_default());
         storage.set_string("discord_user", self.discord_link_user.as_ref().and_then(|u| serde_json::to_string(u).ok()).unwrap_or_default());

@@ -404,7 +404,7 @@ pub enum Resp {
     SearchIn(SearchResults),
     /// `None`: this video can't be shown; the picture stays.
     VideoStream { video_id: String, max_height: u32, stream: Option<innertube::VideoStream> },
-    Suggest { query: String, round: u64, terms: Vec<ytm::Suggestion> },
+    Suggest { query: String, round: u64, terms: Vec<ytm::Suggestion>, hits: Vec<Card> },
     /// An album or playlist; `more`: the rest of its songs follow in `CollectionMore`.
     Collection { load: u64, c: Collection, more: bool },
     /// The next page of a playlist sent as `Collection` with the same `load`.
@@ -1247,8 +1247,8 @@ impl Backend {
                 Req::Search(query) => self.search(query, me).await?,
                 Req::SearchIn { query, scope } => Resp::SearchIn(Self::search_in(ytm::search_in(api, &query, scope).await?, query, scope)),
                 Req::Suggest { query, round } => {
-                    let terms = ytm::suggestions(api, &query, me).await?.into_iter().take(8).collect();
-                    Resp::Suggest { query, round, terms }
+                    let (terms, hits) = ytm::suggestions(api, &query, me).await?;
+                    Resp::Suggest { query, round, terms: terms.into_iter().take(8).collect(), hits }
                 }
                 Req::ForgetSearch(token) => {
                     ytm::forget_search(api, &token).await?;

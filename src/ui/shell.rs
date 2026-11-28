@@ -299,7 +299,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
     // Back also closes the now-playing overlay, so it's live whenever that is open.
     let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
     if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
-        app.nav_back();
+        app.nav_back(ui.ctx());
     }
     if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
         app.nav_forward();
@@ -515,7 +515,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             app.playlist_order.insert(to.min(app.playlist_order.len()), id);
         }
     }
-    // A downloaded update (Restart), or for the .deb a new one that's out (its notes).
+    // A downloaded update (Restart), or for a packaged copy a new one that's out (its notes).
     let (ready, available) = match app.updater.as_ref().map(|u| u.state()) {
         Some(crate::update::State::Ready { version, .. }) => (Some(version), false),
         Some(crate::update::State::Available { version, .. }) => (Some(version), true),
@@ -665,7 +665,7 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
     // before the box sees them, where they'd move the caret. Only bare arrows (Shift
     // selects text), and only suggestions for what's typed now, not ones still being replaced.
     let fresh = app.suggestions.0 == app.search_text.trim();
-    let n = if fresh { app.suggestions.1.len() } else { 0 };
+    let n = if fresh { app.suggestions.1.len() + app.suggestions.2.len() } else { 0 };
     if app.search_focused && n > 0 && ui.input(|i| i.modifiers.is_none()) {
         ui.input_mut(|i| {
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
@@ -735,10 +735,10 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
         app.suggest_sel = None;
         let now = ui.input(|i| i.time);
         // Show cached results immediately, then refresh after a short typing pause.
-        let first = app.suggestions.1.is_empty();
+        let first = app.suggestions.1.is_empty() && app.suggestions.2.is_empty();
         let query = app.search_text.trim();
         app.suggestions = app.suggest_cache.iter()
-            .find(|(q, _)| q == query)
+            .find(|(q, _, _)| q == query)
             .cloned()
             .unwrap_or_default();
         let delay = if first || cleared || edit.gained_focus() { 0.0 } else { 0.06 };
@@ -750,9 +750,14 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((due - now).max(0.0)));
     }
     if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        let picked = app.suggest_sel.filter(|_| fresh).and_then(|s| app.suggestions.1.get(s)).map(|s| s.text.clone());
+        let sel = app.suggest_sel.filter(|_| fresh);
+        let hit = sel.and_then(|s| s.checked_sub(app.suggestions.1.len())).and_then(|h| app.suggestions.2.get(h)).map(|c| c.target.clone());
+        let picked = sel.and_then(|s| app.suggestions.1.get(s)).map(|s| s.text.clone());
         let q = picked.unwrap_or_else(|| app.search_text.trim().to_owned());
-        if !q.is_empty() {
+        if let Some(target) = hit {
+            app.suggestions = Default::default();
+            app.actions.push(Action::Open(target));
+        } else if !q.is_empty() {
             app.suggestions = Default::default();
             app.actions.push(Action::Go(Page::Search(q)));
         }
@@ -763,7 +768,7 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
 pub fn suggestions(app: &mut App, ctx: &egui::Context) {
     let Some(rect) = app.search_rect else { return };
     // Through a press on a remove button too: its release briefly takes the box's focus.
-    let show = (app.search_focused || app.forget_held) && !app.suggestions.1.is_empty() && !app.np_open;
+    let show = (app.search_focused || app.forget_held) && suggesting_any(app) && !app.np_open;
     let t = theme::anim_bool(ctx, "suggest-open", show, 0.15);
     if t <= 0.0 {
         return;
@@ -789,6 +794,7 @@ pub fn suggestions(app: &mut App, ctx: &egui::Context) {
                         app.search_refocus = true;
                     }
                     let now = ui.input(|i| i.time);
+                    let mut picked = false;
                     for (i, s) in app.suggestions.1.clone().into_iter().enumerate() {
                         let term = s.text;
                         // The removed one folds away, and the rows below slide up into its place.
@@ -851,14 +857,68 @@ pub fn suggestions(app: &mut App, ctx: &egui::Context) {
                             app.suggestions = Default::default();
                             app.search_focused = false;
                             app.actions.push(Action::Go(Page::Search(term)));
+                            picked = true;
                             break;
                         }
+                    }
+                    if !picked {
+                        suggested_hits(ui, app);
                     }
                     if let Some((t, _)) = app.forgetting.take_if(|(_, at)| now - *at >= 0.18) {
                         app.suggestions.1.retain(|s| s.forget.as_deref() != Some(t.as_str()));
                     }
                 });
         });
+}
+
+/// Whether the dropdown has anything to show.
+fn suggesting_any(app: &App) -> bool {
+    !app.suggestions.1.is_empty() || !app.suggestions.2.is_empty()
+}
+
+/// Under the search terms, the songs, videos, artists and albums the typed words most
+/// likely mean, with their art: a song or video plays, an artist or album opens.
+fn suggested_hits(ui: &mut Ui, app: &mut App) {
+    let hits = app.suggestions.2.clone();
+    if hits.is_empty() {
+        return;
+    }
+    let first = app.suggestions.1.len();
+    if first > 0 {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+        ui.painter().hline(r.x_range().shrink(12.0), r.center().y, egui::Stroke::new(1.0, theme::glass(0.08)));
+    }
+    for (j, c) in hits.into_iter().enumerate() {
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+        let resp = named(resp, &c.title).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.contains_pointer() || app.suggest_sel == Some(first + j), 0.1);
+        ui.painter().rect_filled(r, 8.0, theme::glass(0.08 * h));
+        let art = Rect::from_center_size(pos2(r.left() + 30.0, r.center().y), Vec2::splat(40.0));
+        let radius = if c.round { 20.0 } else { theme::thumb_radius().min(6.0) };
+        paint_cover(ui, art, &c.thumbs, radius, 1.0);
+        let x = art.right() + 12.0;
+        let width = r.right() - x - 12.0;
+        let explicit = matches!(&c.target, Target::Song(t) if t.explicit);
+        widgets::title_at(ui, pos2(x, r.center().y - 19.0), &c.title, explicit, theme::semibold(14.5), theme::text(), width);
+        text_at(ui, pos2(x, r.center().y + 2.0), &hit_line(&c), theme::regular(13.0), theme::text_dim(), width);
+        // Pointer-down, as for the terms: the text box loses focus (hiding this) first.
+        if resp.is_pointer_button_down_on() || resp.clicked() {
+            app.suggestions = Default::default();
+            app.search_focused = false;
+            app.actions.push(Action::Open(c.target));
+            break;
+        }
+    }
+}
+
+/// The line under a suggested row's title. Songs, videos and albums come with theirs
+/// ("Song • Daft Punk • 401M plays"); an artist's gives only its audience.
+fn hit_line(c: &crate::model::Card) -> String {
+    match &c.target {
+        Target::Artist(_) if c.subtitle.is_empty() || c.subtitle == "Artist" => "Artist".to_string(),
+        Target::Artist(_) => format!("Artist • {}", c.subtitle),
+        _ => c.subtitle.clone(),
+    }
 }
 
 /// A suggestion with what's typed in bold and the rest dimmed, as on music.youtube.com.
@@ -887,6 +947,8 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         vgradient(ui.painter(), full, theme::panel(0.0), theme::panel(0.66));
         ui.interact(full, ui.scope_id().with("player-strip"), Sense::hover());
     }
+    // A finger swiping up the bar opens it too, and down closes it.
+    super::bar_swipe::player_bar(app, ui.ctx(), full);
     const H: f32 = 56.0;
     let w = (full.width() - 24.0).min(668.0);
     let cap = Rect::from_min_size(pos2(full.center().x - w / 2.0, full.bottom() - 16.0 - H), vec2(w, H));
@@ -1400,6 +1462,45 @@ pub(super) fn volume_slider(app: &mut App, ui: &mut Ui, slider: Rect, salt: &str
 
 // ------------------------------------------------------------------ queue drawer
 
+/// The side Up next's width: narrowest, as it starts, and widest.
+pub const QUEUE_W: (f32, f32, f32) = (300.0, 340.0, 720.0);
+/// What the page keeps beside a widened Up next.
+pub const QUEUE_PAGE_MIN: f32 = 480.0;
+
+/// The width saved, or as it starts.
+pub fn load_queue_w(saved: Option<String>) -> f32 {
+    saved.and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).unwrap_or(QUEUE_W.1).clamp(QUEUE_W.0, QUEUE_W.2)
+}
+
+/// How wide Up next is drawn: as dragged, within `room`, but never narrower than its least.
+pub fn queue_w(app: &App, room: f32) -> f32 {
+    app.queue_w.min(room).max(QUEUE_W.0)
+}
+
+/// Up next's left edge (`panel` is the panel): drag it to make Up next wider or narrower,
+/// within `room`; a double click puts it back.
+pub fn queue_resize_handle(app: &mut App, ctx: &egui::Context, panel: Rect, room: f32) {
+    // Below the title bar's row, which moves the window, and mostly over the panel: the
+    // page's scroll bar is just left of it.
+    let edge = Rect::from_min_max(pos2(panel.left() - 2.0, panel.top() + super::titlebar::HEIGHT), pos2(panel.left() + 5.0, panel.bottom()));
+    egui::Area::new(egui::Id::unique("queue-resize")).order(egui::Order::Middle).fixed_pos(edge.min).show(ctx, |ui| {
+        let resp = ui.allocate_rect(edge, Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        if resp.dragged() {
+            // Leftwards is wider. From the width drawn, so a drag starts where the edge is.
+            let from = app.queue_w.min(room).max(QUEUE_W.0);
+            app.queue_w = (from - resp.drag_delta().x).clamp(QUEUE_W.0, room.clamp(QUEUE_W.0, QUEUE_W.2));
+        }
+        if resp.double_clicked() {
+            app.queue_w = QUEUE_W.1;
+        }
+        let shown = theme::anim_bool(ctx, "queue-resize-hover", resp.hovered() || resp.dragged(), 0.12);
+        if shown > 0.0 {
+            let x = panel.left() + 1.0;
+            ui.painter().line_segment([pos2(x, edge.top()), pos2(x, edge.bottom())], egui::Stroke::new(2.0, theme::with_alpha(theme::text(), 0.3 * shown)));
+        }
+    });
+}
+
 pub fn queue_drawer(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Up next").font(theme::bold(20.0)));
@@ -1579,5 +1680,21 @@ pub fn toast(app: &mut App, ctx: &egui::Context, now: f64) {
         // Faded out: gone, whatever else would have kept it.
         app.toast = None;
         app.settle();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QUEUE_W, load_queue_w};
+
+    /// Up next starts at its own width; saved, it stays between its narrowest and widest.
+    #[test]
+    fn queue_width_loads_within_its_range() {
+        assert_eq!(load_queue_w(None), QUEUE_W.1);
+        assert_eq!(load_queue_w(Some("x".into())), QUEUE_W.1);
+        assert_eq!(load_queue_w(Some("NaN".into())), QUEUE_W.1);
+        assert_eq!(load_queue_w(Some("512".into())), 512.0);
+        assert_eq!(load_queue_w(Some("10".into())), QUEUE_W.0);
+        assert_eq!(load_queue_w(Some("5000".into())), QUEUE_W.2);
     }
 }

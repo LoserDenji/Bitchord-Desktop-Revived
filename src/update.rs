@@ -11,16 +11,18 @@
 //! place of its own as it closes. A copy from the Linux .deb (a `deb.txt` beside the
 //! binary, in /usr/lib/bitchord) can't replace itself: it only says a new version is
 //! out ([`State::Available`]), and the new .deb installs over it. The Arch package (a
-//! `pacman.txt` there instead) does the same with the new package. Every platform has
-//! a portable build too (a `portable.txt` marker; inside the app bundle on macOS),
-//! which updates from the portable download. Dev builds never update themselves.
+//! `pacman.txt` there instead) does the same with the new package. A Flatpak (which
+//! always has `/.flatpak-info`) only says so too, and is updated through Flatpak. Every
+//! platform has a portable build too (a `portable.txt` marker; inside the app bundle on
+//! macOS), which updates from the portable download. Dev builds never update themselves.
 //!
 //! Release notes (the release's Markdown body) are kept per version: the one a check
 //! finds, and any other on request ([`Updater::notes`]), for the update dialog, the
 //! card shown after updating and Settings.
 //!
 //! Dev hooks: `YTM_UPDATE_FORCE=1` treats any build as installed; `YTM_UPDATE_AS=<ver>`
-//! pretends to be that version; `YTM_UPDATE_DRYRUN=1` logs the install command
+//! pretends to be that version; `YTM_UPDATE_FLATPAK=1` (Linux) acts as a Flatpak;
+//! `YTM_UPDATE_DRYRUN=1` logs the install command
 //! instead of running it; `YTM_UPDATE_FEED=<url>` reads the latest release from there.
 
 use std::cmp::Ordering;
@@ -40,8 +42,9 @@ pub enum State {
     Idle,
     Checking,
     UpToDate,
-    /// A newer version is out, for a copy that can't install it itself (the .deb):
-    /// `url` is its .deb download.
+    /// A newer version is out, for a copy that can't install it itself (the .deb, the
+    /// Arch package, a Flatpak): `url` is its package (for a Flatpak, the release's
+    /// page, unused).
     Available { version: String, url: String },
     Downloading { version: String, percent: u8 },
     /// `installer` is the setup exe, or for the portable build the new bitchord.exe.
@@ -112,15 +115,32 @@ pub fn pacman() -> bool {
     *PACMAN.get_or_init(|| cfg!(target_os = "linux") && std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("pacman.txt").exists())).unwrap_or(false))
 }
 
-/// Whether a package manager owns this copy (the .deb or the Arch package): it only
-/// says a new version is out.
-pub fn packaged() -> bool {
-    deb() || pacman()
+/// Whether this copy runs as a Flatpak. Flatpak owns it, so like the .deb it never
+/// replaces itself, and there's no package to download either: Flatpak updates it.
+pub fn flatpak() -> bool {
+    static FLATPAK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLATPAK.get_or_init(|| cfg!(target_os = "linux") && in_flatpak(Path::new("/.flatpak-info"), std::env::var_os("YTM_UPDATE_FLATPAK").is_some()))
 }
 
-/// What to do with the new version, for a copy a package manager owns.
+/// Every Flatpak sandbox has `/.flatpak-info` (`info`), outside one nothing does.
+/// `FLATPAK_ID` isn't asked: it's set in the sandbox too, but can be passed on to
+/// programs started outside it. `pretend` is the dev hook.
+fn in_flatpak(info: &Path, pretend: bool) -> bool {
+    pretend || info.is_file()
+}
+
+/// Whether a package manager owns this copy (the .deb, the Arch package or a Flatpak):
+/// it only says a new version is out.
+pub fn packaged() -> bool {
+    flatpak() || deb() || pacman()
+}
+
+/// What to do with the new version, for a copy a package manager owns. A Flatpak
+/// comes first: one made from the .deb or the Arch package keeps its marker.
 pub fn package_step() -> &'static str {
-    if pacman() {
+    if flatpak() {
+        "This copy updates through Flatpak: run flatpak update, or check your software store."
+    } else if pacman() {
         "Download the new package and install it over this one with sudo pacman -U."
     } else {
         "Download the new .deb and open it to install it over this one."
@@ -357,6 +377,12 @@ impl Updater {
             return Ok(State::UpToDate);
         }
         let version = tag.trim_start_matches('v').to_owned();
+        // A Flatpak downloads nothing, so it doesn't wait for an asset (and there's none
+        // for every architecture it may run on): the link is to the release's page.
+        if flatpak() {
+            log::info!("update: {version} is out");
+            return Ok(State::Available { url: format!("{RELEASES}/tag/{tag}"), version });
+        }
         let portable = portable_dir().is_some();
         let want = asset_name(&version);
         // A release published before its installer was built: nothing to install
@@ -675,7 +701,23 @@ fn client() -> anyhow::Result<reqwest::Client> {
 
 #[cfg(test)]
 mod tests {
-    use super::{deb_version, newer, pacman_package};
+    use super::{deb_version, in_flatpak, newer, pacman_package};
+
+    #[test]
+    fn a_flatpak_is_known_by_its_info_file() {
+        let dir = std::env::temp_dir().join(format!("bitchord-flatpak-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let info = dir.join(".flatpak-info");
+        assert!(!in_flatpak(&info, false));
+        assert!(in_flatpak(&info, true));
+        std::fs::write(&info, "[Application]\n").unwrap();
+        assert!(in_flatpak(&info, false));
+        // A folder by that name isn't the file.
+        std::fs::remove_file(&info).unwrap();
+        std::fs::create_dir(&info).unwrap();
+        assert!(!in_flatpak(&info, false));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn version_order() {
