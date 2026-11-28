@@ -1237,6 +1237,9 @@ pub fn install_style(ctx: &egui::Context) {
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
         s.spacing.button_padding = egui::vec2(14.0, 7.0);
         s.spacing.scroll = egui::style::ScrollStyle::floating();
+        // egui fades a scrolled list's edges in its own panel colour, square: over the app's
+        // own backgrounds that's a dark band, showing at the corners of a rounded row.
+        s.spacing.scroll.fade.strength = 0.0;
         s.text_styles.insert(egui::TextStyle::Body, regular(14.0));
         s.text_styles.insert(egui::TextStyle::Button, semibold(14.0));
         s.text_styles.insert(egui::TextStyle::Heading, bold(22.0));
