@@ -519,10 +519,13 @@ pub struct App {
     recent_searches: Vec<RecentSearch>,
     /// A search whose results are on screen, waiting for the first result to be opened.
     search_pending: bool,
-    suggestions: (String, Vec<crate::ytm::Suggestion>),
+    /// What was typed, the search terms for it, and the songs, artists and albums it
+    /// most likely means.
+    suggestions: (String, Vec<crate::ytm::Suggestion>, Vec<Card>),
     /// Up to 32 query results, oldest first, scoped to the current suggestion round.
-    suggest_cache: VecDeque<(String, Vec<crate::ytm::Suggestion>)>,
-    /// The suggestion picked with the arrow keys, which Enter searches.
+    suggest_cache: VecDeque<(String, Vec<crate::ytm::Suggestion>, Vec<Card>)>,
+    /// The suggestion picked with the arrow keys, which Enter searches (or, past the
+    /// terms, plays or opens).
     suggest_sel: Option<usize>,
     /// Bumped when a past search is removed or the account changes: suggestions
     /// requested before that are dropped when they arrive, rather than bring it back.

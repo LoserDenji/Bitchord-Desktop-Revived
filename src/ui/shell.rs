@@ -665,7 +665,7 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
     // before the box sees them, where they'd move the caret. Only bare arrows (Shift
     // selects text), and only suggestions for what's typed now, not ones still being replaced.
     let fresh = app.suggestions.0 == app.search_text.trim();
-    let n = if fresh { app.suggestions.1.len() } else { 0 };
+    let n = if fresh { app.suggestions.1.len() + app.suggestions.2.len() } else { 0 };
     if app.search_focused && n > 0 && ui.input(|i| i.modifiers.is_none()) {
         ui.input_mut(|i| {
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
@@ -735,10 +735,10 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
         app.suggest_sel = None;
         let now = ui.input(|i| i.time);
         // Show cached results immediately, then refresh after a short typing pause.
-        let first = app.suggestions.1.is_empty();
+        let first = app.suggestions.1.is_empty() && app.suggestions.2.is_empty();
         let query = app.search_text.trim();
         app.suggestions = app.suggest_cache.iter()
-            .find(|(q, _)| q == query)
+            .find(|(q, _, _)| q == query)
             .cloned()
             .unwrap_or_default();
         let delay = if first || cleared || edit.gained_focus() { 0.0 } else { 0.06 };
@@ -750,9 +750,14 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((due - now).max(0.0)));
     }
     if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        let picked = app.suggest_sel.filter(|_| fresh).and_then(|s| app.suggestions.1.get(s)).map(|s| s.text.clone());
+        let sel = app.suggest_sel.filter(|_| fresh);
+        let hit = sel.and_then(|s| s.checked_sub(app.suggestions.1.len())).and_then(|h| app.suggestions.2.get(h)).map(|c| c.target.clone());
+        let picked = sel.and_then(|s| app.suggestions.1.get(s)).map(|s| s.text.clone());
         let q = picked.unwrap_or_else(|| app.search_text.trim().to_owned());
-        if !q.is_empty() {
+        if let Some(target) = hit {
+            app.suggestions = Default::default();
+            app.actions.push(Action::Open(target));
+        } else if !q.is_empty() {
             app.suggestions = Default::default();
             app.actions.push(Action::Go(Page::Search(q)));
         }
@@ -763,7 +768,7 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
 pub fn suggestions(app: &mut App, ctx: &egui::Context) {
     let Some(rect) = app.search_rect else { return };
     // Through a press on a remove button too: its release briefly takes the box's focus.
-    let show = (app.search_focused || app.forget_held) && !app.suggestions.1.is_empty() && !app.np_open;
+    let show = (app.search_focused || app.forget_held) && suggesting_any(app) && !app.np_open;
     let t = theme::anim_bool(ctx, "suggest-open", show, 0.15);
     if t <= 0.0 {
         return;
@@ -789,6 +794,7 @@ pub fn suggestions(app: &mut App, ctx: &egui::Context) {
                         app.search_refocus = true;
                     }
                     let now = ui.input(|i| i.time);
+                    let mut picked = false;
                     for (i, s) in app.suggestions.1.clone().into_iter().enumerate() {
                         let term = s.text;
                         // The removed one folds away, and the rows below slide up into its place.
@@ -851,14 +857,68 @@ pub fn suggestions(app: &mut App, ctx: &egui::Context) {
                             app.suggestions = Default::default();
                             app.search_focused = false;
                             app.actions.push(Action::Go(Page::Search(term)));
+                            picked = true;
                             break;
                         }
+                    }
+                    if !picked {
+                        suggested_hits(ui, app);
                     }
                     if let Some((t, _)) = app.forgetting.take_if(|(_, at)| now - *at >= 0.18) {
                         app.suggestions.1.retain(|s| s.forget.as_deref() != Some(t.as_str()));
                     }
                 });
         });
+}
+
+/// Whether the dropdown has anything to show.
+fn suggesting_any(app: &App) -> bool {
+    !app.suggestions.1.is_empty() || !app.suggestions.2.is_empty()
+}
+
+/// Under the search terms, the songs, videos, artists and albums the typed words most
+/// likely mean, with their art: a song or video plays, an artist or album opens.
+fn suggested_hits(ui: &mut Ui, app: &mut App) {
+    let hits = app.suggestions.2.clone();
+    if hits.is_empty() {
+        return;
+    }
+    let first = app.suggestions.1.len();
+    if first > 0 {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+        ui.painter().hline(r.x_range().shrink(12.0), r.center().y, egui::Stroke::new(1.0, theme::glass(0.08)));
+    }
+    for (j, c) in hits.into_iter().enumerate() {
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+        let resp = named(resp, &c.title).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.contains_pointer() || app.suggest_sel == Some(first + j), 0.1);
+        ui.painter().rect_filled(r, 8.0, theme::glass(0.08 * h));
+        let art = Rect::from_center_size(pos2(r.left() + 30.0, r.center().y), Vec2::splat(40.0));
+        let radius = if c.round { 20.0 } else { theme::thumb_radius().min(6.0) };
+        paint_cover(ui, art, &c.thumbs, radius, 1.0);
+        let x = art.right() + 12.0;
+        let width = r.right() - x - 12.0;
+        let explicit = matches!(&c.target, Target::Song(t) if t.explicit);
+        widgets::title_at(ui, pos2(x, r.center().y - 19.0), &c.title, explicit, theme::semibold(14.5), theme::text(), width);
+        text_at(ui, pos2(x, r.center().y + 2.0), &hit_line(&c), theme::regular(13.0), theme::text_dim(), width);
+        // Pointer-down, as for the terms: the text box loses focus (hiding this) first.
+        if resp.is_pointer_button_down_on() || resp.clicked() {
+            app.suggestions = Default::default();
+            app.search_focused = false;
+            app.actions.push(Action::Open(c.target));
+            break;
+        }
+    }
+}
+
+/// The line under a suggested row's title. Songs, videos and albums come with theirs
+/// ("Song • Daft Punk • 401M plays"); an artist's gives only its audience.
+fn hit_line(c: &crate::model::Card) -> String {
+    match &c.target {
+        Target::Artist(_) if c.subtitle.is_empty() || c.subtitle == "Artist" => "Artist".to_string(),
+        Target::Artist(_) => format!("Artist • {}", c.subtitle),
+        _ => c.subtitle.clone(),
+    }
 }
 
 /// A suggestion with what's typed in bold and the rest dimmed, as on music.youtube.com.

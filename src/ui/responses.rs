@@ -301,17 +301,20 @@ impl App {
                     self.suggest_due = Some(now);
                 }
             }
-            Resp::Suggest { query, round, terms } => {
+            Resp::Suggest { query, round, terms, mut hits } => {
                 if round == self.suggest_round && self.forgets_pending == 0 {
+                    // Searching podcasts, songs and artists aren't what's looked for; and
+                    // explicit songs stay out while those are hidden.
+                    hits.retain(|c| !self.show_podcasts && !matches!(&c.target, Target::Song(t) if self.hide_explicit && t.explicit));
                     // Keep late answers for backspacing/revisiting, but never display
                     // an answer for a query other than the one currently in the box.
-                    self.suggest_cache.retain(|(q, _)| q != &query);
-                    self.suggest_cache.push_back((query.clone(), terms.clone()));
+                    self.suggest_cache.retain(|(q, _, _)| q != &query);
+                    self.suggest_cache.push_back((query.clone(), terms.clone(), hits.clone()));
                     if self.suggest_cache.len() > 32 {
                         self.suggest_cache.pop_front();
                     }
                     if self.search_text.trim() == query {
-                        self.suggestions = (query, terms);
+                        self.suggestions = (query, terms, hits);
                         self.suggest_sel = None;
                     }
                 }
