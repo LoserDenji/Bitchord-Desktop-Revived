@@ -251,14 +251,30 @@ impl Drop for Tray {
 fn build(png: image::RgbaImage, playing: bool, autostart_on: bool) -> anyhow::Result<(TrayIcon, TrayMenuItems)> {
     let menu = TrayMenu::new(playing, autostart_on);
     let (w, h) = png.dimensions();
-    let icon = TrayIconBuilder::new()
+    let mut builder = TrayIconBuilder::new()
         .with_icon(tray_icon::Icon::from_rgba(png.into_raw(), w, h)?)
         .with_tooltip("BitChord")
         .with_menu(Box::new(menu.menu))
-        .with_menu_on_left_click(false)
-        .build()?;
+        .with_menu_on_left_click(false);
+    if crate::update::flatpak()
+        && let Some(dir) = flatpak_icon_dir(std::env::var_os("XDG_RUNTIME_DIR"), std::env::var_os("FLATPAK_ID"))
+    {
+        builder = builder.with_temp_dir_path(dir);
+    }
+    let icon = builder.build()?;
     let items = TrayMenuItems { song: menu.song, play: menu.play, next: menu.next, prev: menu.prev, autostart: menu.autostart };
     Ok((icon, items))
+}
+
+/// Where a Flatpak keeps the icon's picture. The tray, outside the sandbox, reads it from
+/// a file, and by default that's in `$XDG_RUNTIME_DIR/tray-icon`, which the host can't
+/// see unless the Flatpak is given it. The app's own `$XDG_RUNTIME_DIR/app/<its id>` is
+/// shared with the host at the same path, so the icon shows with no extra permission and
+/// doesn't share a folder with other apps' icons.
+#[cfg(target_os = "linux")]
+fn flatpak_icon_dir(runtime: Option<std::ffi::OsString>, id: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let (runtime, id) = (runtime.filter(|r| !r.is_empty())?, id.filter(|i| !i.is_empty())?);
+    Some(std::path::Path::new(&runtime).join("app").join(id).join("tray-icon"))
 }
 
 /// The menu items the GTK thread keeps, so their labels can be set from it alone.
@@ -428,6 +444,16 @@ pub fn take() -> Vec<Cmd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_flatpak_keeps_its_icon_in_its_own_runtime_folder() {
+        let dir = flatpak_icon_dir(Some("/run/user/1000".into()), Some("com.example.Bitchord".into()));
+        assert_eq!(dir.as_deref(), Some(std::path::Path::new("/run/user/1000/app/com.example.Bitchord/tray-icon")));
+        // Without either, the library's own default.
+        assert!(flatpak_icon_dir(None, Some("x".into())).is_none());
+        assert!(flatpak_icon_dir(Some("/run/user/1000".into()), Some("".into())).is_none());
+    }
 
     #[test]
     fn tooltip_fits_windows() {
