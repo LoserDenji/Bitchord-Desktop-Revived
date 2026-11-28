@@ -515,7 +515,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             app.playlist_order.insert(to.min(app.playlist_order.len()), id);
         }
     }
-    // A downloaded update (Restart), or for the .deb a new one that's out (its notes).
+    // A downloaded update (Restart), or for a packaged copy a new one that's out (its notes).
     let (ready, available) = match app.updater.as_ref().map(|u| u.state()) {
         Some(crate::update::State::Ready { version, .. }) => (Some(version), false),
         Some(crate::update::State::Available { version, .. }) => (Some(version), true),

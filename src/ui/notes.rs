@@ -1141,12 +1141,16 @@ pub struct NotesDialog {
 pub fn dialog(app: &mut App, ctx: &egui::Context) {
     let Some(d) = app.notes_dialog.clone() else { return };
     let body = app.updater.as_ref().and_then(|u| u.notes(&d.version));
-    // For a copy a package manager owns (the .deb or the Arch package), which can't
-    // install it itself: the new package to download.
-    let deb_url = app.updater.as_ref().and_then(|u| match u.state() {
+    // For a packaged copy, which can't install it itself: the new package to download,
+    // except in a Flatpak, which Flatpak updates.
+    let available = app.updater.as_ref().and_then(|u| match u.state() {
         crate::update::State::Available { version, url } if d.ready && version == d.version => Some(url),
         _ => None,
     });
+    let deb_url = available.clone().filter(|_| !crate::update::flatpak());
+    // Only while that version is still the one downloaded: a later check moves the
+    // state on (an Available one to Checking), and Restart would then install nothing.
+    let ready = app.updater.as_ref().is_some_and(|u| matches!(u.state(), crate::update::State::Ready { version, .. } if d.ready && version == d.version));
     let (mut close, mut restart) = (false, false);
     let accent = app.accent_color();
     let modal = egui::Modal::new(egui::Id::unique("release-notes")).frame(surface()).backdrop_color(theme::shade(0.55)).show(ctx, |ui| {
@@ -1157,7 +1161,7 @@ pub fn dialog(app: &mut App, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 widgets::icon_at(ui, ui.cursor().min + vec2(8.0, 8.0), icon::SPARKLES, 15.0, accent);
                 ui.add_space(22.0);
-                let label = if deb_url.is_some() { "UPDATE AVAILABLE" } else if d.ready { "UPDATE READY" } else { "WHAT'S NEW" };
+                let label = if available.is_some() { "UPDATE AVAILABLE" } else if ready { "UPDATE READY" } else { "WHAT'S NEW" };
                 let mut j = LayoutJob::default();
                 j.append(label, 0.0, TextFormat { font_id: theme::semibold(12.0), color: theme::text_dim(), extra_letter_spacing: 1.0, ..Default::default() });
                 ui.label(j);
@@ -1167,12 +1171,15 @@ pub fn dialog(app: &mut App, ctx: &egui::Context) {
             ui.add_space(3.0);
             ui.label(egui::RichText::new("by Loserdenji").font(theme::semibold(13.0)).color(accent));
             ui.add_space(3.0);
-            let sub = if deb_url.is_some() {
+            let sub = if available.is_some() {
                 format!("You're on {}. {}", crate::update::current_version(), crate::update::package_step())
-            } else if d.ready {
+            } else if ready {
                 format!("You're on {}. It's downloaded and installs when you close the app.", crate::update::current_version())
-            } else {
+            } else if d.version == crate::update::current_version() {
                 "The version you're running.".to_owned()
+            } else {
+                // An update's dialog whose state a later check has moved on.
+                format!("BitChord {} is out.", d.version)
             };
             ui.label(egui::RichText::new(sub).font(theme::regular(13.5)).color(theme::text_dim()));
         });
@@ -1204,7 +1211,9 @@ pub fn dialog(app: &mut App, ctx: &egui::Context) {
                         close = true;
                     }
                     close |= widgets::pill(ui, "Later", None, false).clicked();
-                } else if d.ready {
+                } else if available.is_some() {
+                    close = widgets::pill(ui, "Close", None, true).clicked();
+                } else if ready {
                     restart = widgets::pill(ui, "Restart to update", None, true).clicked();
                     close |= widgets::pill(ui, "Later", None, false).clicked();
                 } else {
