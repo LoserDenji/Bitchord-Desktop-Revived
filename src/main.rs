@@ -33,6 +33,7 @@ mod lyrics;
 mod media;
 mod model;
 mod motion;
+mod node;
 mod notify;
 mod opus;
 mod preset;
