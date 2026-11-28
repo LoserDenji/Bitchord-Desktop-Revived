@@ -303,9 +303,7 @@ impl App {
             }
             Resp::Suggest { query, round, terms, mut hits } => {
                 if round == self.suggest_round && self.forgets_pending == 0 {
-                    // Searching podcasts, songs and artists aren't what's looked for; and
-                    // explicit songs stay out while those are hidden.
-                    hits.retain(|c| !self.show_podcasts && !matches!(&c.target, Target::Song(t) if self.hide_explicit && t.explicit));
+                    hits.retain(|c| keep_suggested_target(&c.target, self.show_podcasts, self.hide_explicit));
                     // Keep late answers for backspacing/revisiting, but never display
                     // an answer for a query other than the one currently in the box.
                     self.suggest_cache.retain(|(q, _, _)| q != &query);
@@ -1203,6 +1201,33 @@ fn download_summary(r: &crate::backend::DownloadRun, name: &str) -> String {
         msg += &format!("; {} couldn't be downloaded ({}{more})", r.failed.len(), few.join(", "));
     }
     msg
+}
+
+fn keep_suggested_target(target: &Target, show_podcasts: bool, hide_explicit: bool) -> bool {
+    match target {
+        Target::Playlist(id) if crate::ytm::list_id(id) != id => show_podcasts,
+        Target::Song(t) => !hide_explicit || !t.explicit,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod suggestion_tests {
+    use super::*;
+
+    #[test]
+    fn podcasts_and_explicit_songs_are_filtered_independently() {
+        let podcast = Target::Playlist("MPSPshow".into());
+        let explicit = Target::Song(Track { explicit: true, ..Default::default() });
+        let ordinary = [Target::Song(Track::default()), Target::Album("album".into()), Target::Artist("artist".into()), Target::Playlist("playlist".into())];
+        for show_podcasts in [false, true] {
+            for hide_explicit in [false, true] {
+                assert_eq!(keep_suggested_target(&podcast, show_podcasts, hide_explicit), show_podcasts);
+                assert_eq!(keep_suggested_target(&explicit, show_podcasts, hide_explicit), !hide_explicit);
+                assert!(ordinary.iter().all(|target| keep_suggested_target(target, show_podcasts, hide_explicit)));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

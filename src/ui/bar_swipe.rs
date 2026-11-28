@@ -3,7 +3,7 @@
 //! one does what it always did. A swipe that something on the bar took for itself (the
 //! seek line, the volume) is that thing's, not a swipe.
 
-use egui::{Event, Pos2, Rect, TouchPhase};
+use egui::{Event, Pos2, Rect, TouchDeviceId, TouchId, TouchPhase};
 
 use super::{Action, App};
 
@@ -18,8 +18,8 @@ const LONGEST: f64 = 1.0;
 /// A finger on the bar, between frames.
 #[derive(Clone, Copy, Default)]
 struct Swipe {
-    /// Where and when it touched down on the bar.
-    start: Option<(Pos2, f64)>,
+    /// The contact, and where and when it touched down on the bar.
+    start: Option<(TouchDeviceId, TouchId, Pos2, f64)>,
     /// Something on the bar took the drag (the seek line, the volume).
     taken: bool,
 }
@@ -33,12 +33,17 @@ impl Swipe {
         }
         let mut swiped = None;
         for e in events {
-            let Event::Touch { phase, pos, .. } = e else { continue };
+            let Event::Touch { device_id, id, phase, pos, .. } = e else { continue };
+            if self.start.is_some_and(|(device, finger, _, _)| device != *device_id || finger != *id) {
+                continue;
+            }
             match phase {
-                TouchPhase::Start => *self = Self { start: bar.contains(*pos).then_some((*pos, now)), taken: false },
-                TouchPhase::Move => {}
+                TouchPhase::Start if self.start.is_none() && bar.contains(*pos) => {
+                    *self = Self { start: Some((*device_id, *id, *pos, now)), taken: false };
+                }
+                TouchPhase::Start | TouchPhase::Move => {}
                 TouchPhase::End => {
-                    if let Some((from, at)) = self.start.take()
+                    if let Some((_, _, from, at)) = self.start.take()
                         && !self.taken
                         && now - at <= LONGEST
                     {
@@ -77,7 +82,7 @@ pub(super) fn player_bar(app: &mut App, ctx: &egui::Context, bar: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::{TouchDeviceId, TouchId, pos2};
+    use egui::pos2;
 
     const BAR: Rect = Rect { min: pos2(0.0, 500.0), max: pos2(800.0, 580.0) };
 
@@ -132,6 +137,15 @@ mod tests {
         let mouse = [Event::PointerMoved(pos2(300.0, 540.0)), Event::PointerMoved(pos2(300.0, 400.0))];
         assert_eq!(s.feed(&mouse, BAR, 0.1, false), None);
         assert!(s.start.is_none());
+    }
+
+    #[test]
+    fn other_contacts_cannot_replace_end_or_cancel_a_swipe() {
+        let mut s = Swipe::default();
+        let other = |device, id, phase, y| Event::Touch { device_id: TouchDeviceId(device), id: TouchId(id), phase, pos: pos2(300.0, y), force: None };
+        s.feed(&[touch(TouchPhase::Start, 300.0, 540.0)], BAR, 0.0, false);
+        assert_eq!(s.feed(&[other(1, 2, TouchPhase::Start, 570.0), other(1, 2, TouchPhase::End, 440.0), other(2, 1, TouchPhase::Cancel, 440.0)], BAR, 0.1, false), None);
+        assert_eq!(s.feed(&[touch(TouchPhase::End, 300.0, 460.0)], BAR, 0.2, false), Some(true));
     }
 
     #[test]

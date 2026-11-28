@@ -899,6 +899,7 @@ impl View {
 
     pub fn resume(&mut self) {
         self.user_until = 0.0;
+        self.coast = 0.0;
     }
 
     /// CSS `text-shadow: 0 0 <blur>` for a laid-out text at `at`: the same Gaussian the
@@ -1070,15 +1071,14 @@ impl View {
         let mut wheel = if hovered { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
         // A finger drags them too, as egui's scroll areas let it, and a flick coasts on.
         // Under the lines, which take only taps: a tap still jumps to its line.
-        if ui.input(|i| i.has_touch_screen()) {
-            let drag = ui.interact(rect, ui.scope_id().with("lyr-drag"), egui::Sense::DRAG);
-            if drag.dragged() {
-                wheel += ui.input(|i| i.pointer.delta().y);
-                self.coast = 0.0;
-            }
-            if drag.drag_stopped() {
-                self.coast = ui.input(|i| i.pointer.velocity().y).clamp(-6000.0, 6000.0);
-            }
+        // egui finds the press target in the previous pass, before the first touch.
+        let drag = ui.interact(rect, ui.scope_id().with("lyr-drag"), egui::Sense::DRAG);
+        if drag.dragged() && ui.input(|i| i.any_touches()) {
+            wheel += ui.input(|i| i.pointer.delta().y);
+            self.coast = 0.0;
+        }
+        if drag.drag_stopped() && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Touch { phase: egui::TouchPhase::End, .. }))) {
+            self.coast = ui.input(|i| i.pointer.velocity().y).clamp(-6000.0, 6000.0);
         }
         if self.coast != 0.0 {
             let dt = ui.input(|i| i.stable_dt).min(0.1);
@@ -2887,34 +2887,50 @@ mod tests {
             out.textures_delta.clear();
             seek
         };
-        // A touch first, so it knows there's a touch screen.
-        frame(&mut view, vec![touch(TouchPhase::Start, pos2(700.0, 550.0)), touch(TouchPhase::End, pos2(700.0, 550.0))]);
         frame(&mut view, vec![]);
-        let top = view.scroll_top;
-        // Up 200 points, quickly, and let go.
-        let mut at = pos2(300.0, 400.0);
-        frame(&mut view, vec![touch(TouchPhase::Start, at), Event::PointerMoved(at), press(at, true)]);
-        for _ in 0..10 {
-            at.y -= 20.0;
-            frame(&mut view, vec![touch(TouchPhase::Move, at), Event::PointerMoved(at)]);
+        for resume_during_coast in [false, true] {
+            let top = view.scroll_top;
+            // Up 200 points, quickly, and let go.
+            let mut at = pos2(300.0, 400.0);
+            frame(&mut view, vec![touch(TouchPhase::Start, at), Event::PointerMoved(at), press(at, true)]);
+            for _ in 0..10 {
+                at.y -= 20.0;
+                frame(&mut view, vec![touch(TouchPhase::Move, at), Event::PointerMoved(at)]);
+            }
+            let dragged = view.scroll_top - top;
+            assert!((150.0..=210.0).contains(&dragged), "dragged {dragged}");
+            frame(&mut view, vec![press(at, false), touch(TouchPhase::End, at), Event::PointerGone]);
+            let let_go = view.scroll_top;
+            if resume_during_coast {
+                assert_ne!(view.coast, 0.0, "flick stopped before resume could cancel it");
+                view.resume();
+                frame(&mut view, vec![]);
+                assert_eq!(view.user_until, 0.0, "coast paused automatic scrolling again");
+            } else {
+                for _ in 0..10 {
+                    frame(&mut view, vec![]);
+                }
+                assert!(view.scroll_top > let_go + 10.0, "didn't coast: {let_go} → {}", view.scroll_top);
+                for _ in 0..120 {
+                    frame(&mut view, vec![]);
+                }
+            }
+            assert_eq!(view.coast, 0.0, "still coasting");
         }
-        let dragged = view.scroll_top - top;
-        assert!((150.0..=210.0).contains(&dragged), "dragged {dragged}");
-        frame(&mut view, vec![press(at, false), touch(TouchPhase::End, at), Event::PointerGone]);
-        let let_go = view.scroll_top;
-        for _ in 0..10 {
-            frame(&mut view, vec![]);
-        }
-        assert!(view.scroll_top > let_go + 10.0, "didn't coast: {let_go} → {}", view.scroll_top);
-        for _ in 0..120 {
-            frame(&mut view, vec![]);
-        }
-        assert_eq!(view.coast, 0.0, "still coasting");
         // A tap on a line on screen jumps there.
         let tap = pos2(100.0, 250.0);
         frame(&mut view, vec![touch(TouchPhase::Start, tap), Event::PointerMoved(tap), press(tap, true)]);
         let seek = frame(&mut view, vec![press(tap, false), touch(TouchPhase::End, tap)]);
         assert!(seek.is_some(), "a tap didn't seek");
+
+        // A mouse drag still leaves the lyrics alone, even after using touch.
+        let from = pos2(300.0, 400.0);
+        let to = pos2(300.0, 200.0);
+        frame(&mut view, vec![Event::PointerMoved(from), press(from, true)]);
+        frame(&mut view, vec![Event::PointerMoved(to)]);
+        frame(&mut view, vec![press(to, false)]);
+        assert_eq!(view.user_until, 0.0, "mouse drag paused automatic scrolling");
+        assert_eq!(view.coast, 0.0, "mouse drag started coasting");
     }
 
     /// The app's fonts in a headless egui, for the pictures below.

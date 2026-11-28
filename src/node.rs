@@ -60,6 +60,13 @@ fn bin(data_dir: &Path) -> PathBuf {
 pub fn installed(http: &reqwest::Client, data_dir: &Path) -> Option<PathBuf> {
     let bin = bin(data_dir);
     let age = std::fs::metadata(&bin).and_then(|m| m.modified()).ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        let version = std::fs::read_to_string(data_dir.join("node").join("version")).ok()?;
+        if !macos_supports(macos_version(), version.trim()) {
+            return None;
+        }
+    }
     if SystemTime::now().duration_since(age).unwrap_or_default() > MAX_AGE {
         fetch_later(http, data_dir);
     }
@@ -88,7 +95,7 @@ async fn fetch(http: &reqwest::Client, data_dir: &Path) -> anyhow::Result<String
     let build = BUILD.as_ref().ok_or_else(|| anyhow::anyhow!("no Node build for this platform"))?;
     let get = |url: String, secs: u64| async move { http.get(url).timeout(Duration::from_secs(secs)).send().await?.error_for_status() };
     let index: Value = get(format!("{DIST}/index.json"), 30).await?.json().await?;
-    let version = newest_lts(&index, build.key).ok_or_else(|| anyhow::anyhow!("no LTS release has {}", build.key))?;
+    let version = newest_lts(&index, build.key, macos_version()).ok_or_else(|| anyhow::anyhow!("no compatible latest LTS build for {}", build.key))?;
     let dir = data_dir.join("node");
     let bin = bin(data_dir);
     let have = std::fs::read_to_string(dir.join("version")).unwrap_or_default();
@@ -123,9 +130,40 @@ async fn fetch(http: &reqwest::Client, data_dir: &Path) -> anyhow::Result<String
 }
 
 /// The newest release in nodejs.org's `index.json` that's an LTS and has `key`'s build.
-/// Newest first is how the index lists them.
-fn newest_lts(index: &Value, key: &str) -> Option<String> {
-    index.as_array()?.iter().find(|r| r["lts"].is_string() && r["files"].as_array().is_some_and(|f| f.iter().any(|f| f == key))).and_then(|r| r["version"].as_str()).map(str::to_owned)
+/// Newest first is how the index lists them. Keep QuickJS if that build needs a newer Mac.
+fn newest_lts(index: &Value, key: &str, macos: Option<(u32, u32)>) -> Option<String> {
+    let release = index.as_array()?.iter().find(|r| r["lts"].is_string() && r["files"].as_array().is_some_and(|f| f.iter().any(|f| f == key)))?;
+    let version = release["version"].as_str()?;
+    (!key.starts_with("osx-") || macos_supports(macos, version)).then(|| version.to_owned())
+}
+
+fn macos_supports(host: Option<(u32, u32)>, node: &str) -> bool {
+    // The index has no deployment targets; see BUILDING.md in each Node release line.
+    // Use QuickJS for an unverified release rather than install a Node that may not run.
+    let minimum = match node.strip_prefix('v').and_then(|v| v.split_once('.')).map(|(major, _)| major) {
+        Some("20" | "22") => (11, 0),
+        Some("24" | "26") => (13, 5),
+        _ => return false,
+    };
+    host.is_some_and(|v| v >= minimum)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_version() -> Option<(u32, u32)> {
+    static VERSION: std::sync::OnceLock<Option<(u32, u32)>> = std::sync::OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let output = std::process::Command::new("/usr/bin/sw_vers").arg("-productVersion").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let mut parts = std::str::from_utf8(&output.stdout).ok()?.trim().split('.');
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_version() -> Option<(u32, u32)> {
+    None
 }
 
 fn archive_name(version: &str, build: &Build) -> String {
@@ -168,10 +206,26 @@ mod tests {
             { "version": "v26.13.1", "lts": "Lithium", "files": ["linux-x64", "osx-arm64-tar"] },
             { "version": "v26.13.0", "lts": "Lithium", "files": ["win-x64-zip", "linux-x64"] },
         ]);
-        assert_eq!(newest_lts(&index, "linux-x64").as_deref(), Some("v26.13.1"));
+        assert_eq!(newest_lts(&index, "linux-x64", None).as_deref(), Some("v26.13.1"));
         // The newest LTS without a Windows zip is passed over for one that has it.
-        assert_eq!(newest_lts(&index, "win-x64-zip").as_deref(), Some("v26.13.0"));
-        assert_eq!(newest_lts(&index, "aix-ppc64"), None);
+        assert_eq!(newest_lts(&index, "win-x64-zip", None).as_deref(), Some("v26.13.0"));
+        assert_eq!(newest_lts(&index, "aix-ppc64", None), None);
+    }
+
+    #[test]
+    fn macos_uses_quickjs_when_the_latest_build_is_incompatible() {
+        let index = serde_json::json!([
+            { "version": "v26.13.1", "lts": "Lithium", "files": ["osx-arm64-tar", "osx-x64-tar"] },
+            { "version": "v22.22.0", "lts": "Jod", "files": ["osx-arm64-tar", "osx-x64-tar"] },
+        ]);
+        for key in ["osx-arm64-tar", "osx-x64-tar"] {
+            assert_eq!(newest_lts(&index, key, Some((11, 0))), None);
+            assert_eq!(newest_lts(&index, key, Some((13, 4))), None);
+            assert_eq!(newest_lts(&index, key, None), None);
+            assert_eq!(newest_lts(&index, key, Some((13, 5))).as_deref(), Some("v26.13.1"));
+        }
+        assert!(macos_supports(Some((11, 0)), "v22.22.0"));
+        assert!(!macos_supports(Some((15, 0)), "v28.0.0"));
     }
 
     #[test]
@@ -231,7 +285,7 @@ mod tests {
             let http = reqwest::Client::new();
             let index: Value = http.get(format!("{DIST}/index.json")).send().await.unwrap().json().await.unwrap();
             for build in [Build { key: "win-x64-zip", platform: "win-x64", zip: true }, Build { key: "linux-x64", platform: "linux-x64", zip: false }] {
-                let version = newest_lts(&index, build.key).unwrap();
+                let version = newest_lts(&index, build.key, None).unwrap();
                 let file = archive_name(&version, &build);
                 let sums = http.get(format!("{DIST}/{version}/SHASUMS256.txt")).send().await.unwrap().text().await.unwrap();
                 let bytes = http.get(format!("{DIST}/{version}/{file}")).send().await.unwrap().bytes().await.unwrap();
