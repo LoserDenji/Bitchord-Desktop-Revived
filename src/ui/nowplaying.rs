@@ -697,6 +697,7 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
     let seek = ui.interact(hit, ui.scope_id().with("video-full-seek"), Sense::click_and_drag());
     let seek = if total > 0.0 { seek.on_hover_cursor(egui::CursorIcon::PointingHand) } else { seek };
     seek.widget_info(|| egui::WidgetInfo::slider(total > 0.0, pos as f64, "Seek"));
+    app.seek_wheel.hover(&seek);
     let lit = theme::anim_bool(&ctx, "video-full-seek-h", seek.hovered() || seek.dragged(), 0.15);
     let thick = 3.0 + 2.0 * lit;
     let track_r = Rect::from_center_size(pos2(hit.center().x, line_y), vec2(hit.width(), thick));
@@ -758,9 +759,12 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
     super::shell::volume_slider(app, &mut left, slider, "video-full-vol");
     left.add_space(14.0);
     if total > 0.0 {
-        let time = format!("{} / {}", super::fmt_time(pos as u32), super::fmt_time(total as u32));
-        let g = widgets::time_galley(&left, &time, theme::regular(13.5), Color32::WHITE);
-        left.label(g);
+        let time = super::fmt_running(pos, total, app.time_left);
+        let font = theme::regular(13.5);
+        let g = widgets::time_galley(&left, &time, font.clone(), Color32::WHITE);
+        let size = widgets::time_galley(&left, &super::fmt_running(0.0, total, true), font, Color32::WHITE).size().max(g.size());
+        let (hit, _) = left.allocate_exact_size(size, Sense::hover());
+        widgets::time_toggle(&left, hit, hit.min, g, [theme::text_dim(), Color32::WHITE], &mut app.time_left);
     }
     let mut right = ui.new_child(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::right_to_left(egui::Align::Center)));
     right.spacing_mut().item_spacing.x = 2.0;
@@ -1019,10 +1023,12 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     }
     // The star: a 30 px disc that washes under the pointer and fills in the accent
     // once liked. The ⋯ menu sits at the line's end, as on music.youtube.com.
-    let liked = app.liked.contains(&heard.id);
+    let liked = app.song_is_liked(&heard.id);
     let star = Rect::from_center_size(pos2(art.right() - 55.0, info_y + 14.0), Vec2::splat(30.0));
     let sr = ui.interact(star, ui.scope_id().with(("np-like", &heard.id)), Sense::click());
     let sr = named(sr, if liked { "Remove from favourites" } else { "Add to favourites" }).on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Held, the star drains and the like goes only once the hold is done (see `ratings`).
+    let gesture = super::ratings::like_gesture(ui, &sr, (&heard.id, app.generation), liked, None);
     let sh = theme::anim_bool(ui.ctx(), sr.id.with("h"), sr.hovered(), 0.1);
     let pop = theme::anim_bool(ui.ctx(), ("liked", &heard.id), liked, 0.3);
     // The same translucent disc as the ⋯ beside it, a little brighter once liked.
@@ -1034,9 +1040,12 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let tint = theme::lerp_color(theme::with_alpha(Color32::WHITE, dim), app.accent_color(), pop);
     super::glyphs::draw(ui, star.center(), 19.0, super::glyphs::STAR, tint);
     if pop > 0.0 {
-        super::glyphs::draw(ui, star.center(), 19.0, super::glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop));
+        super::glyphs::draw(ui, star.center(), 19.0, super::glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop * (1.0 - gesture.progress)));
     }
-    if sr.clicked() {
+    if gesture.hint {
+        super::ratings::unlike_hint(ui, &sr);
+    }
+    if gesture.activate {
         app.actions.push(Action::Like(heard.clone(), !liked));
     }
     // The song's options, beside the star.
@@ -1075,6 +1084,7 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let sresp = ui.interact(hit, ui.scope_id().with("np-seek"), if held { Sense::hover() } else { Sense::click_and_drag() });
     let sresp = if total > 0.0 && !held { sresp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { sresp };
     sresp.widget_info(|| egui::WidgetInfo::slider(total > 0.0 && !held, pos as f64, "Seek"));
+    app.seek_wheel.hover(&sresp);
     let focus = theme::anim_bool(ui.ctx(), "np-seek-h", total > 0.0 && !held && (sresp.hovered() || sresp.dragged()), 0.18);
     let thick = 4.0 + 4.0 * focus;
     let bar = Rect::from_min_max(pos2(x0, hit.center().y - thick / 2.0), pos2(x0 + w, hit.center().y + thick / 2.0));
@@ -1097,9 +1107,18 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let tc = theme::with_alpha(Color32::WHITE, 0.62);
     let g = widgets::time_galley(ui, &super::fmt_time(pos as u32), theme::semibold(11.0), tc);
     ui.painter().galley(pos2(x0, hit.bottom() + 2.0), g, tc);
-    let left = super::fmt_time((total - pos).max(0.0) as u32);
-    let g = widgets::time_galley(ui, &format!("-{left}"), theme::semibold(11.0), tc);
-    ui.painter().galley(pos2(x0 + w - g.size().x, hit.bottom() + 2.0), g, tc);
+    let g = widgets::time_galley(ui, &super::fmt_end(pos, total, app.time_left), theme::semibold(11.0), tc);
+    let tat = pos2(x0 + w - g.size().x, hit.bottom() + 2.0);
+    if total > 0.0 {
+        // Wide as the time left gets (the whole song), so a second click lands on it too.
+        let tw = widgets::time_galley(ui, &super::fmt_end(0.0, total, true), theme::semibold(11.0), tc).size().x;
+        let hit_r = Rect::from_min_max(pos2(x0 + w - tw, tat.y), pos2(x0 + w, tat.y + g.size().y));
+        let mut left = app.time_left;
+        widgets::time_toggle(ui, hit_r, tat, g, [tc, Color32::WHITE], &mut left);
+        app.time_left = left;
+    } else {
+        ui.painter().galley(tat, g, tc);
+    }
     // The quality mark sits between the two times, as the reference draws it.
     let badge_w = audio_badge_width(ui, app, false);
     if badge_w > 0.0 {

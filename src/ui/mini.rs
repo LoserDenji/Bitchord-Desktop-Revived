@@ -18,7 +18,7 @@ use egui::{Color32, Pos2, Rect, Sense, Ui, Vec2, ViewportCommand, WindowLevel, p
 use serde::{Deserialize, Serialize};
 
 use super::widgets::{self, icon_at, named, paint_cover, text_at};
-use super::{Action, App, fmt_time, glyphs, titlebar};
+use super::{Action, App, glyphs, titlebar};
 use crate::theme::{self, icon};
 
 // Decisions that are easy to change.
@@ -71,8 +71,18 @@ static MOVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 #[cfg(windows)]
 static SHAPE: std::sync::Mutex<Option<(f32, Vec2, Vec2)>> = std::sync::Mutex::new(None);
 
+/// The mini player is up and kept on top. Windows' Show desktop minimizes even windows
+/// kept on top, so the window takes itself back then; only the user's own minimize counts.
+static ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keep the window above others or not, and say so to the window's own handling.
+fn set_level(ctx: &egui::Context, on_top: bool) {
+    ON_TOP.store(on_top, std::sync::atomic::Ordering::Relaxed);
+    ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal }));
+}
+
 /// Keeps picture in picture in the video's shape while it's resized (Windows; elsewhere it
-/// takes the shape once the resize is over).
+/// takes the shape once the resize is over), and a kept-on-top mini player on top.
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub fn set_hwnd(hwnd: *mut std::ffi::c_void) {
     #[cfg(windows)]
@@ -81,13 +91,32 @@ pub fn set_hwnd(hwnd: *mut std::ffi::c_void) {
 
 #[cfg(windows)]
 mod shape {
-    use std::sync::atomic::Ordering;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_SIZING, WMSZ_BOTTOMLEFT, WMSZ_BOTTOM, WMSZ_LEFT, WMSZ_TOP, WMSZ_TOPLEFT, WMSZ_TOPRIGHT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetClientRect, GetWindowLongW, GetWindowRect, HWND_TOPMOST, IsIconic, PostMessageW, RegisterWindowMessageW, SC_MINIMIZE, SIZE_MINIMIZED, SW_SHOWNOACTIVATE,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_SIZE, WM_SIZING, WM_SYSCOMMAND, WM_WINDOWPOSCHANGED, WMSZ_BOTTOMLEFT,
+        WMSZ_BOTTOM, WMSZ_LEFT, WMSZ_TOP, WMSZ_TOPLEFT, WMSZ_TOPRIGHT, WS_EX_TOPMOST,
+    };
+    use windows::core::w;
+
+    /// The user minimized the window (its taskbar button, Win+Down, the window menu), which
+    /// Windows asks for first. Show desktop doesn't.
+    static ASKED: AtomicBool = AtomicBool::new(false);
+
+    /// Posted to bring the window back (after Show desktop, or onto the top again) once
+    /// Windows is done with what it's doing to it.
+    fn restore_msg() -> u32 {
+        static MSG: OnceLock<u32> = OnceLock::new();
+        // SAFETY: a constant, NUL-terminated name.
+        *MSG.get_or_init(|| unsafe { RegisterWindowMessageW(w!("bitchord mini player restore")) })
+    }
 
     pub fn init(hwnd: *mut std::ffi::c_void) {
+        restore_msg();
         // SAFETY: the app's own window, on the thread that made it; the subclass lives as
         // long as the window.
         if !unsafe { SetWindowSubclass(HWND(hwnd), Some(proc), 3, 0) }.as_bool() {
@@ -96,9 +125,42 @@ mod shape {
     }
 
     unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _: usize, _: usize) -> LRESULT {
+        let on_top = super::ON_TOP.load(Ordering::Relaxed);
         match msg {
             WM_ENTERSIZEMOVE => super::MOVING.store(true, Ordering::Relaxed),
             WM_EXITSIZEMOVE => super::MOVING.store(false, Ordering::Relaxed),
+            WM_SYSCOMMAND if wparam.0 as u32 & 0xFFF0 == SC_MINIMIZE => ASKED.store(true, Ordering::Relaxed),
+            // Minimized without being asked: Show desktop (or minimize all). Back, without
+            // taking the keyboard from what the user went to.
+            WM_SIZE if wparam.0 as u32 == SIZE_MINIMIZED => {
+                if !ASKED.swap(false, Ordering::Relaxed) && on_top {
+                    log::info!("mini player: minimized by the system while kept on top, showing it again");
+                    // SAFETY: the app's own window.
+                    let _ = unsafe { PostMessageW(Some(hwnd), restore_msg(), WPARAM(0), LPARAM(0)) };
+                }
+            }
+            WM_SIZE => ASKED.store(false, Ordering::Relaxed),
+            // Taken off the top by something else (the app's own unpin clears `ON_TOP` first):
+            // back on top once Windows is done with this change.
+            WM_WINDOWPOSCHANGED if on_top && !topmost(hwnd) => {
+                log::info!("mini player: taken off the top while kept there, putting it back");
+                // SAFETY: the app's own window.
+                let _ = unsafe { PostMessageW(Some(hwnd), restore_msg(), WPARAM(0), LPARAM(0)) };
+            }
+            _ if msg == restore_msg() => {
+                if on_top {
+                    // SAFETY: the app's own window, on its thread.
+                    unsafe {
+                        if IsIconic(hwnd).as_bool() {
+                            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                        }
+                        if !topmost(hwnd) {
+                            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                        }
+                    }
+                }
+                return LRESULT(0);
+            }
             _ => {}
         }
         // SAFETY: the window's own message, passed on as it came.
@@ -132,6 +194,12 @@ mod shape {
             r.bottom = r.top + h;
         }
         LRESULT(1)
+    }
+
+    fn topmost(hwnd: HWND) -> bool {
+        // SAFETY: a plain query on the app's own window.
+        let ex = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) };
+        ex as u32 & WS_EX_TOPMOST.0 != 0
     }
 }
 
@@ -497,7 +565,7 @@ impl Mini {
     pub fn set_pinned(&mut self, ctx: &egui::Context, on: bool) {
         self.pinned = on;
         if self.active() {
-            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if on { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal }));
+            set_level(ctx, on);
         }
     }
 
@@ -602,13 +670,13 @@ impl Mini {
                     corner_place(area, frame, scale, ctx.zoom_factor())
                 }
             };
-            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if self.pinned { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal }));
+            set_level(ctx, self.pinned);
             self.go(ctx, target, false, true)
         } else {
             if let Some(p) = now_place {
                 self.set_place(p);
             }
-            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::Normal));
+            set_level(ctx, false);
             // Kept until the window has settled: a save meanwhile still writes it.
             match self.full {
                 Some((p, max)) if self.visible(p, frame) => self.go(ctx, p, max, false),
@@ -839,7 +907,7 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
         if let Some(t) = &track {
             // What's heard, like Now playing's menu: a song version standing in for the music video.
             let t = if hold { t.clone() } else { app.playing_track().cloned().unwrap_or_else(|| t.clone()) };
-            let liked = app.liked.contains(&t.id);
+            let liked = app.song_is_liked(&t.id);
             let lpos = pos2(cx - 88.0, cy);
             let lresp = ui.interact(Rect::from_center_size(lpos, Vec2::splat(32.0)), ui.scope_id().with("mini-like"), Sense::click());
             let name = if liked { "Remove like" } else { "Like" };
@@ -853,11 +921,16 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
             }
             let size = 18.0 * (1.0 + 0.25 * (pop * std::f32::consts::PI).sin());
             let tint = theme::lerp_color(theme::lerp_color(theme::text_dim(), theme::text(), lh), app.accent_color(), pop);
+            // Held, the star drains and the like goes only once the hold is done (see `ratings`).
+            let gesture = super::ratings::like_gesture(ui, &lresp, (&t.id, app.generation), liked, None);
             glyphs::draw(ui, lpos, size, glyphs::STAR, tint);
             if pop > 0.0 {
-                glyphs::draw(ui, lpos, size, glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop));
+                glyphs::draw(ui, lpos, size, glyphs::STAR_FILLED, theme::with_alpha(app.accent_color(), pop * (1.0 - gesture.progress)));
             }
-            if lresp.clicked() {
+            if gesture.hint {
+                super::ratings::unlike_hint(ui, &lresp);
+            }
+            if gesture.activate {
                 app.actions.push(Action::Like(t.clone(), !liked));
             }
         }
@@ -1035,6 +1108,7 @@ fn seek_line(app: &mut App, ui: &mut Ui, r: Rect, track: Option<&crate::model::T
     let resp = ui.interact(hit, ui.scope_id().with("mini-seek"), if held { Sense::hover() } else { Sense::click_and_drag() });
     let resp = if total > 0.0 && !held { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
     resp.widget_info(|| egui::WidgetInfo::slider(total > 0.0 && !held, pos as f64, "Seek"));
+    app.seek_wheel.hover(&resp);
     let h = theme::anim_bool(ui.ctx(), "mini-seek-h", total > 0.0 && !held && (resp.hovered() || resp.dragged()), 0.15);
     let thick = 4.0 + 3.0 * h;
     let line = Rect::from_min_max(pos2(l, r.bottom() - thick), pos2(rr, r.bottom()));
@@ -1045,7 +1119,8 @@ fn seek_line(app: &mut App, ui: &mut Ui, r: Rect, track: Option<&crate::model::T
     if h > 0.0
         && let Some(p) = resp.hover_pos().or(resp.interact_pointer_pos())
     {
-        let txt = format!("{} / {}", fmt_time(at(p) as u32), fmt_time(total as u32));
+        // With the time left on, what would be left from there.
+        let txt = super::fmt_running(at(p), total, app.time_left);
         let g = widgets::time_galley(ui, &txt, theme::semibold(11.5), Color32::WHITE);
         let half = g.size().x / 2.0 + 6.0;
         let x = p.x.clamp(r.left() + half + 2.0, r.right() - half - 2.0);

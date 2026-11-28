@@ -26,8 +26,10 @@ mod palette;
 mod playback;
 mod presence;
 mod queue;
+mod ratings;
 mod responses;
 mod row_drag;
+mod seek_wheel;
 mod shell;
 mod sorts;
 mod storage;
@@ -605,6 +607,8 @@ pub struct App {
     /// Files chosen in the upload dialog, handed over from its thread.
     picked_uploads: Arc<std::sync::Mutex<Option<Vec<std::path::PathBuf>>>>,
     liked: HashSet<String>,
+    ratings: ratings::Ratings,
+    rating_settings: ratings::Settings,
     selection: Selection,
     account_name: Option<String>,
     account_avatar: Option<String>,
@@ -694,6 +698,8 @@ pub struct App {
     /// station must not become a request a frame.
     radio_retry_at: Option<std::time::Instant>,
     seek_drag: Option<f32>,
+    /// The mouse wheel over a seek bar: where it's seeking to until it rests.
+    seek_wheel: seek_wheel::SeekWheel,
 
     // visuals
     art_key: Option<String>,
@@ -810,6 +816,8 @@ pub struct App {
     pub disable_blur: bool,
     /// The play button and volume slider in the accent colour, like the progress line.
     accent_controls: bool,
+    /// The time left in place of the song's length beside a running time (click the time).
+    time_left: bool,
     /// Skip the parts of music videos SponsorBlock marks as not music.
     sponsorblock: bool,
     /// Crossfade between songs, and over how many seconds.
@@ -825,6 +833,8 @@ pub struct App {
     /// and the speed (not saved: 1× each launch).
     tempo_on: bool,
     speed: f32,
+    /// Speed changes the tempo only, not the pitch (saved; on unless switched off).
+    keep_pitch: bool,
     /// The next song starts because this one is ending: crossfade into it.
     handoff: bool,
     /// The handoff just begun, for the play that starts the next song to pick up.
@@ -1255,6 +1265,8 @@ impl App {
             all_downloaded: HashMap::new(),
             picked_uploads: Default::default(),
             liked: HashSet::new(),
+            ratings: Default::default(),
+            rating_settings: ratings::Settings::load(get),
             selection: Selection::default(),
             account_name: None,
             account_avatar: None,
@@ -1356,6 +1368,7 @@ impl App {
             used_radio_seeds: Default::default(),
             radio_retry_at: None,
             seek_drag: None,
+            seek_wheel: seek_wheel::SeekWheel::default(),
             art_key: None,
             track_art: None,
             clip_art: Default::default(),
@@ -1411,6 +1424,7 @@ impl App {
             anim_bg: get("anim_bg").is_none_or(|v| v == "1"),
             reactive_bg: get("reactive_bg").is_none_or(|v| v == "1"),
             disable_blur: get("disable_blur").is_some_and(|v| v == "1"),
+            time_left: get("time_left").is_some_and(|v| v == "1"),
             sponsorblock: get("sponsorblock").is_some_and(|v| v == "1"),
             crossfade: get("crossfade").is_some_and(|v| v == "1"),
             automix: get("automix").is_some_and(|v| v == "1"),
@@ -1423,6 +1437,7 @@ impl App {
             eq_no_clip: get("eq_no_clip").is_none_or(|v| v == "1"),
             tempo_on: get("tempo").is_some_and(|v| v == "1"),
             speed: 1.0,
+            keep_pitch: get("keep_pitch").is_none_or(|v| v == "1"),
             segments: None,
             segment_skipped: f64::NEG_INFINITY,
             bg_time: 0.0,
@@ -2149,6 +2164,7 @@ impl eframe::App for App {
             self.apply(a);
         }
         jam::tick(self, ctx);
+        self.seek_wheel_rest(ctx, now);
         jam::dev_script(self, ctx, now);
         // The Discord sign-in window landed: file the account, bring the gateway up.
         if let Some(r) = self.take_discord_link_result() {
@@ -2303,9 +2319,11 @@ impl eframe::App for App {
             self.glow = None;
         }
         self.shortcuts(&ctx);
+        self.rating_settings.share_unlike_settings(&ctx);
         let now = ctx.input(|i| i.time);
         let screen = ctx.content_rect();
 
+        self.sync_ratings(&ctx, now);
         self.sync_look();
         let look = self.look();
         // Now playing is dark; once it's most of the way up, so is the player bar under it.
@@ -2501,6 +2519,8 @@ impl eframe::App for App {
             }
         }
         let viewport_h = raw.screen_rect.map_or(800.0, |r| r.height());
+        // Ahead of smooth scrolling: the wheel over a seek bar seeks rather than scrolls.
+        self.seek_by_wheel(ctx, &mut raw.events, raw.time.unwrap_or(0.0));
         if self.wheel.filter(&mut raw.events, raw.time.unwrap_or(0.0), raw.predicted_dt, viewport_h) {
             ctx.request_repaint();
         }
@@ -2557,6 +2577,7 @@ impl eframe::App for App {
         storage.set_string("ambient_light", b(self.ambient_light));
         storage.set_string("hide_search_videos", b(self.hide_search_videos));
         storage.set_string("hide_explicit", b(self.hide_explicit));
+        self.rating_settings.save(storage);
         storage.set_string("list_sorts", serde_json::to_string(&self.sorts.sorts).unwrap_or_default());
         storage.set_string("podcasts", b(self.show_podcasts));
         storage.set_string("comments", b(self.show_comments));
@@ -2646,6 +2667,7 @@ impl eframe::App for App {
         storage.set_string("youtube_on", b(self.youtube_on));
         storage.set_string("source_priority", self.source_order.iter().map(|k| k.key()).collect::<Vec<_>>().join("\n"));
         storage.set_string("sponsorblock", b(self.sponsorblock));
+        storage.set_string("time_left", b(self.time_left));
         storage.set_string("crossfade", b(self.crossfade));
         storage.set_string("automix", b(self.automix));
         storage.set_string("crossfade_secs", self.crossfade_secs.to_string());
@@ -2653,6 +2675,7 @@ impl eframe::App for App {
         storage.set_string("eq_gains", self.eq_gains.map(|g| g.to_string()).join(","));
         storage.set_string("eq_no_clip", b(self.eq_no_clip));
         storage.set_string("tempo", b(self.tempo_on));
+        storage.set_string("keep_pitch", b(self.keep_pitch));
         storage.set_string("show_roman", b(self.show_roman));
         storage.set_string("show_trans", b(self.show_trans));
         storage.set_string("lyrics_full_rate", b(self.lyrics_full_rate));
@@ -2925,6 +2948,54 @@ fn updatable() -> bool {
 
 pub fn fmt_time(secs: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// The time still to go ("-0:51"), with `left` and a length to count down from. Whole
+/// seconds of both, so the time so far and the time left add up to the length; never
+/// past it.
+fn fmt_left(pos: f32, total: f32, left: bool) -> Option<String> {
+    (left && total > 0.0).then(|| format!("-{}", fmt_time((total as u32).saturating_sub(pos as u32))))
+}
+
+/// The right end of a time split along a seek bar: the song's length, or with `left` the
+/// time still to go ("0:36 ... -0:51").
+pub fn fmt_end(pos: f32, total: f32, left: bool) -> String {
+    fmt_left(pos, total, left).unwrap_or_else(|| fmt_time(total as u32))
+}
+
+/// A running time as one label: "0:36 / 1:27", or with `left` the time still to go of
+/// the length ("-0:51 / 1:27"), so one side runs and the other stays put either way.
+pub fn fmt_running(pos: f32, total: f32, left: bool) -> String {
+    format!("{} / {}", fmt_left(pos, total, left).unwrap_or_else(|| fmt_time(pos as u32)), fmt_time(total as u32))
+}
+
+#[cfg(test)]
+mod time_tests {
+    use super::{fmt_end, fmt_running};
+
+    #[test]
+    fn the_time_left_adds_up_to_the_length() {
+        assert_eq!(fmt_end(36.7, 87.9, false), "1:27");
+        assert_eq!(fmt_end(36.7, 87.9, true), "-0:51");
+        assert_eq!(fmt_end(0.0, 3725.0, true), "-62:05");
+        // At the very end, and a position a hair past it.
+        assert_eq!(fmt_end(87.9, 87.9, true), "-0:00");
+        assert_eq!(fmt_end(90.0, 87.9, true), "-0:00");
+        // A known length under a second is still one, with its time left.
+        assert_eq!(fmt_end(0.2, 0.9, true), "-0:00");
+        // No length (a live stream, or not known yet): nothing negative.
+        assert_eq!(fmt_end(12.0, 0.0, true), "0:00");
+        assert_eq!(fmt_end(f32::NAN, f32::NAN, true), "0:00");
+    }
+
+    #[test]
+    fn one_label_counts_down_its_left_side() {
+        assert_eq!(fmt_running(193.4, 236.2, false), "3:13 / 3:56");
+        assert_eq!(fmt_running(193.4, 236.2, true), "-0:43 / 3:56");
+        assert_eq!(fmt_running(240.0, 236.2, true), "-0:00 / 3:56");
+        // No length: the time so far, as before.
+        assert_eq!(fmt_running(12.0, 0.0, true), "0:12 / 0:00");
+    }
 }
 
 #[cfg(test)]

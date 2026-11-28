@@ -12,9 +12,8 @@ use super::{App, LibTab, Page, queue};
 
 pub enum Undo {
     Queue(queue::Saved),
-    /// Likes taken away: the songs liked before, what to put back in Liked Music, and the
-    /// request that takes them away there.
-    Unlike { liked: Vec<String>, was: Unliked, taste: Vec<(usize, Track)>, send: Req },
+    /// Likes taken away: the effective likes and Liked Music membership can differ.
+    Unlike { liked: Vec<String>, members: Vec<String>, was: Unliked, taste: Vec<(usize, Track)>, send: Req },
     /// Rows taken out of a playlist.
     Removal { id: String, rows: Vec<Taken> },
     /// A playlist deleted, and its card with its place in the library.
@@ -52,7 +51,7 @@ impl App {
         if let Req::RemoveFromPlaylist { playlist_id, items } = &req {
             self.lists.edits.remove(playlist_id, items.iter().map(|(_, set)| set.clone()));
         }
-        self.backend.request(req);
+        self.send_rating_edit(req);
     }
 
     /// The same, waited for: the app closing, or signing out or switching channel,
@@ -71,15 +70,44 @@ impl App {
             .filter(|(_, t)| !crate::local::is_local(&t.id) && tracks.iter().any(|removed| removed.id == t.id))
             .map(|(i, t)| (i, t.clone()))
             .collect();
-        let liked = tracks.iter().filter(|t| self.liked.contains(&t.id)).map(|t| t.id.clone()).collect();
+        let liked = tracks.iter().filter(|t| self.song_is_liked(&t.id)).map(|t| t.id.clone()).collect();
+        let members = tracks.iter().filter(|t| self.liked.contains(&t.id)).map(|t| t.id.clone()).collect();
         let was = self.lists.unliking(&tracks);
         self.set_liked(&tracks, false);
-        self.toast_undo("Removed from liked songs", Undo::Unlike { liked, was, taste, send });
+        // Without the notice there's nothing to wait for: it goes now.
+        if !self.rating_settings.unlike_notices || self.mini.busy() {
+            self.send_rating_edit(send);
+            return;
+        }
+        self.toast_undo("Removed from liked songs", Undo::Unlike { liked, members, was, taste, send });
+    }
+
+    /// Songs the last of which is still waiting for its Undo to go to YouTube Music.
+    pub(super) fn pending_unlikes(&self) -> &[String] {
+        match &self.undo {
+            Some(Undo::Unlike { liked, .. }) => liked,
+            _ => &[],
+        }
+    }
+
+    /// Keep edits visible between dispatch (including when Undo expires) and the reply.
+    pub(super) fn send_rating_edit(&mut self, req: Req) {
+        match &req {
+            Req::Like { video_id, like } => self.ratings.start_write(video_id, *like),
+            Req::Unlike(id) => self.ratings.start_write(id, false),
+            Req::LikeMany { video_ids, like } => {
+                for id in video_ids {
+                    self.ratings.start_write(id, *like);
+                }
+            }
+            _ => {}
+        }
+        self.backend.request(req);
     }
 
     /// The like of `id` waits for its Undo to be taken away.
     pub(super) fn unliking_soon(&self, id: &str) -> bool {
-        matches!(&self.undo, Some(Undo::Unlike { liked, .. }) if liked.iter().any(|l| l == id))
+        self.pending_unlikes().iter().any(|l| l == id)
     }
 
     /// A re-like cancels the pending unlike (the whole selection for a bulk unlike).
@@ -147,9 +175,15 @@ impl App {
                     self.prefetch_next();
                 }
             }
-            Undo::Unlike { liked, was, taste, .. } => {
+            Undo::Unlike { liked, members, was, taste, .. } => {
                 self.toast = None;
-                self.liked.extend(liked);
+                self.liked.extend(members);
+                // A rating refresh can clear a cached like while the toast is up.
+                for id in liked {
+                    if !self.liked.contains(&id) && self.ratings.get(&id).is_none() {
+                        self.ratings.confirm(&id, crate::ytm::SongRating::Like);
+                    }
+                }
                 self.lists.unlike_undone(was);
                 if !taste.is_empty() {
                     // First-run seeding may have already put some of these back.

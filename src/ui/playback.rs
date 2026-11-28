@@ -329,6 +329,10 @@ impl App {
             self.liked_checked = Some(now);
             self.request_liked(false);
         }
+        if refocused {
+            // Ratings changed on another device show once the window is back.
+            self.ratings.refresh_if_stale(now);
+        }
         let idle = !self.playing() && !self.buffering && !self.jam.active() && self.smoke.is_none();
         let due = self.queue_checked.is_none_or(|t| refocused && now - t > 60.0);
         if self.logged_in && idle && due && std::env::var_os("YTM_SMOKE").is_none() {
@@ -566,6 +570,7 @@ impl App {
     /// everyone hears the same song at the same moment.
     pub(super) fn sync_tempo(&self) {
         self.audio.set_speed(if self.jam.active() || !self.tempo_on { 1.0 } else { self.speed });
+        self.audio.set_keep_pitch(self.keep_pitch);
     }
 
     pub(crate) fn set_crossfade(&self) {
@@ -699,6 +704,7 @@ impl App {
     }
 
     pub(super) fn seek_to(&mut self, at: Duration) {
+        self.seek_wheel_seeked(at.as_secs_f32());
         // A needle this device moved is the room's to hear about; `publish` keeps telling
         // it until the room agrees. Only hand seeks come through here — the sync's own
         // corrections seek the player directly, so drift never gets reported as a move.

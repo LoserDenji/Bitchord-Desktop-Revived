@@ -72,8 +72,9 @@ impl App {
                     }
                 }
                 AudioEvent::Finished { .. } => {}
-                // Crossfade into the next song; repeat-one and the end of the queue wait for the end.
-                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.follows() && !self.repeats_one() => {
+                // Crossfade into the next song, or into the song again on Repeat one; the
+                // end of the queue waits for the end.
+                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.follows() => {
                     // Automix: the next song eases in under this one, which keeps the
                     // player until the blend has given the next song the louder half
                     // (see `MixFrom`).
@@ -92,7 +93,11 @@ impl App {
                     }
                     let before = self.playing_id().map(str::to_owned);
                     self.handoff = true;
-                    self.next();
+                    if self.repeats_one() {
+                        self.play_current();
+                    } else {
+                        self.next();
+                    }
                     self.handoff = false;
                     if self.playing_id().map(str::to_owned) != before {
                         self.mix_from = self.pending_mix.take();
@@ -545,11 +550,15 @@ impl App {
                 }
             }
             Resp::Liked { video_id, like } => {
-                self.lists.edits.confirm_likes(std::slice::from_ref(&video_id), &[]);
-                if like {
-                    self.liked.insert(video_id);
+                self.ratings.finish_write(&video_id, like, true);
+                if !self.unliking_soon(&video_id) {
+                    self.lists.edits.confirm_likes(std::slice::from_ref(&video_id), &[]);
+                    if like {
+                        self.liked.insert(video_id);
+                    }
                 }
             }
+            Resp::SongRating { video_id, round, rating } => self.ratings.finish(video_id, round, rating, now),
             Resp::QuickPicksMore { seed, tracks } => {
                 if let Some(h) = &mut self.home {
                     h.picks_loading = false;
@@ -568,7 +577,7 @@ impl App {
                 if done == 0 {
                     // A Spotify transfer is adding to Liked Music (maybe paused): this waits for it.
                     self.toast("Waiting for the transfer to finish adding to Liked Music…");
-                } else if total > 1 && done < total {
+                } else if total > 1 && done < total && (like || self.rating_settings.unlike_notices) {
                     let note = if self.backend.api().limited() { " (YouTube Music is limiting requests; waiting)" } else { "" };
                     self.toast(format!("{} {done} of {total} songs…{note}", if like { "Liking" } else { "Removing likes:" }));
                 }
@@ -922,6 +931,12 @@ impl App {
     /// Music refused.
     fn on_liked_many(&mut self, video_ids: Vec<String>, failed: Vec<String>, like: bool) {
         log::debug!("like={like} answered: {} taken, {} refused {:?}", video_ids.len(), failed.len(), failed.iter().take(5).collect::<Vec<_>>());
+        for id in &video_ids {
+            self.ratings.finish_write(id, like, true);
+        }
+        for id in &failed {
+            self.ratings.finish_write(id, like, false);
+        }
         self.lists.edits.confirm_likes(&video_ids, &failed);
         // The refused ones come back as they were with a reload.
         if !failed.is_empty() {
@@ -1055,6 +1070,7 @@ impl App {
         self.subscriptions = Default::default();
         // Your own playlists show differently (and private ones not at all) to another
         // account, and its likes aren't this one's.
+        self.ratings.reset();
         self.lists.clear();
         self.lists.edits = Default::default();
         self.liked.clear();

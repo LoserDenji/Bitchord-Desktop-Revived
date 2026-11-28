@@ -156,11 +156,12 @@ impl App {
                     self.toast("Sign in to like songs");
                     return;
                 }
-                if !like && self.unliking_soon(&t.id) {
+                // Let the current write answer before sending another for the same song.
+                if self.ratings.writing(&t.id) || (!like && self.unliking_soon(&t.id)) {
                     return;
                 }
                 let restored = self.rating(|id| like && id == t.id);
-                if !like && self.liked.contains(&t.id) {
+                if !like && self.song_is_liked(&t.id) {
                     let send = Req::Unlike(t.id.clone());
                     return self.unlike_soon(vec![t], send);
                 }
@@ -168,7 +169,7 @@ impl App {
                 if !restored {
                     self.set_liked(std::slice::from_ref(&t), like);
                 }
-                self.backend.request(Req::Like { video_id: t.id, like });
+                self.send_rating_edit(Req::Like { video_id: t.id, like });
             }
             Action::LikeMany(tracks, like) => {
                 if !self.logged_in {
@@ -178,7 +179,7 @@ impl App {
                 if like {
                     self.rating(|id| tracks.iter().any(|t| t.id == id));
                 }
-                let tracks: Vec<Track> = tracks.into_iter().filter(|t| self.liked.contains(&t.id) != like).collect();
+                let tracks: Vec<Track> = tracks.into_iter().filter(|t| !self.ratings.writing(&t.id) && self.song_is_liked(&t.id) != like).collect();
                 if tracks.is_empty() { return; }
                 if !like {
                     let send = Req::LikeMany { video_ids: tracks.iter().map(|t| t.id.clone()).collect(), like };
@@ -189,7 +190,7 @@ impl App {
                     // One at a time, then checked: a few hundred take a few minutes.
                     self.toast(format!("Liking {} songs…", tracks.len()));
                 }
-                self.backend.request(Req::LikeMany { video_ids: tracks.into_iter().map(|t| t.id).collect(), like });
+                self.send_rating_edit(Req::LikeMany { video_ids: tracks.into_iter().map(|t| t.id).collect(), like });
             }
             Action::Share(target) => {
                 self.share_pending = Some(share_url(&target));

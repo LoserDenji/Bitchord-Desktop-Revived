@@ -1040,6 +1040,8 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     let sresp = ui.interact(seek_hit, ui.scope_id().with("bar-seek"), if held { Sense::hover() } else { Sense::click_and_drag() });
     let sresp = if total > 0.0 && !held { sresp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { sresp };
     sresp.widget_info(|| egui::WidgetInfo::slider(total > 0.0 && !held, pos as f64, "Seek"));
+    // Pointed at, the wheel seeks (see `seek_wheel`).
+    app.seek_wheel.hover(&sresp);
     let focus = theme::anim_bool(&ctx, "bar-seek-h", total > 0.0 && !held && (sresp.hovered() || sresp.dragged()), 0.15);
     let (sx0, sx1) = (text_l, text_r);
     let sy = cap.bottom() - 7.0;
@@ -1090,8 +1092,13 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         Some(t) => (t.title.clone(), ()),
         None => ("BitChord".to_owned(), ()),
     };
-    let fade = 1.0 - 0.7 * focus;
-    let afade = 1.0 - focus;
+    // Keep the existing target alive as the pointer or focus moves off the seek band.
+    let time_active = ctx.read_response(widgets::time_toggle_id(ui))
+        .is_some_and(|r| r.hovered() || r.has_focus());
+    let seek_active = !held && (sresp.hovered() || sresp.dragged() || sresp.has_focus());
+    let time_focus = theme::anim_bool(&ctx, "bar-time-h", total > 0.0 && (seek_active || time_active), 0.15);
+    let fade = 1.0 - 0.7 * time_focus;
+    let afade = 1.0 - time_focus;
     let explicit = track.as_ref().is_some_and(|t| t.explicit);
     let tr = widgets::title_at(ui, pos2(text_l, cy - 15.0), &title, explicit, theme::semibold(13.0), theme::with_alpha(theme::text(), fade), text_w);
     if let Some(t) = &track {
@@ -1121,13 +1128,16 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
             }
         }
     }
-    if focus > 0.0 && total > 0.0 {
-        let col = theme::with_alpha(theme::text(), focus);
-        let g = widgets::time_galley(ui, &fmt_time(pos as u32), theme::semibold(11.5), theme::text());
-        ui.painter().galley(pos2(text_l, cy + 2.0), g, col);
-        let left = fmt_time((total - pos).max(0.0) as u32);
-        let g = widgets::time_galley(ui, &format!("-{left}"), theme::semibold(11.5), theme::text());
-        ui.painter().galley(pos2(text_r - g.size().x, cy + 2.0), g, col);
+    if time_focus > 0.0 && total > 0.0 {
+        let col = theme::with_alpha(theme::text(), time_focus);
+        let elapsed = widgets::time_galley(ui, &fmt_time(pos as u32), theme::semibold(11.5), theme::text());
+        ui.painter().galley(pos2(text_l, cy + 2.0), elapsed, col);
+        let g = widgets::time_galley(ui, &super::fmt_end(pos, total, app.time_left), theme::semibold(11.5), theme::text());
+        let at = pos2(text_r - g.size().x, cy + 2.0);
+        // Wide as the time left gets (the whole song), so a second click lands on it too.
+        let w = widgets::time_galley(ui, &super::fmt_end(0.0, total, true), theme::semibold(11.5), theme::text()).size().x;
+        let hit = Rect::from_min_max(pos2(text_r - w, at.y), pos2(text_r, at.y + g.size().y));
+        widgets::time_toggle(ui, hit, at, g, [theme::with_alpha(theme::text_dim(), time_focus), theme::text()], &mut app.time_left);
     }
 
     // Right: favourite, lyrics, up next, speed, volume. Hovering the volume slides a
@@ -1156,19 +1166,24 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     if reveal < 0.5 {
         // What's heard, like Now playing's menu: a song version standing in for the video.
         let heard = if held { track.clone() } else { app.playing_track().cloned().or_else(|| track.clone()) };
-        let liked = heard.as_ref().is_some_and(|t| app.liked.contains(&t.id));
+        let liked = heard.as_ref().is_some_and(|t| app.song_is_liked(&t.id));
         let r = rbtn(ui, 0, "like", if liked { "Remove from favourites" } else { "Add to favourites" });
         let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.15);
         let pop = heard.as_ref().map_or(0.0, |t| theme::anim_bool(&ctx, ("liked", &t.id), liked, 0.3));
         let dim = if heard.is_some() { 1.0 } else { 0.4 };
+        // Held, the star drains and the like goes only once the hold is done (see `ratings`).
+        let gesture = super::ratings::like_gesture(ui, &r, heard.as_ref().map(|t| (t.id.clone(), app.generation)), liked, None);
         // The filled star grows in under the ring rather than replacing it, as the
         // reference's own two-weight mark does.
         let tint = theme::lerp_color(ink(h), accent, pop).gamma_multiply(dim);
         glyphs::draw(ui, r.rect.center(), 18.0, glyphs::STAR, tint);
         if pop > 0.0 {
-            glyphs::draw(ui, r.rect.center(), 18.0, glyphs::STAR_FILLED, theme::with_alpha(tint, tint.a() as f32 / 255.0 * pop));
+            glyphs::draw(ui, r.rect.center(), 18.0, glyphs::STAR_FILLED, theme::with_alpha(tint, tint.a() as f32 / 255.0 * pop * (1.0 - gesture.progress)));
         }
-        if r.clicked()
+        if gesture.hint {
+            super::ratings::unlike_hint(ui, &r);
+        }
+        if gesture.activate
             && let Some(t) = heard
         {
             app.actions.push(Action::Like(t, !liked));
