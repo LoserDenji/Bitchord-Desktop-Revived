@@ -894,6 +894,8 @@ pub struct App {
     /// The keyboard shortcuts, and one being picked in Settings (see `keybinds`).
     keybinds: keybinds::State,
     queue_open: bool,
+    /// The side Up next's width, as its left edge was last dragged to.
+    queue_w: f32,
     fullscreen: bool,
     /// Full screen is the video alone, its controls showing while the pointer moves.
     video_full: bool,
@@ -1467,6 +1469,7 @@ impl App {
             row_drag: None,
             keybinds: keybinds::State::load(&get),
             queue_open: false,
+            queue_w: shell::load_queue_w(get("queue_width")),
             fullscreen: false,
             video_full: false,
             mini: mini::Mini::load(get),
@@ -2442,13 +2445,21 @@ impl eframe::App for App {
             let section = ui.available_rect_before_wrap();
             let q = theme::anim_bool(&ctx, "queue-drawer", self.queue_open && !self.np_open, 0.25);
             if q > 0.01 {
-                egui::Panel::right("queue").resizable(false)
-                    .exact_size(340.0 * q)
+                // As wide as it was dragged, leaving the page room beside it.
+                let nav_w = shell::SIDEBAR_W - (shell::SIDEBAR_W - shell::RAIL_W) * shell::sidebar_collapse(self, &ctx);
+                let room = screen.width() - nav_w - shell::QUEUE_PAGE_MIN;
+                let w = shell::queue_w(self, room);
+                let panel = egui::Panel::right("queue").resizable(false)
+                    .exact_size(w * q)
                     // Only the scroll bar's strip stays off the window's edge (and the
                     // resize border): the bar hugs the edge there, clear of the rows.
                     .frame(egui::Frame::new().fill(theme::panel(0.42)).inner_margin(egui::Margin { left: 14, right: titlebar::edge_inset() as i8, top: 16, bottom: 16 }))
                     .show_separator_line(false)
                     .show(ui, |ui| shell::queue_drawer(self, ui));
+                // Once it's all the way out: the left edge drags.
+                if q >= 1.0 {
+                    shell::queue_resize_handle(self, &ctx, panel.response.rect, room);
+                }
             }
             let main_right = ui.available_rect_before_wrap().right();
             egui::CentralPanel::default()
@@ -2640,6 +2651,7 @@ impl eframe::App for App {
             storage.set_string("update_seen", v.clone());
         }
         storage.set_string("update_channel", if self.update_nightly { "nightly" } else { "stable" }.to_owned());
+        storage.set_string("queue_width", format!("{:.0}", self.queue_w));
         storage.set_string("discord_enabled", b(self.discord_enabled));
         storage.set_string("discord", serde_json::to_string(&self.discord_prefs).unwrap_or_default());
         storage.set_string("discord_user", self.discord_link_user.as_ref().and_then(|u| serde_json::to_string(u).ok()).unwrap_or_default());
