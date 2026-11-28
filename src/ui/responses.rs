@@ -72,8 +72,9 @@ impl App {
                     }
                 }
                 AudioEvent::Finished { .. } => {}
-                // Crossfade into the next song; repeat-one and the end of the queue wait for the end.
-                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.follows() && !self.repeats_one() => {
+                // Crossfade into the next song, or into the song again on Repeat one; the
+                // end of the queue waits for the end.
+                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.follows() => {
                     // Automix: the next song eases in under this one, which keeps the
                     // player until the blend has given the next song the louder half
                     // (see `MixFrom`).
@@ -92,7 +93,11 @@ impl App {
                     }
                     let before = self.playing_id().map(str::to_owned);
                     self.handoff = true;
-                    self.next();
+                    if self.repeats_one() {
+                        self.play_current();
+                    } else {
+                        self.next();
+                    }
                     self.handoff = false;
                     if self.playing_id().map(str::to_owned) != before {
                         self.mix_from = self.pending_mix.take();
