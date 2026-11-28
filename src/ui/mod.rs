@@ -1642,8 +1642,11 @@ impl App {
         self.page_loaded();
     }
 
-    fn nav_back(&mut self) {
-        if self.np_open {
+    /// In full screen, back leaves it, as Esc does.
+    fn nav_back(&mut self, ctx: &egui::Context) {
+        if self.fullscreen {
+            self.set_fullscreen(ctx, false);
+        } else if self.np_open {
             self.np_open = false;
         } else if let Some(p) = self.back.pop() {
             self.motion_views.clear();
@@ -2319,6 +2322,12 @@ impl eframe::App for App {
             self.glow = None;
         }
         self.shortcuts(&ctx);
+        // Full screen is now playing's: whatever closes it (L, a link to a page, the queue
+        // emptied under it) leaves full screen too, or the window would stay full screen
+        // with nothing in it (#239).
+        if self.fullscreen && !(self.np_open && self.current().is_some()) {
+            self.set_fullscreen(&ctx, false);
+        }
         self.rating_settings.share_unlike_settings(&ctx);
         let now = ctx.input(|i| i.time);
         let screen = ctx.content_rect();

@@ -299,7 +299,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
     // Back also closes the now-playing overlay, so it's live whenever that is open.
     let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
     if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
-        app.nav_back();
+        app.nav_back(ui.ctx());
     }
     if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
         app.nav_forward();

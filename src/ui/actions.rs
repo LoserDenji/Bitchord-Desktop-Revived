@@ -384,7 +384,7 @@ impl App {
             self.toggle();
         }
         if back {
-            self.nav_back();
+            self.nav_back(ctx);
         }
         if fwd {
             self.nav_forward();
