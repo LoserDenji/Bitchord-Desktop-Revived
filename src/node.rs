@@ -63,7 +63,7 @@ pub fn installed(http: &reqwest::Client, data_dir: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let version = std::fs::read_to_string(data_dir.join("node").join("version")).ok()?;
-        if !macos_supports(macos_version(), version.trim()) {
+        if check_macos(macos_version(), version.trim()).is_err() {
             return None;
         }
     }
@@ -95,7 +95,7 @@ async fn fetch(http: &reqwest::Client, data_dir: &Path) -> anyhow::Result<String
     let build = BUILD.as_ref().ok_or_else(|| anyhow::anyhow!("no Node build for this platform"))?;
     let get = |url: String, secs: u64| async move { http.get(url).timeout(Duration::from_secs(secs)).send().await?.error_for_status() };
     let index: Value = get(format!("{DIST}/index.json"), 30).await?.json().await?;
-    let version = newest_lts(&index, build.key, macos_version()).ok_or_else(|| anyhow::anyhow!("no compatible latest LTS build for {}", build.key))?;
+    let version = newest_lts(&index, build.key, macos_version())?;
     let dir = data_dir.join("node");
     let bin = bin(data_dir);
     let have = std::fs::read_to_string(dir.join("version")).unwrap_or_default();
@@ -131,21 +131,43 @@ async fn fetch(http: &reqwest::Client, data_dir: &Path) -> anyhow::Result<String
 
 /// The newest release in nodejs.org's `index.json` that's an LTS and has `key`'s build.
 /// Newest first is how the index lists them. Keep QuickJS if that build needs a newer Mac.
-fn newest_lts(index: &Value, key: &str, macos: Option<(u32, u32)>) -> Option<String> {
-    let release = index.as_array()?.iter().find(|r| r["lts"].is_string() && r["files"].as_array().is_some_and(|f| f.iter().any(|f| f == key)))?;
-    let version = release["version"].as_str()?;
-    (!key.starts_with("osx-") || macos_supports(macos, version)).then(|| version.to_owned())
+fn newest_lts(index: &Value, key: &str, macos: Option<(u32, u32)>) -> anyhow::Result<String> {
+    let release = index.as_array().and_then(|r| r.iter().find(|r| r["lts"].is_string() && r["files"].as_array().is_some_and(|f| f.iter().any(|f| f == key))))
+        .ok_or_else(|| anyhow::anyhow!("no LTS build for {key}"))?;
+    let version = release["version"].as_str().ok_or_else(|| anyhow::anyhow!("LTS build for {key} has no version"))?;
+    if key.starts_with("osx-") {
+        check_macos(macos, version)?;
+    }
+    Ok(version.to_owned())
 }
 
-fn macos_supports(host: Option<(u32, u32)>, node: &str) -> bool {
+#[derive(Debug)]
+struct IncompatibleMacos {
+    host: (u32, u32),
+    minimum: (u32, u32),
+}
+
+impl std::fmt::Display for IncompatibleMacos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Node requires macOS {}.{}; this Mac runs {}.{}", self.minimum.0, self.minimum.1, self.host.0, self.host.1)
+    }
+}
+
+impl std::error::Error for IncompatibleMacos {}
+
+fn check_macos(host: Option<(u32, u32)>, node: &str) -> anyhow::Result<()> {
     // The index has no deployment targets; see BUILDING.md in each Node release line.
     // Use QuickJS for an unverified release rather than install a Node that may not run.
     let minimum = match node.strip_prefix('v').and_then(|v| v.split_once('.')).map(|(major, _)| major) {
         Some("20" | "22") => (11, 0),
         Some("24" | "26") => (13, 5),
-        _ => return false,
+        _ => anyhow::bail!("unknown macOS requirement for Node {node}"),
     };
-    host.is_some_and(|v| v >= minimum)
+    let host = host.ok_or_else(|| anyhow::anyhow!("could not determine the macOS version"))?;
+    if host < minimum {
+        return Err(IncompatibleMacos { host, minimum }.into());
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -206,10 +228,10 @@ mod tests {
             { "version": "v26.13.1", "lts": "Lithium", "files": ["linux-x64", "osx-arm64-tar"] },
             { "version": "v26.13.0", "lts": "Lithium", "files": ["win-x64-zip", "linux-x64"] },
         ]);
-        assert_eq!(newest_lts(&index, "linux-x64", None).as_deref(), Some("v26.13.1"));
+        assert_eq!(newest_lts(&index, "linux-x64", None).unwrap(), "v26.13.1");
         // The newest LTS without a Windows zip is passed over for one that has it.
-        assert_eq!(newest_lts(&index, "win-x64-zip", None).as_deref(), Some("v26.13.0"));
-        assert_eq!(newest_lts(&index, "aix-ppc64", None), None);
+        assert_eq!(newest_lts(&index, "win-x64-zip", None).unwrap(), "v26.13.0");
+        assert!(!newest_lts(&index, "aix-ppc64", None).unwrap_err().is::<IncompatibleMacos>());
     }
 
     #[test]
@@ -219,13 +241,17 @@ mod tests {
             { "version": "v22.22.0", "lts": "Jod", "files": ["osx-arm64-tar", "osx-x64-tar"] },
         ]);
         for key in ["osx-arm64-tar", "osx-x64-tar"] {
-            assert_eq!(newest_lts(&index, key, Some((11, 0))), None);
-            assert_eq!(newest_lts(&index, key, Some((13, 4))), None);
-            assert_eq!(newest_lts(&index, key, None), None);
-            assert_eq!(newest_lts(&index, key, Some((13, 5))).as_deref(), Some("v26.13.1"));
+            for host in [(11, 0), (13, 4)] {
+                let err = newest_lts(&index, key, Some(host)).unwrap_err();
+                let incompatible = err.downcast_ref::<IncompatibleMacos>().unwrap();
+                assert_eq!(incompatible.host, host);
+                assert_eq!(incompatible.minimum, (13, 5));
+            }
+            assert!(!newest_lts(&index, key, None).unwrap_err().is::<IncompatibleMacos>());
+            assert_eq!(newest_lts(&index, key, Some((13, 5))).unwrap(), "v26.13.1");
         }
-        assert!(macos_supports(Some((11, 0)), "v22.22.0"));
-        assert!(!macos_supports(Some((15, 0)), "v28.0.0"));
+        assert!(check_macos(Some((11, 0)), "v22.22.0").is_ok());
+        assert!(!check_macos(Some((15, 0)), "v28.0.0").unwrap_err().is::<IncompatibleMacos>());
     }
 
     #[test]
@@ -244,7 +270,8 @@ mod tests {
     }
 
     /// The fetch as the app does it, into an empty data folder: Node lands there and runs,
-    /// and fetching again with nothing newer only marks it fresh. Downloads 30-40 MB:
+    /// and fetching again with nothing newer only marks it fresh. On older Macs the
+    /// incompatible build is rejected without installing anything. Downloads 30-40 MB:
     /// `cargo test -- --ignored node_fetch_into_the_data_folder --nocapture`
     #[test]
     #[ignore]
@@ -257,7 +284,15 @@ mod tests {
             let http = reqwest::Client::new();
             assert!(installed(&http, &dir).is_none());
             let t = std::time::Instant::now();
-            let version = fetch(&http, &dir).await.unwrap();
+            let version = match fetch(&http, &dir).await {
+                Ok(version) => version,
+                Err(e) if e.is::<IncompatibleMacos>() => {
+                    assert!(!dir.join("node").exists(), "incompatible build left installation files");
+                    println!("kept QuickJS: {e}");
+                    return;
+                }
+                Err(e) => panic!("could not install Node: {e:#}"),
+            };
             println!("fetched {version} in {:.1} s", t.elapsed().as_secs_f64());
             let node = installed(&http, &dir).expect("installed after the fetch");
             let out = std::process::Command::new(&node).arg("--version").output().unwrap();
