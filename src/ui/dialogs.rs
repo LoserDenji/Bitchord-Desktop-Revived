@@ -6,10 +6,14 @@ use crate::backend::Req;
 use crate::model::Target;
 use crate::theme;
 
-use super::{Action, App, Dialog, notes, pages, widgets};
+use super::{Action, App, BackupPrompt, Dialog, Page, notes, pages, widgets};
 
 impl App {
     pub(super) fn draw_dialog(&mut self, ctx: &egui::Context) {
+        // The backup-stream prompt, below every dialog: a dialog over it would be its own.
+        if self.dialog.is_none() && self.draw_backup_prompt(ctx, false) {
+            return;
+        }
         if let Some(Dialog::ConfirmClearCache) = &self.dialog {
             let mut body = "Saved covers, translated lyrics and the lyrics check's browser data are deleted. They come back as you play and browse. Your library and your downloads stay as they are.".to_owned();
             if let Some(n) = self.storage.known().map(|u| u.cache).filter(|n| *n > 0) {
@@ -153,6 +157,78 @@ impl App {
         });
         let dismissed = modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if !done && !dismissed { self.dialog = Some(dialog); }
+    }
+
+    /// The prompt a refused bot-checked stream opens: turn the backup stream on (and
+    /// pick the song up where it stopped), open it in Settings, or dismiss it.
+    pub(super) fn draw_backup_prompt(&mut self, ctx: &egui::Context, compact: bool) -> bool {
+        if self.backup_prompt != BackupPrompt::Open {
+            return false;
+        }
+        if self.backup_stream {
+            self.backup_prompt = BackupPrompt::Hidden;
+            return false;
+        }
+
+        let id = egui::Id::unique("backup-stream-dialog");
+        let surface = notes::surface();
+        let surface = if compact { surface.inner_margin(8.0) } else { surface };
+        let modal = egui::Modal::new(id).frame(surface).backdrop_color(theme::shade(0.55)).show(ctx, |ui| {
+            if compact {
+                ui.set_width(310.0_f32.min(ctx.content_rect().width() - 28.0).max(0.0));
+                ui.label(egui::RichText::new("Use the backup stream?").font(theme::bold(15.0)));
+                ui.label("It can resume this song. A sign-in is required.");
+                return ui.horizontal_wrapped(|ui| {
+                    let enable = ui.button("Turn it on").clicked();
+                    let open = ui.button("Settings").clicked();
+                    let dismiss = ui.button("Not now").clicked();
+                    (enable, open, dismiss)
+                }).inner;
+            }
+            ui.set_width(400.0_f32.min(ctx.content_rect().width() - 48.0));
+            egui::Frame::new().inner_margin(egui::Margin { left: 26, right: 26, top: 24, bottom: 22 }).show(ui, |ui| {
+                ui.label(egui::RichText::new("Some songs stop on this network").font(theme::bold(22.0)).color(theme::text()));
+                ui.add_space(10.0);
+                let body = "YouTube refuses this network's usual stream partway through a song, on a VPN or the like. The backup stream plays through that; it needs a sign-in, and starts each song a little slower.";
+                ui.add(egui::Label::new(egui::RichText::new(body).font(theme::regular(14.0)).color(theme::text_dim())).wrap());
+                ui.add_space(22.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let enable = widgets::pill(ui, "Turn it on", None, true).clicked();
+                    let open = widgets::pill(ui, "Open Settings", None, false).clicked();
+                    let dismiss = widgets::pill(ui, "Not now", None, false).clicked();
+                    (enable, open, dismiss)
+                }).inner
+            }).inner
+        });
+        let (enable, open, dismiss) = modal.inner;
+        let pressed_outside = modal.is_top_modal && ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(event, egui::Event::PointerButton { pos, pressed: true, .. } if !modal.response.rect.contains(*pos))
+            })
+        });
+        if enable || open || dismiss || pressed_outside || modal.should_close() {
+            self.backup_prompt = BackupPrompt::Dismissed;
+        }
+        if enable {
+            self.backup_stream = true;
+            self.backend.set_backup_stream(true);
+            // The song waits where it stopped: reopen it there, now on the backup stream.
+            if let Some(at) = self.resume_at {
+                self.play_current_at(at, false);
+            }
+        }
+        if open {
+            self.settings_search.clear();
+            self.settings_tab = pages::SettingsTab::General;
+            self.reveal_backup_setting = true;
+            self.go(Page::Settings);
+            if compact {
+                self.mini.request(false);
+                ctx.request_repaint();
+            }
+        }
+        true
     }
 
     /// The Collaborate dialog's body: the two switches, the invite link and who has

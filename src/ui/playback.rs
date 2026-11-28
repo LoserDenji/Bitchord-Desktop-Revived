@@ -317,12 +317,18 @@ impl App {
     /// Ask for the queue YouTube Music keeps across devices when the app starts and
     /// whenever its window comes back into focus with nothing playing, so a song
     /// started on the phone is here to carry on with.
-    pub(super) fn sync_server_queue(&mut self, ctx: &egui::Context, now: f64) {
+    pub(super) fn sync_server_queue(&mut self, refocused: bool, now: f64) {
         if self.playing() {
             self.listened_at = unix_now();
         }
-        let focused = ctx.input(|i| i.focused);
-        let refocused = focused && !std::mem::replace(&mut self.was_focused, focused);
+        // Back in the window: likes changed on another device show. Liked Music's entries
+        // stand in for individual like reads, so it's asked for again, at most every ten
+        // minutes (upstream's Ratings::refresh_if_stale); the cross-device queue keeps its
+        // own minute below.
+        if refocused && self.liked_checked.is_none_or(|t| now - t >= 600.0) {
+            self.liked_checked = Some(now);
+            self.request_liked(false);
+        }
         let idle = !self.playing() && !self.buffering && !self.jam.active() && self.smoke.is_none();
         let due = self.queue_checked.is_none_or(|t| refocused && now - t > 60.0);
         if self.logged_in && idle && due && std::env::var_os("YTM_SMOKE").is_none() {
@@ -374,8 +380,13 @@ impl App {
     /// The song's download failed partway: pick it up where it stopped from a fresh
     /// stream, rather than letting it end early and skip to the next one. If that keeps
     /// failing, stay on the song, ready to resume from there.
-    pub(super) fn recover(&mut self, at: Duration, reason: &str) {
+    pub(super) fn recover(&mut self, at: Duration, failure: crate::stream::DownloadFailure) {
         const MAX_RECOVERIES: u32 = 3;
+        let reason = failure.reason;
+        if failure.offer_backup && self.offer_backup_stream(at) {
+            log::warn!("playback interrupted at {at:?} ({reason}); offering the backup stream");
+            return;
+        }
         if self.recoveries < MAX_RECOVERIES {
             self.recoveries += 1;
             log::warn!("playback interrupted at {at:?} ({reason}); reopening (try {})", self.recoveries);
@@ -383,12 +394,32 @@ impl App {
             return;
         }
         log::warn!("playback interrupted at {at:?} ({reason}); giving up");
-        // The player has already run dry; Stop would also reset the position to 0:00.
+        self.hold_interrupted_track(at);
+        let title = self.current().map(|t| t.title.clone()).unwrap_or_default();
+        self.toast(format!("Lost the connection while playing \"{title}\". Press play to pick up where it stopped."));
+    }
+
+    /// Offer the backup-stream prompt for a bot-checked stream: it takes over the song,
+    /// held where it stopped. False if it can't (already on, dismissed, a jam guest, or
+    /// nothing playing).
+    pub(super) fn offer_backup_stream(&mut self, at: Duration) -> bool {
+        use super::BackupPrompt;
+        if self.backup_stream || self.backup_prompt == BackupPrompt::Dismissed || self.jam.follows() || self.current().is_none() {
+            return false;
+        }
+        self.backup_prompt = BackupPrompt::Open;
+        self.skip_streak = 0;
+        self.recoveries = 0;
+        self.audio.send(AudioCmd::Pause);
+        self.hold_interrupted_track(at);
+        true
+    }
+
+    /// The player has already run dry; Stop would also reset the position to 0:00.
+    fn hold_interrupted_track(&mut self, at: Duration) {
         self.audio.status.position_ms.store(at.as_millis() as u64, Ordering::Relaxed);
         self.resume_at = Some(at);
         self.buffering = false;
-        let title = self.current().map(|t| t.title.clone()).unwrap_or_default();
-        self.toast(format!("Lost the connection while playing \"{title}\". Press play to pick up where it stopped."));
     }
 
     pub(super) fn play_current(&mut self) {

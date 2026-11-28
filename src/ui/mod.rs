@@ -33,7 +33,7 @@ mod sorts;
 mod storage;
 mod titlebar;
 pub use mini::set_hwnd as set_mini_hwnd;
-pub use titlebar::{custom as custom_titlebar, init as init_titlebar, inset as titlebar_inset, set_hwnd as set_titlebar_hwnd};
+pub use titlebar::{custom as custom_titlebar, drop_caption, init as init_titlebar, inset as titlebar_inset, set_hwnd as set_titlebar_hwnd};
 #[cfg(target_os = "macos")]
 pub use titlebar::set_view as set_titlebar_view;
 mod transfer;
@@ -225,6 +225,16 @@ enum Dialog {
     /// The artist page's About, from the card on the banner: the channel's picture and
     /// the full description, which the card only previews.
     ArtistAbout { name: String, description: String, avatar: Option<String>, subscribers: Option<u64> },
+}
+
+/// The backup-stream prompt's state: hidden until a bot-checked stream is refused,
+/// dismissed once the listener answers it (either way).
+#[derive(Default, PartialEq, Eq)]
+enum BackupPrompt {
+    #[default]
+    Hidden,
+    Open,
+    Dismissed,
 }
 
 /// Songs picked in a list for a batch action: Ctrl-click toggles one, Shift-click a range,
@@ -478,6 +488,9 @@ pub struct App {
     /// device has played since. When the cross-device queue was last asked for (`now`).
     listened_at: u64,
     queue_checked: Option<f64>,
+    /// When Liked Music was last asked for on the window regaining focus (see
+    /// `sync_server_queue`): likes changed elsewhere show, at most every ten minutes.
+    liked_checked: Option<f64>,
     was_focused: bool,
     /// Album / playlist / artist the queue was started from, so its card shows pause.
     queue_source: Option<Target>,
@@ -628,7 +641,13 @@ pub struct App {
     /// The level volume normalization brings songs to.
     normalize: crate::audio::Normalize,
     log_volume: bool,
+    /// Pausing and playing again fade, rather than cut off and start at once.
+    pause_fade: bool,
     high_quality: bool,
+    backup_stream: bool,
+    backup_prompt: BackupPrompt,
+    reveal_backup_setting: bool,
+    backup_setting_highlight_until: f64,
     /// Play an official music video as its song version when one is found.
     play_songs: bool,
     /// Show music videos moving, playing their own audio to stay in time.
@@ -1068,6 +1087,8 @@ impl App {
         let logged_in = backend.is_logged_in();
         // Before any request: a song started at launch (dev hooks) must see this setting.
         backend.set_high_quality(get("high_quality").is_none_or(|v| v == "1"));
+        let backup_stream = get("backup_stream").is_some_and(|v| v == "1");
+        backend.set_backup_stream(backup_stream);
         let hide_explicit = get("hide_explicit").is_some_and(|v| v == "1");
         let restricted_mode = get("restricted_mode").is_some_and(|v| v == "1");
         backend.set_hide_explicit(hide_explicit, restricted_mode);
@@ -1171,6 +1192,7 @@ impl App {
             resume_as_song: false,
             listened_at: 0,
             queue_checked: None,
+            liked_checked: None,
             was_focused: false,
             queue_source: None,
             played_title: None,
@@ -1256,7 +1278,12 @@ impl App {
             watched_frame: 0.0,
             normalize: get("normalize").map_or_else(Default::default, |v| crate::audio::Normalize::from_key(&v)),
             log_volume: get("log_volume").is_none_or(|v| v == "1"),
+            pause_fade: get("pause_fade").is_none_or(|v| v == "1"),
             high_quality: get("high_quality").is_none_or(|v| v == "1"),
+            backup_stream,
+            backup_prompt: BackupPrompt::default(),
+            reveal_backup_setting: false,
+            backup_setting_highlight_until: 0.0,
             play_songs: get("play_songs").is_none_or(|v| v == "1"),
             show_video: dev_var("YTM_VIDEO").is_some() || get("show_video").is_some_and(|v| v == "1"),
             video_quality: get("video_quality").and_then(|v| v.parse().ok()).filter(|h| VIDEO_QUALITIES.contains(h)).unwrap_or(720),
@@ -1558,6 +1585,7 @@ impl App {
         app.rebuild_home_rows();
         app.audio.set_normalize(app.normalize);
         app.set_crossfade();
+        app.audio.set_pause_fade(app.pause_fade);
         app.set_eq();
         app
     }
@@ -2178,7 +2206,6 @@ impl eframe::App for App {
         self.mini.tick(ctx, now);
         self.tray_window(ctx, frame);
         self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
-        self.sync_tempo();
         if let Some((slot, result)) = self.discord_artwork.take_import() {
             match result {
                 Ok(file) => self.discord_prefs.images[slot].file = Some(file),
@@ -2188,7 +2215,28 @@ impl eframe::App for App {
         self.sync_discord(ctx);
         self.sync_song_notification(ctx);
         self.sync_lastfm();
-        self.sync_server_queue(ctx, now);
+        let focused = ctx.input(|i| i.focused);
+        let refocused = focused && !self.was_focused;
+        self.was_focused = focused;
+        // In the tray, or minimized: nothing would be seen, so nothing is drawn. eframe
+        // skips a minimized window itself, but not one hidden in the tray (it can't tell on
+        // Windows or X11), and would otherwise draw the whole window, background and all,
+        // for every frame the player asks for. The player's bookkeeping above is all in
+        // `logic`; `ui` below returns before drawing anything while hidden.
+        if self.window_hidden {
+            if self.playing() || self.buffering {
+                ctx.request_repaint_after(Duration::from_millis(250));
+            } else {
+                // Fully idle and hidden, nothing else schedules a repaint: keep a
+                // slow heartbeat going anyway, so a show request (from the tray, or
+                // a later launch) is always picked up within seconds, even if its
+                // wake-up was lost.
+                ctx.request_repaint_after(Duration::from_secs(2));
+            }
+            return;
+        }
+        self.sync_tempo();
+        self.sync_server_queue(refocused, now);
         self.tick_updates(ctx, now);
         let np = widgets::NowPlaying {
             song: self.current_id().map(str::to_owned),
@@ -2216,18 +2264,7 @@ impl eframe::App for App {
         // lyrics ask for every frame while they animate (the karaoke sweep must be
         // smooth). Each egui frame re-lays-out the UI, so frame rate is the main CPU cost.
         let playing = self.playing();
-        if self.window_hidden {
-            // In the tray or minimized: nothing to draw, only the player bookkeeping.
-            if playing || self.buffering {
-                ctx.request_repaint_after(Duration::from_millis(250));
-            } else {
-                // Fully idle and hidden, nothing else schedules a repaint: keep a
-                // slow heartbeat going anyway, so a show request (from the tray, or
-                // a later launch) is always picked up within seconds, even if its
-                // wake-up was lost.
-                ctx.request_repaint_after(Duration::from_secs(2));
-            }
-        } else if self.np_open && playing && !self.mini.busy() {
+        if self.np_open && playing && !self.mini.busy() {
             // Blur off halves the rate — but the record's spin and a moving cover
             // read as stutter at half of it, so they keep the full one.
             let spinning = !self.reduce_motion && self.look().cover.shape == crate::preset::Shape::Record;
@@ -2309,8 +2346,10 @@ impl eframe::App for App {
             mini::video_pip(self, ui, now);
             // Any shape: by every edge and corner, unlike the strip.
             titlebar::resize_edges(&ctx);
-            // "Sign in to like songs" and such: shown here too, not timed out unseen.
-            shell::toast(self, &ctx, now);
+            // A toast would cover the compact prompt.
+            if !self.draw_backup_prompt(&ctx, true) {
+                shell::toast(self, &ctx, now);
+            }
             self.mini.fade_in(&ctx, now, Color32::BLACK);
             dev_screenshot(&ctx, now);
             return;
@@ -2323,8 +2362,9 @@ impl eframe::App for App {
             if layout == mini::Layout::Mini {
                 mini::strip(self, ui, now);
                 titlebar::resize_sides(&ctx);
-                // "Sign in to like songs" and such: shown here too, not timed out unseen.
-                shell::toast(self, &ctx, now);
+                if !self.draw_backup_prompt(&ctx, true) {
+                    shell::toast(self, &ctx, now);
+                }
                 self.mini.fade_in(&ctx, now, shell::base_color(self));
             }
             dev_screenshot(&ctx, now);
@@ -2507,7 +2547,9 @@ impl eframe::App for App {
         storage.set_string("account_cache", cache.and_then(|c| serde_json::to_string(&c).ok()).unwrap_or_default());
         storage.set_string("normalize", self.normalize.key().to_owned());
         storage.set_string("log_volume", b(self.log_volume));
+        storage.set_string("pause_fade", b(self.pause_fade));
         storage.set_string("high_quality", b(self.high_quality));
+        storage.set_string("backup_stream", b(self.backup_stream));
         storage.set_string("play_songs", b(self.play_songs));
         storage.set_string("show_video", b(self.show_video));
         storage.set_string("video_quality", self.video_quality.to_string());

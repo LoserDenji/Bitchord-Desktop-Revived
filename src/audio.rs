@@ -57,7 +57,7 @@ pub enum AudioEvent {
     Ending { generation: u64 },
     /// The song's download failed, so playback stopped at `at` (or a seek to `at`
     /// couldn't be served). Reopening the song there resolves a fresh stream.
-    Interrupted { generation: u64, at: Duration, reason: String },
+    Interrupted { generation: u64, at: Duration, failure: stream::DownloadFailure },
     Error(String),
 }
 
@@ -99,6 +99,18 @@ pub struct AudioStatus {
     latency_ms: AtomicU32,
     /// Crossfade length in ms; 0 = off.
     crossfade_ms: AtomicU32,
+    /// Paused, or on the way there: songs fade to silence, and back up when it's cleared
+    /// (see `Meter`).
+    hushed: AtomicBool,
+    /// How far that fade has turned the playing song down, 0..1 (f32 bits), for a decoder
+    /// put in meanwhile (a seek's) to carry on from.
+    faded: AtomicU32,
+    /// Counts the players pausing outright: a song coming back from that fades in from
+    /// silence, whatever its fade had got to (a pause cut short by a stalled download, or
+    /// by headphones unplugged).
+    silenced: AtomicU32,
+    /// Pausing and playing again are instant, with no fade (Settings › Sound).
+    instant_pause: AtomicBool,
     /// The equalizer's settings, applied to everything on its way to the device.
     eq: Arc<eq::EqParams>,
     /// Playback speed, applied to each song as it plays.
@@ -202,6 +214,12 @@ impl AudioStatus {
     fn set_position(&self, ms: u64) {
         self.position_ms.store(ms, Ordering::Relaxed);
         self.sampled_at.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// The players are pausing outright: they come back up from silence.
+    fn silence(&self) {
+        self.faded.store(1f32.to_bits(), Ordering::Relaxed);
+        self.silenced.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -376,12 +394,20 @@ impl MixFx {
 /// Pass-through source that tracks loudness (RMS over ~23 ms windows, smoothed) and
 /// applies crossfade ramps. `fade_out` is set by the audio thread to the fade-out
 /// length in ms (0 = keep playing); a new value restarts it from the current gain.
+/// On top of that, it fades to silence while `hushed`, and back up from wherever it got
+/// to when that's cleared, so pausing and playing again quickly never jumps.
 struct Meter<S> {
     inner: S,
     status: Arc<AudioStatus>,
     fade_out: Arc<AtomicU32>,
     seen_out: u32,
     ramp: Option<Ramp>,
+    /// The pause fade's gain, how far it moves each sample (with the fade on, and off),
+    /// and `silenced` as last seen.
+    pause: f32,
+    pause_step: f32,
+    instant_step: f32,
+    seen_silenced: u32,
     /// Automix's handoff curves rather than the straight-line fade.
     mix: bool,
     acc: f32,
@@ -488,7 +514,12 @@ impl<S: rodio::Source> Meter<S> {
         if let Some(fx) = &mut fx {
             fx.begin(analysis.get().copied().flatten().unwrap_or(0.0));
         }
-        let mut m = Self { inner, status, fade_out, seen_out: 0, ramp: None, mix, acc: 0.0, n: 0, smooth: 0.0, tempo, analysis, analysis_acc: 0.0, fx };
+        // A decoder put in mid-fade (a seek's) carries on from there; while paused, from silence.
+        let pause = 1.0 - f32::from_bits(status.faded.load(Ordering::Relaxed));
+        let seen_silenced = status.silenced.load(Ordering::Relaxed);
+        let mut m = Self { inner, status, fade_out, seen_out: 0, ramp: None, pause, pause_step: 0.0, instant_step: 0.0, seen_silenced, mix, acc: 0.0, n: 0, smooth: 0.0, tempo, analysis, analysis_acc: 0.0, fx };
+        m.pause_step = 1.0 / m.samples(PAUSE_FADE_MS) as f32;
+        m.instant_step = 1.0 / m.samples(INSTANT_FADE_MS) as f32;
         if fade_in_ms > 0 {
             m.ramp = Some(if mix { Ramp::MixIn { at: 0, len: m.samples(fade_in_ms) } } else { Ramp::In { at: 0, len: m.samples(fade_in_ms) } });
         }
@@ -539,6 +570,21 @@ impl<S: rodio::Source> Iterator for Meter<S> {
                 Ramp::Out { at, .. } | Ramp::MixOut { at, .. } => *at += 1,
             }
         }
+        let silenced = self.status.silenced.load(Ordering::Relaxed);
+        if silenced != self.seen_silenced {
+            self.seen_silenced = silenced;
+            self.pause = 0.0;
+        }
+        let target = if self.status.hushed.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
+        if self.pause != target {
+            let step = if self.status.instant_pause.load(Ordering::Relaxed) { self.instant_step } else { self.pause_step };
+            self.pause = if target > self.pause { (self.pause + step).min(1.0) } else { (self.pause - step).max(0.0) };
+            // Not a song fading out: the playing one is what a new decoder follows.
+            if self.seen_out == 0 {
+                self.status.faded.store((1.0 - self.pause).to_bits(), Ordering::Relaxed);
+            }
+        }
+        s *= self.pause;
         self.acc += s * s;
         self.n += 1;
         if self.n == 2048 {
@@ -632,6 +678,13 @@ impl AudioHandle {
         self.status.crossfade_ms.store(secs * 1000, Ordering::Relaxed);
     }
 
+    /// Whether pausing fades out and playing again fades back in; off, both are instant.
+    pub fn set_pause_fade(&self, on: bool) {
+        self.status.instant_pause.store(!on, Ordering::Relaxed);
+        // Wakes the audio thread: a pause fading out now finishes quickly.
+        self.send(AudioCmd::Volume(self.volume()));
+    }
+
     /// Takes effect at once, gliding there. `no_clip` turns everything down by the
     /// curve's highest boost, leaving room for it in loud songs.
     pub fn set_eq(&self, on: bool, gains: &eq::Gains, no_clip: bool) {
@@ -691,9 +744,9 @@ fn build_seek(mut j: SeekJob, pending: &std::sync::Mutex<Option<SeekJob>>, tx: &
         Ok((decoder, pos)) => {
             let _ = tx.send(AudioCmd::Replace { generation, seek, decoder, at: pos, seekable });
         }
-        Err(e) => match shared.error() {
-            Some(reason) => {
-                let _ = events.send(AudioEvent::Interrupted { generation, at: pos, reason });
+        Err(e) => match shared.failure() {
+            Some(failure) => {
+                let _ = events.send(AudioEvent::Interrupted { generation, at: pos, failure });
             }
             None => {
                 let _ = events.send(AudioEvent::Error(format!("Seek failed: {e}")));
@@ -738,6 +791,29 @@ impl Drop for Fading {
 /// Fade-outs shorter than this would click: a crossfade cut short by another skip, or
 /// one too close to the end of the song.
 const QUICK_FADE_MS: u32 = 40;
+
+/// How long pausing fades out, and resuming fades back in, like foobar2000 and Spotify:
+/// short enough not to hold anything up, long enough not to sound cut off.
+const PAUSE_FADE_MS: u32 = 200;
+
+/// With the fade off (Settings › Sound), pausing and playing again still ramp, this
+/// briefly: too short to hear, but cutting off at full volume would click.
+const INSTANT_FADE_MS: u32 = 5;
+
+/// How long after a pause the players really pause: once the fade has gone through the
+/// device's buffer.
+const PAUSE_AFTER: Duration = Duration::from_millis(PAUSE_FADE_MS as u64 + 60);
+/// The same with the fade off.
+const INSTANT_PAUSE_AFTER: Duration = Duration::from_millis(INSTANT_FADE_MS as u64 + 60);
+
+/// When a pause due at `pause_at` really pauses the players: with the fade turned off
+/// on the way (`instant`), once the rest of it has gone the quick way.
+fn pause_due(pause_at: Option<Instant>, instant: bool, now: Instant) -> Option<Instant> {
+    match instant {
+        true => pause_at.map(|at| at.min(now + INSTANT_PAUSE_AFTER)),
+        false => pause_at,
+    }
+}
 
 /// How long a song keeps playing at full volume for the next one to load before it
 /// fades out anyway.
@@ -1113,9 +1189,12 @@ fn run(
     // Dev hook: YTM_DEVICE_LOST=<secs> acts as if the output device disconnected that
     // long into the first song (the error callback firing for a device that's gone).
     let mut dev_lost = std::env::var("YTM_DEVICE_LOST").ok().and_then(|v| v.parse::<f32>().ok()).map(Duration::from_secs_f32);
+    // When a pause fading out really pauses the players.
+    let mut pause_at: Option<Instant> = None;
     loop {
         // Poll while playing so the position stays fresh and the end is noticed; idle otherwise.
         let timeout = if (current != 0 || !fading.is_empty()) && !player.is_paused() { Duration::from_millis(100) } else { Duration::from_secs(3600) };
+        let timeout = pause_at.map_or(timeout, |at| timeout.min(at.saturating_duration_since(Instant::now())));
         match rx.recv_timeout(timeout) {
             Ok(AudioCmd::Start { generation, decoder, shared: s, at }) => {
                 if generation != status.wanted_gen.load(Ordering::Relaxed) {
@@ -1128,6 +1207,12 @@ fn run(
                     wake();
                 }
                 clear(&mut player, &output);
+                // A song asked for while paused plays. What was fading out under the paused
+                // one goes, rather than come back up.
+                pause_at = None;
+                if status.hushed.swap(false, Ordering::Relaxed) {
+                    fading.clear();
+                }
                 let gain = norm_gain(&status, Some(&s));
                 show_norm(&status, Some(&s));
                 log::info!("audio: loudness {:?} dB, normalization gain {gain:.3}", s.loudness_db);
@@ -1254,10 +1339,16 @@ fn run(
             }
             Ok(AudioCmd::Pause) => {
                 log::debug!("audio: pause at {:?}", song_pos(&song_ms));
-                player.pause();
-                fading.iter().for_each(|f| f.player.pause());
+                // Fade out first; the players pause once it's done (below). Another pause
+                // meanwhile (the media controls' and the window's) doesn't put that off.
+                // With the fade off, it's over in a few ms.
+                status.hushed.store(true, Ordering::Relaxed);
+                if !player.is_paused() && pause_at.is_none() {
+                    let after = if status.instant_pause.load(Ordering::Relaxed) { INSTANT_PAUSE_AFTER } else { PAUSE_AFTER };
+                    pause_at = Some(Instant::now() + after);
+                }
                 status.playing.store(false, Ordering::Relaxed);
-                // So the UI (and the system media controls it syncs) see it even when idle.
+                // So the UI (and the system media controls) see it even when idle.
                 wake();
             }
             Ok(AudioCmd::Resume) => {
@@ -1267,6 +1358,9 @@ fn run(
                     if output.sink.is_none() || output.default_changed() {
                         output.open(tx.clone(), &status);
                     }
+                    // Fades back in from where the pause got to (in a few ms with the fade off).
+                    status.hushed.store(false, Ordering::Relaxed);
+                    pause_at = None;
                     player.play();
                     fading.iter().for_each(|f| f.player.play());
                     status.playing.store(true, Ordering::Relaxed);
@@ -1392,6 +1486,9 @@ fn run(
                 // unplugging headphones does, rather than carry on out of the speakers.
                 if output.device != was && !player.is_paused() && (current != 0 || !fading.is_empty()) {
                     log::info!("audio: output device gone, pausing");
+                    status.hushed.store(true, Ordering::Relaxed);
+                    status.silence();
+                    pause_at = None;
                     player.pause();
                     fading.iter().for_each(|f| f.player.pause());
                     status.playing.store(false, Ordering::Relaxed);
@@ -1427,6 +1524,14 @@ fn run(
             output.device = Some("dev-hook-gone".into());
             output.lost.store(true, Ordering::Relaxed);
             let _ = tx.send(AudioCmd::DeviceLost);
+        }
+        // A pause has faded out (the quick way, if the fade was turned off on the way).
+        pause_at = pause_due(pause_at, status.instant_pause.load(Ordering::Relaxed), Instant::now());
+        if pause_at.is_some_and(|at| at <= Instant::now()) {
+            pause_at = None;
+            status.silence();
+            player.pause();
+            fading.iter().for_each(|f| f.player.pause());
         }
         // Follow the default device while playing (headphones connecting take over).
         // A failed device is `DeviceLost`'s to handle (it decides whether to pause).
@@ -1467,10 +1572,12 @@ fn run(
             let pos = song_pos(&song_ms);
             status.set_position(pos.as_millis() as u64);
             // Start the next song early, to crossfade into it. Not for songs barely
-            // longer than the fade. (The fade's in real time: more of the song when faster.)
+            // longer than the fade, nor while a pause fades out (it'd start the next one
+            // playing). (The fade's in real time: more of the song when faster.)
             let crossfade = Duration::from_millis(mix_ms(&status, length) as u64).mul_f32(status.speed());
             if !ending_sent
                 && !crossfade.is_zero()
+                && !status.hushed.load(Ordering::Relaxed)
                 && let Some(d) = length
                 && d > crossfade * 2
                 && pos + crossfade >= d
@@ -1483,10 +1590,12 @@ fn run(
                 let _ = events.send(AudioEvent::Ending { generation: current });
                 wake();
             }
-            if player.empty() {
+            // Paused just before the end, the song's over only once it's played again:
+            // the next one mustn't start playing.
+            if player.empty() && !status.hushed.load(Ordering::Relaxed) {
                 // A failed download ends the decoder early: that's not the song ending.
-                let event = match shared.as_ref().and_then(|s| s.error()) {
-                    Some(reason) => AudioEvent::Interrupted { generation: current, at: song_pos(&song_ms), reason },
+                let event = match shared.as_ref().and_then(|s| s.failure()) {
+                    Some(failure) => AudioEvent::Interrupted { generation: current, at: song_pos(&song_ms), failure },
                     None => AudioEvent::Finished { generation: current },
                 };
                 let _ = events.send(event);
@@ -1502,6 +1611,90 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pausing_fades_out_and_playing_again_fades_back_from_there() {
+        use std::num::NonZero;
+        // 1 kHz mono of full-scale samples: 1 ms = 1 sample.
+        let ones = || rodio::buffer::SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(1000).unwrap(), vec![1.0; 1000]);
+        let fade = PAUSE_FADE_MS as usize;
+        let status = Arc::new(AudioStatus::default());
+        let mut m = Meter::new(ones(), status.clone(), 0, Arc::new(AtomicU32::new(0)), false, Default::default());
+        assert_eq!(m.next(), Some(1.0));
+        status.hushed.store(true, Ordering::Relaxed);
+        let down: Vec<f32> = m.by_ref().take(fade / 2).collect();
+        assert!(down.windows(2).all(|w| w[1] < w[0]));
+        assert!((down[fade / 2 - 1] - 0.5).abs() < 0.01);
+        // A seek's new decoder put in now carries on from there.
+        assert!((Meter::new(ones(), status.clone(), 0, Arc::new(AtomicU32::new(0)), false, Default::default()).pause - 0.5).abs() < 0.01);
+        // Played again half way down: back up from there, not from silence or full.
+        status.hushed.store(false, Ordering::Relaxed);
+        let up: Vec<f32> = m.by_ref().take(fade / 2).collect();
+        assert!((up[0] - 0.5).abs() < 0.01);
+        assert!((up[fade / 2 - 1] - 1.0).abs() < 1e-4);
+        status.hushed.store(true, Ordering::Relaxed);
+        // Silent once the fade is through, and it stays there.
+        assert!(m.by_ref().skip(fade).take(10).all(|s| s == 0.0));
+        // A new decoder put in while paused (a seek) waits silent, then fades in.
+        let mut seeked = Meter::new(ones(), status.clone(), 0, Arc::new(AtomicU32::new(0)), false, Default::default());
+        assert_eq!(seeked.next(), Some(0.0));
+        status.hushed.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn with_the_fade_off_pausing_and_playing_again_take_a_few_ms() {
+        use std::num::NonZero;
+        let ones = || rodio::buffer::SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(1000).unwrap(), vec![1.0; 1000]);
+        let quick = INSTANT_FADE_MS as usize;
+        let status = Arc::new(AudioStatus::default());
+        status.instant_pause.store(true, Ordering::Relaxed);
+        let mut m = Meter::new(ones(), status.clone(), 0, Arc::new(AtomicU32::new(0)), false, Default::default());
+        assert_eq!(m.next(), Some(1.0));
+        // Down to silence in a few samples, not cut off at full (that would click).
+        status.hushed.store(true, Ordering::Relaxed);
+        let down: Vec<f32> = m.by_ref().take(quick).collect();
+        assert!(down[0] < 1.0 && down[0] > 0.5);
+        assert!(down.windows(2).all(|w| w[1] < w[0]));
+        assert!(down[quick - 1] < 1e-4);
+        // The players pause once that's through.
+        status.silence();
+        assert_eq!(m.next(), Some(0.0));
+        // Played again: back up as quickly, as is a seek's decoder put in while paused.
+        let mut seeked = Meter::new(ones(), status.clone(), 0, Arc::new(AtomicU32::new(0)), false, Default::default());
+        status.hushed.store(false, Ordering::Relaxed);
+        let up: Vec<f32> = m.by_ref().take(quick).collect();
+        assert!(up[0] > 0.0 && up[0] < 0.5);
+        assert!(up.windows(2).all(|w| w[1] > w[0]));
+        assert!((up[quick - 1] - 1.0).abs() < 1e-4);
+        assert!(seeked.next().unwrap() < 0.5);
+        assert!((seeked.nth(quick - 2).unwrap() - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn turning_the_fade_off_mid_pause_finishes_it_the_quick_way() {
+        use std::num::NonZero;
+        let ones = || rodio::buffer::SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(1000).unwrap(), vec![1.0; 1000]);
+        let status = Arc::new(AudioStatus::default());
+        let mut m = Meter::new(ones(), status.clone(), 0, Arc::new(AtomicU32::new(0)), false, Default::default());
+        status.hushed.store(true, Ordering::Relaxed);
+        let half = m.by_ref().take(PAUSE_FADE_MS as usize / 2).last().unwrap();
+        assert!((half - 0.5).abs() < 0.01);
+        // Turned off half way down: the rest goes in a few samples, from where it got to.
+        status.instant_pause.store(true, Ordering::Relaxed);
+        let rest: Vec<f32> = m.by_ref().take(INSTANT_FADE_MS as usize).collect();
+        assert!(rest[0] < half && rest[0] > 0.0);
+        assert!(rest.last().unwrap() < &1e-4);
+
+        // And the audio thread pauses the players once that's through, not the long fade.
+        let now = Instant::now();
+        let long = Some(now + PAUSE_AFTER);
+        assert_eq!(pause_due(long, false, now), long);
+        assert_eq!(pause_due(long, true, now), Some(now + INSTANT_PAUSE_AFTER));
+        // One due sooner stays as it is; none stays none.
+        let soon = Some(now + Duration::from_millis(1));
+        assert_eq!(pause_due(soon, true, now), soon);
+        assert_eq!(pause_due(None, true, now), None);
+    }
 
     #[test]
     fn emptying_the_player_doesnt_wait_on_a_device_let_go() {

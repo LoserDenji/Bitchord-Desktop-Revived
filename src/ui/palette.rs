@@ -91,11 +91,11 @@ struct Entry {
 
 /// Settings' categories and sections, by their titles. One named as its category opens
 /// that; any other is looked for with Settings' own search.
-const SECTIONS: [(&str, SettingsTab); 33] = {
+const SECTIONS: [(&str, SettingsTab); 34] = {
     use SettingsTab::*;
     [
         ("Account", Account),
-        ("Connections", Account),
+        ("Connections", Connections),
         ("Import", Account),
         ("Discord", Discord),
         ("Discord connection", Discord),
@@ -119,6 +119,7 @@ const SECTIONS: [(&str, SettingsTab); 33] = {
         ("Lyrics", Lyrics),
         ("Appearance", Appearance),
         ("Artist pages", Appearance),
+        ("General", General),
         ("Community", General),
         ("Window", General),
         ("Downloads", General),
@@ -500,6 +501,10 @@ mod tests {
     fn sections_are_in_settings() {
         // A renamed section would else turn into a plain search for its old name.
         let code = [include_str!("pages.rs"), include_str!("keybinds.rs"), include_str!("presence.rs"), include_str!("storage.rs"), include_str!("transfer.rs")].concat();
+        // Every tab is listed as itself, so running it opens the tab.
+        for tab in SettingsTab::ALL {
+            assert!(SECTIONS.iter().any(|&(name, t)| t == tab && name == tab.label()), "{:?} isn't listed as its own tab", tab.label());
+        }
         for (name, tab) in SECTIONS.into_iter().filter(|(name, tab)| *name != tab.label()) {
             assert!(code.contains(&format!("(ui, \"{name}\"")), "no section titled {name:?} in {:?}", tab.label());
         }

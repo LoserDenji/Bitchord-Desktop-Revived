@@ -101,7 +101,7 @@ impl App {
                     }
                 }
                 AudioEvent::Ending { .. } => {}
-                AudioEvent::Interrupted { generation, at, reason } if generation == self.generation => self.recover(at, &reason),
+                AudioEvent::Interrupted { generation, at, failure } if generation == self.generation => self.recover(at, failure),
                 AudioEvent::Interrupted { .. } => {}
                 AudioEvent::Error(e) => self.toast(e),
             }
@@ -641,7 +641,7 @@ impl App {
             Resp::MusicVideo { song, video } => {
                 self.music_videos.insert(song, video);
             }
-            Resp::PlayError { generation, msg } => self.on_play_error(generation, msg),
+            Resp::PlayError { generation, msg, offer_backup_at } => self.on_play_error(generation, msg, offer_backup_at),
             Resp::AudioInfo { generation, info } => {
                 // The stream that answered may already have been skipped past.
                 if generation == self.generation {
@@ -970,9 +970,13 @@ impl App {
         }
     }
 
-    /// A song couldn't play: skip it, or stop when skipping can't help.
-    fn on_play_error(&mut self, generation: u64, msg: String) {
+    /// A song couldn't play: skip it, or stop when skipping can't help. A bot-checked
+    /// stream refused is the backup stream's to offer first.
+    fn on_play_error(&mut self, generation: u64, msg: String, offer_backup_at: Option<Duration>) {
         if generation == self.generation {
+            if offer_backup_at.is_some_and(|at| self.offer_backup_stream(at)) {
+                return;
+            }
             self.buffering = false;
             if self.mix_from.take().is_some() {
                 self.pending_mix = None;

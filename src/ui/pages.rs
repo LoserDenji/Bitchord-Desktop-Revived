@@ -1986,6 +1986,7 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
 pub(super) enum SettingsTab {
     #[default]
     Account,
+    Connections,
     Discord,
     Playback,
     Sources,
@@ -1996,11 +1997,12 @@ pub(super) enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [Self; 8] = [Self::Account, Self::Discord, Self::Playback, Self::Sources, Self::Lyrics, Self::Appearance, Self::General, Self::Shortcuts];
+    pub(super) const ALL: [Self; 9] = [Self::Account, Self::Connections, Self::Discord, Self::Playback, Self::Sources, Self::Lyrics, Self::Appearance, Self::General, Self::Shortcuts];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Account => "Account",
+            Self::Connections => "Connections",
             Self::Discord => "Discord",
             Self::Playback => "Playback",
             Self::Sources => "Music sources",
@@ -2150,6 +2152,9 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
                 super::transfer::settings_section(app, ui);
             }
         }
+        // A Settings search already sees these controls under Account.
+        SettingsTab::Connections if !filtering() => settings_connections(app, ui),
+        SettingsTab::Connections => {},
         SettingsTab::Discord => super::presence::settings(app, ui),
         SettingsTab::Playback => settings_playback(app, ui),
         SettingsTab::Sources => {
@@ -2381,6 +2386,12 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
         setting_row(ui, "Logarithmic volume", Some("Space the volume slider out the way ears hear loudness, so quiet levels aren't squeezed into its first few pixels."), |ui| {
             if toggle(ui, &mut app.log_volume, "Logarithmic volume").changed() {
                 app.audio.set_log_volume(app.log_volume);
+            }
+        });
+        divider(ui);
+        setting_row(ui, "Fade when pausing", Some("Turn the music down when you pause, and back up when you play again, over a fifth of a second. Off, it stops and starts right away."), |ui| {
+            if toggle(ui, &mut app.pause_fade, "Fade when pausing").changed() {
+                app.audio.set_pause_fade(app.pause_fade);
             }
         });
         divider(ui);
@@ -3788,6 +3799,30 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
 /// restart when the setting changed.
 fn network(app: &mut App, ui: &mut Ui) {
     use crate::proxy::{self, Setting};
+    const HIGHLIGHT_SECS: f64 = 3.0;
+    setting_row(ui, "Backup stream", Some("Play songs through Safari's HLS when YouTube refuses the usual stream partway, as VPNs make it. Starts each song a little slower."), |ui| {
+        let response = toggle(ui, &mut app.backup_stream, "Backup stream");
+        let now = ui.input(|input| input.time);
+        if std::mem::take(&mut app.reveal_backup_setting) {
+            response.scroll_to_me(Some(egui::Align::Center));
+            response.request_focus();
+            app.backup_setting_highlight_until = now + HIGHLIGHT_SECS;
+        }
+        let remaining = app.backup_setting_highlight_until - now;
+        if remaining > 0.0 {
+            let elapsed = (HIGHLIGHT_SECS - remaining) as f32;
+            let pulse = 0.5 + 0.5 * (elapsed * std::f32::consts::TAU).cos();
+            let fade = (remaining / 0.25).min(1.0) as f32;
+            let color = theme::with_alpha(app.accent_color(), (0.2 + 0.8 * pulse) * fade);
+            let stroke = egui::Stroke::new(2.0, color);
+            ui.painter().rect_stroke(response.rect.expand(4.0), response.rect.height() / 2.0 + 4.0, stroke, egui::StrokeKind::Outside);
+            ui.ctx().request_repaint();
+        }
+        if response.changed() {
+            app.backend.set_backup_stream(app.backup_stream);
+        }
+    });
+    divider(ui);
     let same = |a: &Setting, b: &Setting| std::mem::discriminant(a) == std::mem::discriminant(b);
     let mut pick = None;
     setting_row(ui, "Proxy", Some("Send everything BitChord fetches through a proxy: songs, lyrics, sign-in and Listen together."), |ui| {
