@@ -556,6 +556,9 @@ const INTER: [&[u8]; 3] = [
     include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("../assets/fonts/Inter-ExtraBold.ttf"),
 ];
+// Noto Sans Devanagari v2.007 (SIL OFL 1.1), the upstream weight-only variable font.
+const NOTO_DEVANAGARI: &[u8] = include_bytes!("../assets/fonts/NotoSansDevanagari.ttf");
+const FALLBACK_WEIGHTS: [f32; 3] = [400.0, 600.0, 750.0];
 const LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide.ttf");
 
 /// Lyric typefaces used by theme presets, as static regular / semibold / bold
@@ -1055,11 +1058,14 @@ fn font_data(face: Face, y_offset_factor: f32) -> FontData {
     FontData { index: face.index, ..FontData::from_static(face.bytes) }.tweak(tweak)
 }
 
+type Fallbacks = [Vec<(String, Face)>; 3];
+
 /// Install fonts. `ui_font` is the theme's font name for all interface text ("inter"
 /// or one of the bundled lyric fonts); the listener's font setting wins over it.
 ///
 /// Each primary font is followed by Inter at the same weight (for the scripts the
-/// theme fonts lack), then the system fallbacks at the closest weight.
+/// theme fonts lack), the system fallbacks at the closest weight, then bundled
+/// Noto Sans Devanagari for systems without that script.
 ///
 /// egui places a fallback font's glyphs by centring its line height on the primary
 /// font's, not by sharing a baseline, so CJK glyphs (Yu Gothic, Microsoft YaHei, …)
@@ -1079,18 +1085,11 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: &str) {
         }
         *installed = state;
     }
-    let mut defs = FontDefinitions::default();
-    let egui_default = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    defs.font_data.insert("lucide".into(), Arc::new(FontData::from_static(LUCIDE).tweak(egui::FontTweak { y_offset_factor: 0.0, ..Default::default() })));
-    defs.families.insert(FontFamily::Name("icons".into()), vec!["lucide".to_owned()]);
-
     // Mapped once for the life of the process, however often fonts are installed:
     // the fallback list at each weight.
-    type Fallbacks = [Vec<(String, Face)>; 3];
     static SYSTEM: std::sync::OnceLock<Fallbacks> = std::sync::OnceLock::new();
     let system = SYSTEM.get_or_init(|| {
         let candidates = fallback_candidates();
-        let target_weights = [400.0, 600.0, 750.0];
         std::array::from_fn(|w| {
             candidates
                 .iter()
@@ -1107,7 +1106,7 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: &str) {
                         }
                     }
                     let bytes = map(path)?;
-                    let target: f32 = target_weights[w];
+                    let target = FALLBACK_WEIGHTS[w];
                     let wght = skrifa::FontRef::from_index(bytes, *index)
                         .ok()
                         .and_then(|f| {
@@ -1122,8 +1121,17 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: &str) {
                 .collect()
         })
     });
-    // Primary fonts: Inter, each lyric font, and the installed font picked in Settings.
     let choice = CHOICE.read().unwrap().as_ref().map(|c| c.faces);
+    ctx.set_fonts(font_definitions(ui_key, choice, system));
+}
+
+fn font_definitions(ui_key: &str, choice: Option<[Face; 3]>, system: &Fallbacks) -> FontDefinitions {
+    let mut defs = FontDefinitions::default();
+    let egui_default = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    defs.font_data.insert("lucide".into(), Arc::new(FontData::from_static(LUCIDE).tweak(egui::FontTweak { y_offset_factor: 0.0, ..Default::default() })));
+    defs.families.insert(FontFamily::Name("icons".into()), vec!["lucide".to_owned()]);
+
+    // Primary fonts: Inter, each lyric font, and the installed font picked in Settings.
     let mut groups: Vec<(&str, [Face; 3])> = vec![("inter", INTER.map(Face::of))];
     groups.extend(LYRIC_FONTS.iter().map(|(k, w)| (*k, w.map(Face::of))));
     groups.extend(choice.map(|faces| ("choice", faces)));
@@ -1134,7 +1142,8 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: &str) {
             defs.font_data.insert(name.clone(), Arc::new(font_data(*face, 0.0)));
             let mut chain = vec![name.clone()];
             let inter = (*key != "inter").then(|| ("inter".to_owned(), Face::of(INTER[w])));
-            for (fallback, f) in inter.iter().chain(&system[w]) {
+            let devanagari = ("noto-devanagari".to_owned(), Face { wght: Some(FALLBACK_WEIGHTS[w]), ..Face::of(NOTO_DEVANAGARI) });
+            for (fallback, f) in inter.iter().chain(&system[w]).chain(std::iter::once(&devanagari)) {
                 let Some((asc_f, h_f)) = em_metrics(f.bytes, f.index) else { continue };
                 let shift = asc_p - (asc_f + 0.5 * (h_p - h_f));
                 let id = format!("{fallback}-{w}@{key}");
@@ -1177,7 +1186,7 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: &str) {
             *data = Arc::new(FontData { font, ..(**data).clone() });
         }
     }
-    ctx.set_fonts(defs);
+    defs
 }
 
 /// The first `Blob` seen for these bytes. Font bytes here are all `'static` (bundled, or
@@ -1274,9 +1283,31 @@ fn visuals() -> egui::Visuals {
 
 #[cfg(test)]
 mod tests {
-    // Both tests are Linux's (the portal); on other systems there'd be nothing to use.
-    #[cfg(target_os = "linux")]
     use super::*;
+
+    #[test]
+    fn devanagari_renders_without_system_fonts() {
+        use egui::epaint::text::{Fonts, MissingGlyphPolicy, TextOptions};
+        use crate::preset::Weight;
+
+        let defs = font_definitions("jetbrainsnerd", None, &Fallbacks::default());
+        let mut fonts = Fonts::new(TextOptions::default(), defs).with_missing_glyph_policy(MissingGlyphPolicy::Panic);
+        let mut fonts = fonts.with_pixels_per_point(1.0);
+        let text = "Hindi · काफ़ी है ना";
+        for id in [
+            regular(32.0), semibold(32.0), bold(32.0), FontId::monospace(32.0),
+            family("jetbrainsnerd", Weight::Bold, 32.0),
+            family("inter", Weight::Regular, 32.0),
+            family("choice", Weight::Semibold, 32.0),
+        ] {
+            assert!(fonts.has_glyphs(&id, text), "missing Hindi or Latin glyphs in {id:?}");
+            fonts.layout_no_wrap(text.to_owned(), id, Color32::WHITE);
+        }
+
+        // The consonant conjunct is one visible glyph after shaping.
+        let conjunct = fonts.layout_no_wrap("क्ष".to_owned(), family("jetbrainsnerd", Weight::Bold, 32.0), Color32::WHITE);
+        assert_eq!(conjunct.rows[0].visuals.mesh.vertices.len(), 4);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

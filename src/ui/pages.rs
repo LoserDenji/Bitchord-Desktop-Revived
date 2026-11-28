@@ -3229,6 +3229,12 @@ fn settings_about(ui: &mut Ui) {
         about_row(ui, "Credits", "Changes and additions by LoserDenji and nxfu, with lyrics providers following ForkChord and ideas from Sonora and Mochy-Music. The full list is in the README's Acknowledgements.", "github.com/LoserDenji/Bitchord-Desktop-Revived", "https://github.com/LoserDenji/Bitchord-Desktop-Revived");
         divider(ui);
         about_row(ui, "License", "BitChord Desktop Revived is free software under the GPL-3.0 license.", "gnu.org/licenses/gpl-3.0", "https://www.gnu.org/licenses/gpl-3.0");
+        if filter_show(ui, "Noto Sans Devanagari font license") {
+            divider(ui);
+            egui::CollapsingHeader::new("Noto Sans Devanagari font license").show(ui, |ui| {
+                ui.add(egui::Label::new(include_str!("../../assets/fonts/LICENSE-notosansdevanagari.txt")).wrap().selectable(true));
+            });
+        }
     });
 }
 
