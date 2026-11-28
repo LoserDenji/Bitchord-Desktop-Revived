@@ -758,7 +758,7 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
     super::shell::volume_slider(app, &mut left, slider, "video-full-vol");
     left.add_space(14.0);
     if total > 0.0 {
-        let time = format!("{} / {}", super::fmt_time(pos as u32), super::fmt_time(total as u32));
+        let time = super::fmt_running(pos, total, app.time_left);
         let g = widgets::time_galley(&left, &time, theme::regular(13.5), Color32::WHITE);
         left.label(g);
     }
@@ -1097,9 +1097,18 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let tc = theme::with_alpha(Color32::WHITE, 0.62);
     let g = widgets::time_galley(ui, &super::fmt_time(pos as u32), theme::semibold(11.0), tc);
     ui.painter().galley(pos2(x0, hit.bottom() + 2.0), g, tc);
-    let left = super::fmt_time((total - pos).max(0.0) as u32);
-    let g = widgets::time_galley(ui, &format!("-{left}"), theme::semibold(11.0), tc);
-    ui.painter().galley(pos2(x0 + w - g.size().x, hit.bottom() + 2.0), g, tc);
+    let g = widgets::time_galley(ui, &super::fmt_end(pos, total, app.time_left), theme::semibold(11.0), tc);
+    let tat = pos2(x0 + w - g.size().x, hit.bottom() + 2.0);
+    if total > 0.0 {
+        // Wide as the time left gets (the whole song), so a second click lands on it too.
+        let tw = widgets::time_galley(ui, &super::fmt_end(0.0, total, true), theme::semibold(11.0), tc).size().x;
+        let hit_r = Rect::from_min_max(pos2(x0 + w - tw, tat.y), pos2(x0 + w, tat.y + g.size().y));
+        let mut left = app.time_left;
+        widgets::time_toggle(ui, hit_r, tat, g, [tc, Color32::WHITE], &mut left);
+        app.time_left = left;
+    } else {
+        ui.painter().galley(tat, g, tc);
+    }
     // The quality mark sits between the two times, as the reference draws it.
     let badge_w = audio_badge_width(ui, app, false);
     if badge_w > 0.0 {

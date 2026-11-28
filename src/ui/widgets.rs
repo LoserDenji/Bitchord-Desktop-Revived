@@ -27,6 +27,19 @@ pub fn galley(ui: &Ui, text: &str, font: egui::FontId, color: Color32, width: f3
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+/// A running time `g` painted at `at` that's a button too (on `hit`): a click swaps the
+/// song's length for the time left and back (`left`). Its own target, over the player
+/// bar's click for now playing; brighter while hovered or focused.
+pub fn time_toggle(ui: &Ui, hit: Rect, at: Pos2, g: std::sync::Arc<egui::Galley>, [rest, hover]: [Color32; 2], left: &mut bool) {
+    let name = if *left { format!("{}. Show song length", g.text()) } else { format!("{}. Show time remaining", g.text()) };
+    let resp = named(ui.interact(hit, ui.scope_id().with("time-toggle"), Sense::click()), &name).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.clicked() {
+        *left = !*left;
+    }
+    let lit = resp.hovered() || resp.has_focus();
+    ui.painter().galley_with_override_text_color(at, g, if lit { hover } else { rest });
+}
+
 /// Right-to-left `text`, shortened at its logical end with "…" until it fits `width`
 /// (egui would cut the right side, the start of the line).
 fn rtl_fit(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {

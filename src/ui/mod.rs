@@ -810,6 +810,8 @@ pub struct App {
     pub disable_blur: bool,
     /// The play button and volume slider in the accent colour, like the progress line.
     accent_controls: bool,
+    /// The time left in place of the song's length beside a running time (click the time).
+    time_left: bool,
     /// Skip the parts of music videos SponsorBlock marks as not music.
     sponsorblock: bool,
     /// Crossfade between songs, and over how many seconds.
@@ -1413,6 +1415,7 @@ impl App {
             anim_bg: get("anim_bg").is_none_or(|v| v == "1"),
             reactive_bg: get("reactive_bg").is_none_or(|v| v == "1"),
             disable_blur: get("disable_blur").is_some_and(|v| v == "1"),
+            time_left: get("time_left").is_some_and(|v| v == "1"),
             sponsorblock: get("sponsorblock").is_some_and(|v| v == "1"),
             crossfade: get("crossfade").is_some_and(|v| v == "1"),
             automix: get("automix").is_some_and(|v| v == "1"),
@@ -2649,6 +2652,7 @@ impl eframe::App for App {
         storage.set_string("youtube_on", b(self.youtube_on));
         storage.set_string("source_priority", self.source_order.iter().map(|k| k.key()).collect::<Vec<_>>().join("\n"));
         storage.set_string("sponsorblock", b(self.sponsorblock));
+        storage.set_string("time_left", b(self.time_left));
         storage.set_string("crossfade", b(self.crossfade));
         storage.set_string("automix", b(self.automix));
         storage.set_string("crossfade_secs", self.crossfade_secs.to_string());
@@ -2929,6 +2933,54 @@ fn updatable() -> bool {
 
 pub fn fmt_time(secs: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// The time still to go ("-0:51"), with `left` and a length to count down from. Whole
+/// seconds of both, so the time so far and the time left add up to the length; never
+/// past it.
+fn fmt_left(pos: f32, total: f32, left: bool) -> Option<String> {
+    (left && total > 0.0).then(|| format!("-{}", fmt_time((total as u32).saturating_sub(pos as u32))))
+}
+
+/// The right end of a time split along a seek bar: the song's length, or with `left` the
+/// time still to go ("0:36 ... -0:51").
+pub fn fmt_end(pos: f32, total: f32, left: bool) -> String {
+    fmt_left(pos, total, left).unwrap_or_else(|| fmt_time(total as u32))
+}
+
+/// A running time as one label: "0:36 / 1:27", or with `left` the time still to go of
+/// the length ("-0:51 / 1:27"), so one side runs and the other stays put either way.
+pub fn fmt_running(pos: f32, total: f32, left: bool) -> String {
+    format!("{} / {}", fmt_left(pos, total, left).unwrap_or_else(|| fmt_time(pos as u32)), fmt_time(total as u32))
+}
+
+#[cfg(test)]
+mod time_tests {
+    use super::{fmt_end, fmt_running};
+
+    #[test]
+    fn the_time_left_adds_up_to_the_length() {
+        assert_eq!(fmt_end(36.7, 87.9, false), "1:27");
+        assert_eq!(fmt_end(36.7, 87.9, true), "-0:51");
+        assert_eq!(fmt_end(0.0, 3725.0, true), "-62:05");
+        // At the very end, and a position a hair past it.
+        assert_eq!(fmt_end(87.9, 87.9, true), "-0:00");
+        assert_eq!(fmt_end(90.0, 87.9, true), "-0:00");
+        // A known length under a second is still one, with its time left.
+        assert_eq!(fmt_end(0.2, 0.9, true), "-0:00");
+        // No length (a live stream, or not known yet): nothing negative.
+        assert_eq!(fmt_end(12.0, 0.0, true), "0:00");
+        assert_eq!(fmt_end(f32::NAN, f32::NAN, true), "0:00");
+    }
+
+    #[test]
+    fn one_label_counts_down_its_left_side() {
+        assert_eq!(fmt_running(193.4, 236.2, false), "3:13 / 3:56");
+        assert_eq!(fmt_running(193.4, 236.2, true), "-0:43 / 3:56");
+        assert_eq!(fmt_running(240.0, 236.2, true), "-0:00 / 3:56");
+        // No length: the time so far, as before.
+        assert_eq!(fmt_running(12.0, 0.0, true), "0:12 / 0:00");
+    }
 }
 
 #[cfg(test)]

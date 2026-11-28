@@ -1125,9 +1125,14 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         let col = theme::with_alpha(theme::text(), focus);
         let g = widgets::time_galley(ui, &fmt_time(pos as u32), theme::semibold(11.5), theme::text());
         ui.painter().galley(pos2(text_l, cy + 2.0), g, col);
-        let left = fmt_time((total - pos).max(0.0) as u32);
-        let g = widgets::time_galley(ui, &format!("-{left}"), theme::semibold(11.5), theme::text());
-        ui.painter().galley(pos2(text_r - g.size().x, cy + 2.0), g, col);
+        let g = widgets::time_galley(ui, &super::fmt_end(pos, total, app.time_left), theme::semibold(11.5), theme::text());
+        let at = pos2(text_r - g.size().x, cy + 2.0);
+        // Wide as the time left gets (the whole song), so a second click lands on it too.
+        let w = widgets::time_galley(ui, &super::fmt_end(0.0, total, true), theme::semibold(11.5), theme::text()).size().x;
+        let hit = Rect::from_min_max(pos2(text_r - w, at.y), pos2(text_r, at.y + g.size().y));
+        let mut left = app.time_left;
+        widgets::time_toggle(ui, hit, at, g, [theme::text_dim(), theme::text()], &mut left);
+        app.time_left = left;
     }
 
     // Right: favourite, lyrics, up next, speed, volume. Hovering the volume slides a

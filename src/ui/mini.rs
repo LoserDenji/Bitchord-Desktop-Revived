@@ -18,7 +18,7 @@ use egui::{Color32, Pos2, Rect, Sense, Ui, Vec2, ViewportCommand, WindowLevel, p
 use serde::{Deserialize, Serialize};
 
 use super::widgets::{self, icon_at, named, paint_cover, text_at};
-use super::{Action, App, fmt_time, glyphs, titlebar};
+use super::{Action, App, glyphs, titlebar};
 use crate::theme::{self, icon};
 
 // Decisions that are easy to change.
@@ -1113,7 +1113,8 @@ fn seek_line(app: &mut App, ui: &mut Ui, r: Rect, track: Option<&crate::model::T
     if h > 0.0
         && let Some(p) = resp.hover_pos().or(resp.interact_pointer_pos())
     {
-        let txt = format!("{} / {}", fmt_time(at(p) as u32), fmt_time(total as u32));
+        // With the time left on, what would be left from there.
+        let txt = super::fmt_running(at(p), total, app.time_left);
         let g = widgets::time_galley(ui, &txt, theme::semibold(11.5), Color32::WHITE);
         let half = g.size().x / 2.0 + 6.0;
         let x = p.x.clamp(r.left() + half + 2.0, r.right() - half - 2.0);
