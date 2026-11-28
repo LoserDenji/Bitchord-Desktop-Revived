@@ -1342,8 +1342,11 @@ impl App {
             pinned: get("pinned_playlists").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
             coll_search: None,
             update_checked: None,
-            // A nightly build stays on nightlies until told otherwise.
-            update_nightly: get("update_channel").map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
+            // A nightly build stays on nightlies until told otherwise. In a Flatpak,
+            // Flatpak picks the version, so it's whichever this build is.
+            update_nightly: get("update_channel")
+                .filter(|_| !crate::update::flatpak())
+                .map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
             update_announced: false,
             update_seen: get("update_seen"),
             notes_dialog: None,
